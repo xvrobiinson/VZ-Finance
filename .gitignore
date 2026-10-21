@@ -1,0 +1,8 @@
+/target
+/dist
+*.db
+*.db-wal
+*.db-shm
+*.partial
+.taste-skill/
+.claude/
