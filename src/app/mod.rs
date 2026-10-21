@@ -293,7 +293,11 @@ impl VzApp {
         .detach();
     }
 
-    pub fn write_backup(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
+    pub fn write_backup(&mut self, mut path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
+        // The Save dialog may drop the suggested extension.
+        if path.extension().is_none() {
+            path.set_extension("db");
+        }
         match self.store.backup_to(&path) {
             Ok(()) => {
                 if let Err(e) = self.store.record_backup_time() {
