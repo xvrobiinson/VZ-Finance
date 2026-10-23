@@ -84,6 +84,24 @@ user-level `~/.cargo/config.toml` (`linker`, `CC`, `AR`, `INCLUDE`, `LIB`,
 `RC`). Release builds also need `fxc.exe` for GPUI's shaders: set
 `GPUI_FXC_PATH` to it, or to any tool that accepts the same arguments.
 
+### Releases
+
+Every push to `main` runs [`.github/workflows/release.yml`](.github/workflows/release.yml),
+which formats, audits dependencies (RustSec), lints with Clippy, tests, builds the
+installer on Windows and publishes it as a GitHub Release with its SHA-256. A
+newer push to `main` cancels the run in progress, so only the latest commit is
+released. Commits that only change `README.md` or screenshots, or whose message
+contains `[skip ci]`, don't release.
+
+Versions: `Cargo.toml` sets `MAJOR.MINOR`; CI picks the next free patch from the
+`v*` tags (0.2.0, 0.2.1, …) and stamps it into the build. Nothing is committed
+back. To start a new line, raise the version in `Cargo.toml` (for example to
+`0.3.0`).
+
+Code signing is optional: add the repository secrets `WINDOWS_SIGNING_CERT`
+(the `.pfx` file, base64-encoded) and `WINDOWS_SIGNING_PASSWORD`, and both the
+app and the installer are signed and timestamped.
+
 ### Demo data
 
 ```powershell

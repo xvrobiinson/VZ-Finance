@@ -1,0 +1,244 @@
+name: Release
+
+# Every push to main is a release candidate: version it, check it, build the
+# Windows installer and publish it as a GitHub Release. A newer push to main
+# cancels the run in progress, so only the latest main is ever released.
+#
+# Versioning: Cargo.toml sets MAJOR.MINOR; CI assigns the next PATCH from the
+# existing v* tags (see scripts/ci/next-version.sh). Nothing is committed back.
+# Add [skip ci] to a commit message to push without releasing.
+
+on:
+  push:
+    branches:
+      - main
+    paths-ignore:
+      - "README.md"
+      - "docs/screenshots/**"
+      - ".gitignore"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  RUST_TOOLCHAIN: "1.99.1"
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  RUST_BACKTRACE: short
+
+jobs:
+  version:
+    name: Version
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      version: ${{ steps.next.outputs.version }}
+      tag: ${{ steps.next.outputs.tag }}
+      previous_tag: ${{ steps.next.outputs.previous_tag }}
+      exists: ${{ steps.next.outputs.exists }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - id: next
+        name: Work out the release version
+        run: bash scripts/ci/next-version.sh
+
+      - name: Summary
+        env:
+          VERSION: ${{ steps.next.outputs.version }}
+          PREVIOUS: ${{ steps.next.outputs.previous_tag }}
+          EXISTS: ${{ steps.next.outputs.exists }}
+        run: |
+          {
+            echo "### VZ Finance ${VERSION}"
+            echo "Previous release: ${PREVIOUS:-none}"
+            if [[ "$EXISTS" == "true" ]]; then echo "This commit is already released; build and publish are skipped."; fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  lint:
+    name: Format
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install Rust
+        run: rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --component rustfmt && rustup default "$RUST_TOOLCHAIN"
+
+      - name: Check formatting
+        run: cargo fmt --all --check
+
+  audit:
+    name: Dependency audit
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: taiki-e/install-action@1e29709c0ec63babbe8f266397a465f29a825f91 # v2.87.31
+        with:
+          tool: cargo-audit
+
+      - name: Check RustSec advisories
+        run: cargo audit
+
+  build:
+    name: Build Windows installer
+    needs: version
+    if: needs.version.outputs.exists != 'true'
+    runs-on: windows-2025
+    timeout-minutes: 60
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+      HAS_SIGNING_CERT: ${{ secrets.WINDOWS_SIGNING_CERT != '' }}
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install Rust
+        run: |
+          rustup toolchain install $env:RUST_TOOLCHAIN --profile minimal --component clippy
+          rustup default $env:RUST_TOOLCHAIN
+
+      - uses: Swatinem/rust-cache@2201cc584a476d1b508be977bbe4b7d1c7a52e9c # v2.9.3
+
+      - name: Stamp version ${{ env.VERSION }}
+        run: ./scripts/ci/set-version.ps1 -Version $env:VERSION
+
+      - name: Clippy
+        run: cargo clippy --all-targets --locked -- -D warnings
+
+      - name: Test
+        run: cargo test --release --locked
+
+      - name: Build release binary
+        run: cargo build --release --locked
+
+      - name: Check binary version
+        run: |
+          $info = (Get-Item target\release\vz-finance.exe).VersionInfo
+          if ($info.ProductVersion -ne $env:VERSION) { throw "Binary reports '$($info.ProductVersion)', expected '$env:VERSION'" }
+          "vz-finance.exe $($info.ProductVersion), $([math]::Round((Get-Item target\release\vz-finance.exe).Length / 1MB, 1)) MB"
+
+      - name: Sign binary
+        if: env.HAS_SIGNING_CERT == 'true'
+        env:
+          WINDOWS_SIGNING_CERT: ${{ secrets.WINDOWS_SIGNING_CERT }}
+          WINDOWS_SIGNING_PASSWORD: ${{ secrets.WINDOWS_SIGNING_PASSWORD }}
+        run: ./scripts/ci/sign.ps1 target\release\vz-finance.exe
+
+      - name: Build installer
+        run: |
+          $paths = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe", "$env:ProgramFiles\Inno Setup 6\ISCC.exe"
+          $iscc = $paths | Where-Object { Test-Path $_ } | Select-Object -First 1
+          if (-not $iscc) {
+            choco install innosetup --yes --no-progress
+            $iscc = $paths | Where-Object { Test-Path $_ } | Select-Object -First 1
+          }
+          if (-not $iscc) { throw "Inno Setup 6 is not available" }
+          & $iscc /Qp "/DAppVersion=$env:VERSION" installer\vz-finance.iss
+          if ($LASTEXITCODE -ne 0) { throw "installer build failed" }
+
+      - name: Sign installer
+        if: env.HAS_SIGNING_CERT == 'true'
+        env:
+          WINDOWS_SIGNING_CERT: ${{ secrets.WINDOWS_SIGNING_CERT }}
+          WINDOWS_SIGNING_PASSWORD: ${{ secrets.WINDOWS_SIGNING_PASSWORD }}
+        run: ./scripts/ci/sign.ps1 "dist\VZFinance-Setup-$env:VERSION.exe"
+
+      - name: Checksum
+        working-directory: dist
+        run: |
+          $name = "VZFinance-Setup-$env:VERSION.exe"
+          "$((Get-FileHash $name -Algorithm SHA256).Hash.ToLower())  $name" | Set-Content SHA256SUMS.txt -Encoding utf8NoBOM
+          Get-Content SHA256SUMS.txt
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: vz-finance-${{ env.VERSION }}-windows-x64
+          path: |
+            dist/VZFinance-Setup-${{ env.VERSION }}.exe
+            dist/SHA256SUMS.txt
+          if-no-files-found: error
+          retention-days: 30
+
+  publish:
+    name: Publish GitHub Release
+    needs: [version, lint, audit, build]
+    if: needs.version.outputs.exists != 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+      TAG: ${{ needs.version.outputs.tag }}
+      PREVIOUS_TAG: ${{ needs.version.outputs.previous_tag }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: vz-finance-${{ env.VERSION }}-windows-x64
+          path: dist
+
+      - name: Write release notes
+        run: |
+          {
+            echo "## VZ Finance ${VERSION}"
+            echo
+            if [[ -n "$PREVIOUS_TAG" ]]; then
+              echo "Changes since ${PREVIOUS_TAG}:"
+              echo
+              git log --no-merges --pretty='- %s (%h)' "${PREVIOUS_TAG}..${GITHUB_SHA}"
+            else
+              echo "First release."
+            fi
+            echo
+            echo "### Install"
+            echo
+            echo "Download \`VZFinance-Setup-${VERSION}.exe\` and run it. Upgrades keep your data in \`%LOCALAPPDATA%\\VZFinance\`."
+            echo
+            echo "SHA-256: \`$(cut -d' ' -f1 dist/SHA256SUMS.txt)\`"
+          } > "$RUNNER_TEMP/notes.md"
+          cat "$RUNNER_TEMP/notes.md"
+
+      # Creating the release also creates the tag on this exact commit. A run
+      # cancelled mid-upload leaves at most a draft, which the next run finishes.
+      - id: publish
+        name: Create release ${{ env.TAG }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" dist/* --clobber
+            gh release edit "$TAG" --draft=false --latest --notes-file "$RUNNER_TEMP/notes.md"
+          else
+            gh release create "$TAG" dist/* \
+              --target "$GITHUB_SHA" \
+              --title "VZ Finance ${VERSION}" \
+              --notes-file "$RUNNER_TEMP/notes.md" \
+              --latest
+          fi
+          url="$(gh release view "$TAG" --json url --jq .url)"
+          echo "url=$url" >> "$GITHUB_OUTPUT"
+          echo "Released [VZ Finance ${VERSION}](${url})" >> "$GITHUB_STEP_SUMMARY"
