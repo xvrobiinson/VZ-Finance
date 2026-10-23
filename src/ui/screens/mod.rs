@@ -12,6 +12,8 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use crate::app::{Route, VzApp};
+use crate::i18n::t;
+use crate::tr;
 use crate::domain::ledger::{DisplayStatus, Delinquency};
 use crate::ui::components::{Tone, pill, status_tone};
 use crate::ui::theme::{Palette, size};
@@ -22,13 +24,13 @@ pub fn status_detail_pill(p: &Palette, status: DisplayStatus, q: &Delinquency, t
     let text = match status {
         DisplayStatus::Overdue => {
             let d = q.days_overdue.max(1);
-            format!("{d} day{} overdue", if d == 1 { "" } else { "s" })
+            if d == 1 { t("1 day overdue", "1 día de atraso").to_string() } else { tr!("{d} days overdue", "{d} días de atraso") }
         }
         DisplayStatus::DueSoon => match q.next_due.map(|n| days_between(today, n)) {
-            Some(0) => "Due today".to_string(),
-            Some(1) => "Due tomorrow".to_string(),
-            Some(n) => format!("Due in {n} days"),
-            None => "Due soon".to_string(),
+            Some(0) => t("Due today", "Vence hoy").to_string(),
+            Some(1) => t("Due tomorrow", "Vence mañana").to_string(),
+            Some(n) => tr!("Due in {n} days", "Vence en {n} días"),
+            None => t("Due soon", "Vence pronto").to_string(),
         },
         s => s.label().to_string(),
     };

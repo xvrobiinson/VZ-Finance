@@ -1,21 +1,24 @@
 //! Money and rate primitives.
 //!
 //! Money is always an `i64` count of minor units (cents). Rates are stored as
-//! parts-per-million of 1.0 (`125_000` = 12.5% per year). No floating point is
+//! parts-per-million of 1.0 (`100_000` = 10% per period). No floating point is
 //! used for money arithmetic; see `docs/ACCOUNTING.md`.
 
 use std::fmt;
 
+use crate::i18n::t;
+use crate::tr;
+
 /// Minor currency units (cents for USD).
 pub type Cents = i64;
 
-/// Annual interest rate in parts per million (1% = 10_000).
+/// Interest rate per period in parts per million (1% = 10_000).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Rate(pub i64);
 
 pub const RATE_SCALE: i64 = 1_000_000;
-/// Highest rate accepted on input: 1000% per year.
-pub const MAX_RATE: Rate = Rate(10 * RATE_SCALE);
+/// Highest rate accepted on input: 100% per period.
+pub const MAX_RATE: Rate = Rate(RATE_SCALE);
 /// Largest single amount accepted on input: 1 trillion minor units.
 pub const MAX_AMOUNT: Cents = 1_000_000_000_000;
 
@@ -59,11 +62,11 @@ pub enum ParseError {
 impl fmt::Display for ParseError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            ParseError::Empty => write!(f, "Enter an amount"),
-            ParseError::Invalid => write!(f, "Use digits only, like 1250.00"),
-            ParseError::Negative => write!(f, "Amount must be positive"),
-            ParseError::TooManyDecimals(n) => write!(f, "Use at most {n} decimal places"),
-            ParseError::TooLarge => write!(f, "That value is too large"),
+            ParseError::Empty => write!(f, "{}", t("Enter an amount", "Escribe un monto")),
+            ParseError::Invalid => write!(f, "{}", t("Use digits only, like 1250.00", "Usa solo números, como 1250.00")),
+            ParseError::Negative => write!(f, "{}", t("Amount must be positive", "El monto debe ser positivo")),
+            ParseError::TooManyDecimals(n) => write!(f, "{}", tr!("Use at most {n} decimal places", "Usa como máximo {n} decimales")),
+            ParseError::TooLarge => write!(f, "{}", t("That value is too large", "Ese valor es demasiado grande")),
         }
     }
 }
@@ -129,18 +132,6 @@ pub fn div_round_half_up(numerator: i128, denominator: i128) -> i128 {
     } else {
         -((-numerator + denominator / 2) / denominator)
     }
-}
-
-/// Simple interest on `principal` for `days` at `rate`, Actual/365 Fixed,
-/// rounded half-up to the cent. This is the single accrual primitive used by
-/// schedules and by the payment engine.
-pub fn interest_for_days(principal: Cents, rate: Rate, days: i64) -> Cents {
-    if principal <= 0 || days <= 0 || rate.0 <= 0 {
-        return 0;
-    }
-    let num = principal as i128 * rate.0 as i128 * days as i128;
-    let den = RATE_SCALE as i128 * 365;
-    div_round_half_up(num, den) as Cents
 }
 
 /// Number formatting style for figures.
@@ -299,26 +290,10 @@ mod tests {
         assert_eq!(Rate::from_percent_str("0"), Ok(Rate(0)));
         assert_eq!(Rate::from_percent_str("7.1234"), Ok(Rate(71_234)));
         assert_eq!(Rate::from_percent_str("7.12345"), Err(ParseError::TooManyDecimals(4)));
-        assert_eq!(Rate::from_percent_str("1001"), Err(ParseError::TooLarge));
+        assert_eq!(Rate::from_percent_str("101"), Err(ParseError::TooLarge));
         assert_eq!(Rate(125_000).percent_label(), "12.5%");
         assert_eq!(Rate(100_000).percent_label(), "10%");
         assert_eq!(Rate(71_234).percent_label(), "7.1234%");
-    }
-
-    #[test]
-    fn interest_actual_365_half_up() {
-        // 10,000.00 at 12% for 30 days = 98.630136... -> 98.63
-        assert_eq!(interest_for_days(1_000_000, Rate(120_000), 30), 9_863);
-        // 1,000.00 at 10% for 365 days = exactly 100.00
-        assert_eq!(interest_for_days(100_000, Rate(100_000), 365), 10_000);
-        // half-up: 0.5 cent rounds up. 73.00 at 5% for 1 day = 0.01 cents*... compute exact
-        // 7300 * 50000 * 1 / (1e6*365) = 1.0 -> 1 cent
-        assert_eq!(interest_for_days(7_300, Rate(50_000), 1), 1);
-        // 3650 * 50000 / 365e6 = 0.5 -> rounds to 1
-        assert_eq!(interest_for_days(3_650, Rate(50_000), 1), 1);
-        assert_eq!(interest_for_days(3_649, Rate(50_000), 1), 0);
-        assert_eq!(interest_for_days(100_000, Rate(0), 30), 0);
-        assert_eq!(interest_for_days(100_000, Rate(100_000), 0), 0);
     }
 
     #[test]

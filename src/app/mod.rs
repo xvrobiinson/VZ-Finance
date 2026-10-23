@@ -10,14 +10,16 @@ use std::rc::Rc;
 use chrono::NaiveDate;
 use gpui_kit::component::IndexPath;
 use gpui_kit::component::input::{InputEvent, InputState};
-use gpui_kit::component::select::{SelectEvent, SelectState};
 use gpui_kit::component::notification::Notification;
+use gpui_kit::component::select::{SelectEvent, SelectState};
 use gpui_kit::component::{WindowExt as _, v_flex};
 use gpui_kit::*;
 
+use crate::i18n::{self, t};
 use crate::services::settings::{CURRENCIES, Settings};
-use crate::ui::forms::loan::Choice;
 use crate::services::{InsufficientCash, Invalid, Snapshot, Store};
+use crate::tr;
+use crate::ui::forms::loan::Choice;
 use crate::ui::theme::{self, FONT, palette, space};
 use crate::utils::dates::today;
 
@@ -102,6 +104,7 @@ pub struct VzApp {
     pub(crate) client_search: Entity<InputState>,
     pub(crate) payment_search: Entity<InputState>,
     pub(crate) currency_select: Entity<SelectState<Vec<Choice>>>,
+    pub(crate) business_name_input: Entity<InputState>,
     pub(crate) loan_filter: LoanFilter,
     pub(crate) show_archived: bool,
     pub(crate) chart_hover: Option<usize>,
@@ -110,27 +113,34 @@ pub struct VzApp {
     _subscriptions: Vec<Subscription>,
 }
 
+fn currency_choices() -> Vec<Choice> {
+    CURRENCIES.iter().enumerate().map(|(i, c)| Choice { id: i as i64, title: format!("{} · {}", c.code, c.name()).into() }).collect()
+}
+
 impl VzApp {
     pub fn new(store: Store, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let (snap, load_error) = match store.snapshot() {
             Ok(s) => (s, None),
             Err(e) => (Snapshot::default(), Some(format!("{e:#}"))),
         };
-        let client_search = cx.new(|cx| InputState::new(window, cx).placeholder("Search clients by name, phone or email"));
-        let payment_search = cx.new(|cx| InputState::new(window, cx).placeholder("Search payments by client or note"));
-        let currency_choices: Vec<Choice> = CURRENCIES
-            .iter()
-            .enumerate()
-            .map(|(i, c)| Choice { id: i as i64, title: format!("{} · {}", c.code, c.name).into() })
-            .collect();
+        i18n::set(snap.settings.language);
+        window.set_window_title(&snap.settings.business_name);
+        let client_search = cx.new(|cx| InputState::new(window, cx));
+        let payment_search = cx.new(|cx| InputState::new(window, cx));
+        let business_name_input = cx.new(|cx| InputState::new(window, cx).default_value(snap.settings.business_name.clone()));
         let selected = CURRENCIES.iter().position(|c| c.code == snap.settings.currency_code).map(IndexPath::new);
-        let currency_select = cx.new(|cx| SelectState::new(currency_choices, selected, window, cx));
+        let currency_select = cx.new(|cx| SelectState::new(currency_choices(), selected, window, cx));
         let subs = vec![
             cx.subscribe_in(&currency_select, window, |this, _, ev: &SelectEvent<Vec<Choice>>, window, cx| {
                 if let SelectEvent::Confirm(Some(i)) = ev {
                     let code = CURRENCIES[*i as usize].code.to_string();
                     this.update_settings(|s| s.currency_code = code, window, cx);
                 }
+            }),
+            cx.subscribe_in(&business_name_input, window, |this, _, ev: &InputEvent, window, cx| match ev {
+                InputEvent::PressEnter { .. } | InputEvent::Blur => this.save_business_name(window, cx),
+                InputEvent::Change => cx.notify(),
+                _ => {}
             }),
             cx.subscribe(&client_search, |_, _, e: &InputEvent, cx| {
                 if matches!(e, InputEvent::Change) {
@@ -145,7 +155,7 @@ impl VzApp {
         ];
         let focus = cx.focus_handle();
         focus.focus(window, cx);
-        Self {
+        let mut app = Self {
             store,
             snap: Rc::new(snap),
             today: today(),
@@ -155,17 +165,37 @@ impl VzApp {
             client_search,
             payment_search,
             currency_select,
+            business_name_input,
             loan_filter: LoanFilter::default(),
             show_archived: false,
             chart_hover: None,
             analytics_hover: None,
             load_error,
             _subscriptions: subs,
-        }
+        };
+        app.apply_language(window, cx);
+        app
     }
 
     pub fn settings(&self) -> &Settings {
         &self.snap.settings
+    }
+
+    /// Re-labels the persistent controls after a language change.
+    fn apply_language(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        i18n::set(self.snap.settings.language);
+        self.client_search.update(cx, |s, cx| {
+            s.set_placeholder(t("Search clients by name, phone or email", "Buscar clientes por nombre, teléfono o correo"), window, cx)
+        });
+        self.payment_search
+            .update(cx, |s, cx| s.set_placeholder(t("Search payments by client or note", "Buscar pagos por cliente o nota"), window, cx));
+        let selected = CURRENCIES.iter().position(|c| c.code == self.snap.settings.currency_code).map(IndexPath::new);
+        self.currency_select.update(cx, |s, cx| {
+            s.set_items(currency_choices(), window, cx);
+            if let Some(ix) = selected {
+                s.set_selected_index(Some(ix), window, cx);
+            }
+        });
     }
 
     pub fn reload(&mut self, cx: &mut Context<Self>) {
@@ -177,6 +207,7 @@ impl VzApp {
             }
             Err(e) => self.load_error = Some(format!("{e:#}")),
         }
+        i18n::set(self.snap.settings.language);
         if let Route::Client(id) = self.route
             && self.snap.client(id).is_none()
         {
@@ -237,16 +268,17 @@ impl VzApp {
     /// Message for a failed write, formatted for the user.
     pub fn error_message(&self, e: &anyhow::Error) -> String {
         if let Some(c) = e.downcast_ref::<InsufficientCash>() {
-            return format!(
-                "Only {} of capital is available on that date. Add capital in Analytics first.",
-                self.settings().money().format(c.available)
+            let amount = self.settings().money().format(c.available);
+            return tr!(
+                "Only {amount} of capital is available on that date. Add capital in Analytics first.",
+                "Solo hay {amount} de capital disponible en esa fecha. Agrega capital en Análisis primero."
             );
         }
         if let Some(v) = e.downcast_ref::<Invalid>() {
             return v.0.clone();
         }
         log::error!("write failed: {e:#}");
-        format!("Something went wrong and nothing was saved. {e}")
+        tr!("Something went wrong and nothing was saved. {e}", "Algo salió mal y no se guardó nada. {e}")
     }
 
     pub fn notify_success(&self, msg: impl Into<SharedString>, window: &mut Window, cx: &mut App) {
@@ -259,21 +291,55 @@ impl VzApp {
 
     pub fn update_settings(&mut self, f: impl FnOnce(&mut Settings), window: &mut Window, cx: &mut Context<Self>) {
         let mut s = self.snap.settings.clone();
-        let old_theme = s.theme;
+        let old = s.clone();
         f(&mut s);
         if let Err(e) = self.store.save_settings(&s) {
             let msg = self.error_message(&e);
             self.notify_error(msg, window, cx);
             return;
         }
-        if s.theme != old_theme {
+        if s.theme != old.theme {
             theme::apply(s.theme, cx);
         }
         self.reload(cx);
+        if s.language != old.language {
+            self.apply_language(window, cx);
+        }
+        if s.business_name != old.business_name {
+            window.set_window_title(&s.business_name);
+        }
+    }
+
+    pub fn save_business_name(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let name = self.business_name_input.read(cx).value().trim().to_string();
+        if name == self.settings().business_name {
+            return;
+        }
+        if name.is_empty() {
+            let current = self.settings().business_name.clone();
+            self.business_name_input.update(cx, |s, cx| s.set_value(current, window, cx));
+            return;
+        }
+        self.update_settings(|s| s.business_name = name, window, cx);
+        self.notify_success(t("Business name saved", "Nombre del negocio guardado"), window, cx);
     }
 
     fn toggle_sidebar(&mut self, _: &ToggleSidebar, window: &mut Window, cx: &mut Context<Self>) {
         self.update_settings(|s| s.sidebar_collapsed = !s.sidebar_collapsed, window, cx);
+    }
+
+    // ----- receipts -------------------------------------------------------
+
+    /// Writes a payment's receipt and opens it in the default browser, which
+    /// shows the print dialog.
+    pub fn open_receipt(&mut self, payment_id: i64, window: &mut Window, cx: &mut Context<Self>) {
+        match self.store.write_receipt(payment_id) {
+            Ok(path) => cx.open_with_system(&path),
+            Err(e) => {
+                let msg = tr!("Could not create the receipt: {e:#}", "No se pudo crear el recibo: {e:#}");
+                self.notify_error(msg, window, cx);
+            }
+        }
     }
 
     // ----- backup ---------------------------------------------------------
@@ -303,11 +369,12 @@ impl VzApp {
                 if let Err(e) = self.store.record_backup_time() {
                     log::warn!("could not record backup time: {e}");
                 }
-                self.notify_success(format!("Backup saved and verified: {}", path.display()), window, cx);
+                let shown = path.display().to_string();
+                self.notify_success(tr!("Backup saved and verified: {shown}", "Copia guardada y verificada: {shown}"), window, cx);
                 self.reload(cx);
             }
             Err(e) => {
-                let msg = format!("Backup failed: {e:#}");
+                let msg = tr!("Backup failed: {e:#}", "La copia falló: {e:#}");
                 self.notify_error(msg, window, cx);
             }
         }
@@ -322,6 +389,7 @@ impl Focusable for VzApp {
 
 impl Render for VzApp {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        i18n::set(self.snap.settings.language);
         let p = palette(cx);
         let content = match self.route {
             Route::Overview => self.render_overview(window, cx),
@@ -339,7 +407,7 @@ impl Render for VzApp {
                 .py(px(space::M))
                 .bg(p.negative_tint)
                 .text_color(p.negative)
-                .child(format!("Your data could not be loaded: {e}"))
+                .child(tr!("Your data could not be loaded: {e}", "No se pudieron cargar tus datos: {e}"))
         });
         div()
             .id("vz-root")

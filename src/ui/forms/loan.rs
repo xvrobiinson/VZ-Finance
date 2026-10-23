@@ -2,7 +2,6 @@ use std::rc::Rc;
 
 use gpui_kit::assets::IconName;
 use gpui_kit::component::IndexPath;
-use gpui_kit::component::date_picker::{DatePicker, DatePickerEvent, DatePickerState};
 use gpui_kit::component::input::{Input, InputEvent, InputState, Textarea, TextareaState};
 use gpui_kit::component::searchable_list::SearchableListItem;
 use gpui_kit::component::select::{Select, SelectEvent, SelectState};
@@ -10,13 +9,16 @@ use gpui_kit::component::{WindowExt as _, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
-use super::{date_picker, error_banner, field, footer, picked_date, value};
+use super::date_field::{DateChanged, DateField};
+use super::{date_field, error_banner, field, footer, invalid_date, picked_date, value};
 use crate::app::{Route, VzApp};
-use crate::domain::loans::{Frequency, Installment, InterestMethod, LoanTerms, MAX_TERM_COUNT, level_payment, schedule_totals};
-use crate::domain::money::{Rate, parse_money};
+use crate::domain::loans::{Frequency, LoanTerms, MAX_PERIOD_RATE, RATE_PRESETS, period_interest};
+use crate::domain::money::{ParseError, Rate, parse_money};
+use crate::i18n::t;
 use crate::services::Snapshot;
-use crate::ui::components::{icon, num};
-use crate::ui::theme::{Palette, palette, size, space, tabular};
+use crate::tr;
+use crate::ui::components::{icon, kv, num};
+use crate::ui::theme::{Palette, palette, size, space};
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Choice {
@@ -40,12 +42,11 @@ pub struct LoanForm {
     client: Entity<SelectState<Vec<Choice>>>,
     client_id: Option<i64>,
     principal: Entity<InputState>,
-    rate: Entity<InputState>,
-    method: InterestMethod,
-    frequency_select: Entity<SelectState<Vec<Choice>>>,
+    /// A preset rate, or `None` for a custom rate typed in `custom_rate`.
+    preset: Option<Rate>,
+    custom_rate: Entity<InputState>,
     frequency: Frequency,
-    term: Entity<InputState>,
-    start: Entity<DatePickerState>,
+    start: Entity<DateField>,
     notes: Entity<TextareaState>,
     error: Option<String>,
     show_errors: bool,
@@ -56,7 +57,6 @@ struct Parsed {
     terms: Option<LoanTerms>,
     principal_err: Option<String>,
     rate_err: Option<String>,
-    term_err: Option<String>,
     start_err: Option<String>,
 }
 
@@ -70,16 +70,16 @@ impl LoanForm {
             .collect();
         let selected = client_id.and_then(|id| choices.iter().position(|c| c.id == id)).map(IndexPath::new);
         let client = cx.new(|cx| SelectState::new(choices, selected, window, cx).searchable(true));
-        let freq_choices: Vec<Choice> =
-            Frequency::PERIODIC.iter().enumerate().map(|(i, f)| Choice { id: i as i64, title: f.label().into() }).collect();
-        let frequency_select = cx.new(|cx| SelectState::new(freq_choices, Some(IndexPath::new(2)), window, cx));
         let principal = cx.new(|cx| InputState::new(window, cx).placeholder("0.00"));
-        let rate = cx.new(|cx| InputState::new(window, cx).placeholder("e.g. 12"));
-        let term = cx.new(|cx| InputState::new(window, cx).default_value("12"));
-        let today = crate::utils::dates::today();
-        let start = date_picker(today, window, cx);
-        let notes = cx.new(|cx| TextareaState::new(window, cx).rows(2).placeholder("Purpose, collateral, agreement reference"));
-        let method = snap.settings.default_method;
+        let default_rate = snap.settings.default_rate;
+        let preset = RATE_PRESETS.contains(&default_rate).then_some(default_rate);
+        let custom_rate = cx.new(|cx| {
+            let s = InputState::new(window, cx).placeholder(t("e.g. 12", "ej. 12"));
+            if preset.is_none() { s.default_value(default_rate.percent_label().trim_end_matches('%').to_string()) } else { s }
+        });
+        let start = date_field(crate::utils::dates::today(), window, cx);
+        let notes = cx.new(|cx| TextareaState::new(window, cx).rows(2).placeholder(t("Purpose, collateral, agreement", "Motivo, garantía, acuerdo")));
+        let frequency = snap.settings.default_frequency;
 
         let mut subs = vec![
             cx.subscribe_in(&client, window, |this, _, ev: &SelectEvent<Vec<Choice>>, _, cx| {
@@ -87,16 +87,9 @@ impl LoanForm {
                 this.client_id = *v;
                 cx.notify();
             }),
-            cx.subscribe_in(&frequency_select, window, |this, _, ev: &SelectEvent<Vec<Choice>>, _, cx| {
-                let SelectEvent::Confirm(v) = ev;
-                if let Some(i) = v {
-                    this.frequency = Frequency::PERIODIC[*i as usize];
-                }
-                cx.notify();
-            }),
-            cx.subscribe_in(&start, window, |_, _, _: &DatePickerEvent, _, cx| cx.notify()),
+            cx.subscribe(&start, |_, _, _: &DateChanged, cx| cx.notify()),
         ];
-        for input in [&principal, &rate, &term] {
+        for input in [&principal, &custom_rate] {
             subs.push(cx.subscribe_in(input, window, |_, _, ev: &InputEvent, _, cx| {
                 if let InputEvent::Change = ev {
                     cx.notify()
@@ -109,11 +102,9 @@ impl LoanForm {
             client,
             client_id,
             principal,
-            rate,
-            method,
-            frequency_select,
-            frequency: Frequency::Monthly,
-            term,
+            preset,
+            custom_rate,
+            frequency,
             start,
             notes,
             error: None,
@@ -126,47 +117,38 @@ impl LoanForm {
         if self.client_id.is_some() { self.principal.focus_handle(cx) } else { self.client.focus_handle(cx) }
     }
 
-    fn frequency(&self) -> Frequency {
-        if self.method == InterestMethod::Simple { Frequency::AtMaturity } else { self.frequency }
+    fn rate(&self, cx: &App) -> Result<Rate, String> {
+        if let Some(r) = self.preset {
+            return Ok(r);
+        }
+        match Rate::from_percent_str(&value(&self.custom_rate, cx)) {
+            Ok(r) if r <= MAX_PERIOD_RATE => Ok(r),
+            Ok(_) | Err(ParseError::TooLarge) => Err(t("The rate can't be above 100%", "La tasa no puede ser mayor que 100%").into()),
+            Err(ParseError::Empty) => Err(t("Enter the rate", "Escribe la tasa").into()),
+            Err(e) => Err(e.to_string()),
+        }
     }
 
     fn parse(&self, cx: &App) -> Parsed {
         let principal = parse_money(&value(&self.principal, cx));
-        let rate = Rate::from_percent_str(&value(&self.rate, cx));
-        let term: Result<u32, _> = value(&self.term, cx).trim().parse::<u32>();
+        let rate = self.rate(cx);
         let start = picked_date(&self.start, cx);
         let principal_err = match &principal {
-            Ok(0) => Some("Enter an amount greater than zero".into()),
+            Ok(0) => Some(t("Enter an amount greater than zero", "Escribe un monto mayor que cero").to_string()),
             Ok(_) => None,
             Err(e) => Some(e.to_string()),
         };
-        let rate_err = rate.as_ref().err().map(|e| match e {
-            crate::domain::money::ParseError::Empty => "Enter the annual rate (0 for interest-free)".to_string(),
-            crate::domain::money::ParseError::TooLarge => "Rates above 1000% are not accepted".to_string(),
-            e => e.to_string(),
-        });
-        let term_err = match term {
-            Ok(n) if (1..=MAX_TERM_COUNT).contains(&n) => None,
-            _ => Some(format!("Enter a whole number from 1 to {MAX_TERM_COUNT}")),
-        };
         let today = crate::utils::dates::today();
         let start_err = match start {
-            None => Some("Choose the date the money was lent".to_string()),
-            Some(d) if d > today => Some("The start date can't be in the future".to_string()),
+            None => Some(invalid_date()),
+            Some(d) if d > today => Some(t("The loan date can't be in the future", "La fecha del préstamo no puede ser futura").to_string()),
             _ => None,
         };
-        let terms = match (principal, rate, term, start) {
-            (Ok(p), Ok(r), Ok(n), Some(s)) if p > 0 && term_err.is_none() => Some(LoanTerms {
-                principal: p,
-                rate: r,
-                method: self.method,
-                frequency: self.frequency(),
-                term_count: n,
-                start_date: s,
-            }),
+        let terms = match (principal, &rate, start) {
+            (Ok(p), Ok(r), Some(s)) if p > 0 => Some(LoanTerms { principal: p, rate: *r, frequency: self.frequency, start_date: s }),
             _ => None,
         };
-        Parsed { terms, principal_err, rate_err, term_err, start_err }
+        Parsed { terms, principal_err, rate_err: rate.err(), start_err }
     }
 
     /// Validates and saves; closes the dialog only on success. Bound to the
@@ -174,14 +156,10 @@ impl LoanForm {
     pub fn submit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.show_errors = true;
         let parsed = self.parse(cx);
-        let (Some(client_id), Some(terms)) = (self.client_id, parsed.terms) else {
+        let (Some(client_id), Some(terms), None) = (self.client_id, parsed.terms, parsed.start_err) else {
             cx.notify();
             return;
         };
-        if parsed.start_err.is_some() {
-            cx.notify();
-            return;
-        }
         let notes = self.notes.read(cx).value().to_string();
         let result = self.app.update(cx, |app, cx| {
             let today = app.today;
@@ -199,7 +177,7 @@ impl LoanForm {
                 let _ = self.app.update(cx, |app, cx| {
                     let name = app.snap.client_name(client_id).to_string();
                     let amount = app.settings().money().format(terms.principal);
-                    app.notify_success(format!("Loan of {amount} to {name} created"), window, cx);
+                    app.notify_success(tr!("Loan of {amount} to {name} created", "Préstamo de {amount} a {name} creado"), window, cx);
                     app.navigate(Route::Loan(id), window, cx);
                 });
             }
@@ -211,10 +189,34 @@ impl LoanForm {
         }
     }
 
-    fn method_tile(&self, p: &Palette, m: InterestMethod, cx: &mut Context<Self>) -> impl IntoElement {
-        let selected = self.method == m;
+    fn chip(&self, p: &Palette, id: &'static str, label: String, selected: bool, on: impl Fn(&mut Self, &mut Context<Self>) + 'static, cx: &mut Context<Self>) -> Stateful<Div> {
+        div()
+            .id(id)
+            .h(px(34.))
+            .px(px(14.))
+            .flex()
+            .items_center()
+            .rounded(px(8.))
+            .border_1()
+            .border_color(if selected { p.accent } else { p.control })
+            .when(selected, |d| d.bg(p.accent_tint).text_color(p.accent_text).font_weight(FontWeight::MEDIUM))
+            .when(!selected, |d| d.hover(|s| s.bg(p.hover)))
+            .cursor_pointer()
+            .child(label)
+            .on_click(cx.listener(move |this, _, _, cx| {
+                on(this, cx);
+                cx.notify();
+            }))
+    }
+
+    fn frequency_tile(&self, p: &Palette, f: Frequency, cx: &mut Context<Self>) -> impl IntoElement {
+        let selected = self.frequency == f;
+        let desc = match f {
+            Frequency::Monthly => t("Interest once a month", "Interés una vez al mes"),
+            Frequency::Biweekly => t("Interest twice a month (quincenal)", "Interés dos veces al mes"),
+        };
         v_flex()
-            .id(m.key())
+            .id(f.key())
             .flex_1()
             .min_w_0()
             .p(px(10.))
@@ -225,10 +227,10 @@ impl LoanForm {
             .when(selected, |d| d.bg(p.accent_tint))
             .when(!selected, |d| d.hover(|s| s.bg(p.hover)))
             .cursor_pointer()
-            .child(div().font_weight(FontWeight::MEDIUM).text_color(if selected { p.accent_text } else { p.text }).child(m.label()))
-            .child(div().text_size(px(size::META)).line_height(px(16.)).text_color(p.muted).child(m.description()))
+            .child(div().font_weight(FontWeight::MEDIUM).text_color(if selected { p.accent_text } else { p.text }).child(f.label()))
+            .child(div().text_size(px(size::META)).text_color(p.muted).child(desc))
             .on_click(cx.listener(move |this, _, _, cx| {
-                this.method = m;
+                this.frequency = f;
                 cx.notify();
             }))
     }
@@ -242,87 +244,64 @@ impl LoanForm {
                 .justify_center()
                 .items_center()
                 .child(icon(IconName::Calculator, p.faint, 20.))
-                .child(
-                    div()
-                        .max_w(px(240.))
-                        .text_center()
-                        .text_color(p.muted)
-                        .child("Enter the amount, rate and term to preview the repayment schedule."),
-                )
+                .child(div().max_w(px(260.)).text_center().text_color(p.muted).child(t(
+                    "Enter the amount and choose a rate to see the interest per period.",
+                    "Escribe el monto y elige la tasa para ver el interés por período.",
+                )))
                 .into_any_element();
         };
-        let Ok(schedule) = terms.schedule() else {
-            return card.child("This combination of terms isn't valid.").into_any_element();
+        let interest = terms.interest_per_period();
+        let half = terms.principal / 2;
+        let example_pay = interest + half;
+        let next_interest = period_interest(terms.principal - half, terms.rate);
+        let period_label = match terms.frequency {
+            Frequency::Monthly => t("Interest each month", "Interés cada mes"),
+            Frequency::Biweekly => t("Interest every 15 days", "Interés cada 15 días"),
         };
-        let (_, interest) = schedule_totals(&schedule);
-        let headline: (String, String) = match terms.method {
-            InterestMethod::Simple => ("Due at maturity".into(), money.format(schedule[0].total())),
-            InterestMethod::Amortized => (
-                format!("{} installment", terms.frequency.label()),
-                money.format(level_payment(terms.principal, terms.rate, terms.term_count, terms.frequency)),
-            ),
-            InterestMethod::InterestOnly => (format!("{} interest", terms.frequency.label()), money.format(schedule[0].interest)),
-        };
-        let rows: Vec<&Installment> = schedule.iter().take(6).collect();
-        let more = schedule.len().saturating_sub(rows.len());
-        let row_el = |r: &Installment| {
+        let rate = terms.rate.percent_label();
+        let principal = money.format(terms.principal);
+        let (i, h, pay, next) = (money.format(interest), money.format(half), money.format(example_pay), money.format(next_interest));
+        let bullet = |text: String| {
             h_flex()
-                .h(px(28.))
-                .gap(px(space::S))
-                .font_features(tabular())
-                .child(div().w(px(22.)).text_color(p.faint).child(r.seq.to_string()))
-                .child(div().flex_1().text_color(p.muted).child(ds.format(r.due_date)))
-                .child(div().w(px(92.)).text_right().text_color(p.muted).child(money.format(r.interest)))
-                .child(div().w(px(104.)).text_right().text_color(p.text).child(money.format(r.total())))
+                .items_start()
+                .gap(px(8.))
+                .child(div().mt(px(7.)).size(px(5.)).rounded_full().bg(p.accent).flex_none())
+                .child(div().text_color(p.text).child(text))
         };
         card.child(
             v_flex()
                 .gap(px(2.))
-                .child(div().text_size(px(size::META)).text_color(p.muted).child(headline.0))
-                .child(num(headline.1).text_size(px(size::FIGURE)).line_height(px(28.)).font_weight(FontWeight::MEDIUM)),
+                .child(div().text_size(px(size::META)).text_color(p.muted).child(period_label))
+                .child(num(i.clone()).text_size(px(size::FIGURE + 2.)).line_height(px(30.)).font_weight(FontWeight::MEDIUM))
+                .child(div().text_size(px(size::META)).text_color(p.muted).child(tr!("{rate} of {principal}", "{rate} de {principal}"))),
         )
         .child(
             v_flex()
-                .gap(px(2.))
-                .child(crate::ui::components::kv(p, "Total interest", money.format(interest)))
-                .child(crate::ui::components::kv(p, "Total to be repaid", money.format(terms.principal + interest)))
-                .child(crate::ui::components::kv(p, "Maturity", ds.format(terms.maturity_date())))
-                .child(crate::ui::components::kv(
-                    p,
-                    "Installments",
-                    format!("{} {}", schedule.len(), if schedule.len() == 1 { "payment" } else { "payments" }),
-                )),
+                .child(kv(p, t("First payment due", "Primer pago"), ds.format(terms.first_due())))
+                .child(kv(p, t("Loan date", "Fecha del préstamo"), ds.format(terms.start_date))),
         )
         .child(
             v_flex()
-                .pt(px(space::S))
+                .gap(px(8.))
+                .pt(px(space::M))
                 .border_t_1()
                 .border_color(p.border)
-                .child(
-                    h_flex()
-                        .h(px(26.))
-                        .gap(px(space::S))
-                        .text_size(px(size::META))
-                        .text_color(p.faint)
-                        .child(div().w(px(22.)).child("#"))
-                        .child(div().flex_1().child("Due"))
-                        .child(div().w(px(92.)).text_right().child("Interest"))
-                        .child(div().w(px(104.)).text_right().child("Payment")),
-                )
-                .children(rows.into_iter().map(row_el))
-                .when(more > 0, |d| {
-                    d.child(div().pt(px(4.)).text_size(px(size::META)).text_color(p.muted).child(format!(
-                        "and {more} more, ending {}",
-                        ds.format(terms.maturity_date())
-                    )))
-                }),
-        )
-        .child(
-            div()
-                .text_size(px(size::META))
-                .line_height(px(16.))
-                .text_color(p.faint)
-                .child("Interest accrues daily on the outstanding principal (Actual/365). Paying early reduces interest."),
+                .child(div().font_weight(FontWeight::MEDIUM).child(t("How payments work", "Cómo funcionan los pagos")))
+                .child(bullet(tr!(
+                    "Paying {i} covers the interest. The capital stays at {principal}.",
+                    "Si paga {i}, cubre el interés. El capital sigue en {principal}."
+                )))
+                .child(bullet(tr!(
+                    "Paying {pay} is {i} of interest plus {h} of capital, so the next interest is only {next}.",
+                    "Si paga {pay}, son {i} de interés y {h} de abono a capital, y el próximo interés baja a {next}."
+                )))
+                .child(bullet(
+                    t(
+                        "Any amount above the interest lowers the capital. The loan closes when the capital reaches zero.",
+                        "Todo lo que pase del interés baja el capital. El préstamo se cierra cuando el capital llega a cero.",
+                    )
+                    .to_string(),
+                )),
         )
         .into_any_element()
     }
@@ -340,19 +319,38 @@ impl Render for LoanForm {
             .map(|t| self.snap.book.min_cash_from(t.start_date))
             .unwrap_or_else(|| self.snap.book.cash_on(crate::utils::dates::today()));
         let over_cash = parsed.terms.as_ref().is_some_and(|t| t.principal > available);
-        let principal_hint = Some(format!("Available capital: {}", money.format(available.max(0))));
+        let avail = money.format(available.max(0));
+        let principal_hint = Some(tr!("Available capital: {avail}", "Capital disponible: {avail}"));
         let principal_err = if over_cash {
-            Some(format!("Only {} is available to lend on this date", money.format(available.max(0))))
+            Some(tr!("Only {avail} is available to lend on this date", "Solo hay {avail} disponible para prestar en esta fecha"))
         } else if show {
             parsed.principal_err.clone()
         } else {
             None
         };
         let client_err = (show && self.client_id.is_none()).then(|| {
-            if self.snap.clients.iter().all(|c| c.is_archived()) { "Add a client first".to_string() } else { "Choose a client".to_string() }
+            if self.snap.clients.iter().all(|c| c.is_archived()) {
+                t("Add a client first", "Agrega un cliente primero").to_string()
+            } else {
+                t("Choose a client", "Elige un cliente").to_string()
+            }
         });
-        let term_label = if self.method == InterestMethod::Simple { "Term (months)" } else { "Number of payments" };
         let can_submit = self.client_id.is_some() && parsed.terms.is_some() && parsed.start_err.is_none() && !over_cash;
+        // A typed custom rate is checked as you type; an empty one only on submit.
+        let typed = self.preset.is_none() && !value(&self.custom_rate, cx).trim().is_empty();
+        let rate_err = parsed.rate_err.clone().filter(|_| show || typed);
+
+        let mut chips = h_flex().gap(px(space::S)).flex_wrap();
+        for (i, r) in RATE_PRESETS.iter().enumerate() {
+            let r = *r;
+            let id: &'static str = ["rate-5", "rate-10", "rate-15"][i];
+            chips = chips.child(self.chip(&p, id, r.percent_label(), self.preset == Some(r), move |this, _| this.preset = Some(r), cx));
+        }
+        chips = chips.child(self.chip(&p, "rate-other", t("Other", "Otra").to_string(), self.preset.is_none(), |this, _| this.preset = None, cx));
+        let rate_control = v_flex()
+            .gap(px(space::S))
+            .child(chips)
+            .when(self.preset.is_none(), |d| d.child(div().w(px(150.)).child(Input::new(&self.custom_rate).suffix(div().text_color(p.muted).child("%")))));
 
         h_flex()
             .items_start()
@@ -363,53 +361,36 @@ impl Render for LoanForm {
                     .flex_none()
                     .gap(px(space::L))
                     .children(error_banner(&p, &self.error))
-                    .child(field(&p, "Client", Select::new(&self.client).placeholder("Choose a client").search_placeholder("Search clients"), None, client_err))
-                    .child(
-                        h_flex()
-                            .items_start()
-                            .gap(px(space::M))
-                            .child(div().flex_1().child(field(
-                                &p,
-                                "Principal",
-                                Input::new(&self.principal).prefix(div().text_color(p.muted).child(money.symbol.clone())),
-                                principal_hint,
-                                principal_err,
-                            )))
-                            .child(div().w(px(150.)).child(field(
-                                &p,
-                                "Annual rate",
-                                Input::new(&self.rate).suffix(div().text_color(p.muted).child("%")),
-                                None,
-                                if show { parsed.rate_err.clone() } else { None },
-                            ))),
-                    )
                     .child(field(
                         &p,
-                        "Interest method",
-                        h_flex()
-                            .gap(px(space::S))
-                            .items_stretch()
-                            .children(InterestMethod::ALL.map(|m| self.method_tile(&p, m, cx).into_any_element())),
+                        t("Client", "Cliente"),
+                        Select::new(&self.client).placeholder(t("Choose a client", "Elige un cliente")).search_placeholder(t("Search clients", "Buscar clientes")),
+                        None,
+                        client_err,
+                    ))
+                    .child(field(
+                        &p,
+                        t("Amount lent", "Monto prestado"),
+                        Input::new(&self.principal).prefix(div().text_color(p.muted).child(money.symbol.clone())),
+                        principal_hint,
+                        principal_err,
+                    ))
+                    .child(field(
+                        &p,
+                        t("Interest rate per period", "Tasa de interés por período"),
+                        rate_control,
+                        None,
+                        rate_err,
+                    ))
+                    .child(field(
+                        &p,
+                        t("Payments", "Pagos"),
+                        h_flex().gap(px(space::S)).items_stretch().children(Frequency::ALL.map(|f| self.frequency_tile(&p, f, cx).into_any_element())),
                         None,
                         None,
                     ))
-                    .child(
-                        h_flex()
-                            .items_start()
-                            .gap(px(space::M))
-                            .when(self.method != InterestMethod::Simple, |d| {
-                                d.child(div().flex_1().child(field(&p, "Repayment frequency", Select::new(&self.frequency_select), None, None)))
-                            })
-                            .child(div().w(px(150.)).child(field(
-                                &p,
-                                term_label,
-                                Input::new(&self.term),
-                                None,
-                                if show { parsed.term_err.clone() } else { None },
-                            )))
-                            .child(div().flex_1().child(field(&p, "Start date", DatePicker::new(&self.start), None, parsed.start_err.clone()))),
-                    )
-                    .child(field(&p, "Notes", Textarea::new(&self.notes), None, None)),
+                    .child(field(&p, t("Loan date", "Fecha del préstamo"), self.start.clone(), None, parsed.start_err.clone().filter(|_| show)))
+                    .child(field(&p, t("Notes", "Notas"), Textarea::new(&self.notes), None, None)),
             )
             .child(
                 v_flex()
@@ -417,9 +398,9 @@ impl Render for LoanForm {
                     .min_w_0()
                     .self_stretch()
                     .gap(px(space::S))
-                    .child(div().text_size(px(size::META + 1.)).font_weight(FontWeight::MEDIUM).child("Repayment preview"))
+                    .child(div().text_size(px(size::META + 1.)).font_weight(FontWeight::MEDIUM).child(t("Preview", "Vista previa")))
                     .child(div().flex_1().child(self.preview(&p, parsed.terms.as_ref())))
-                    .child(footer(&p, "Create loan", can_submit, false, cx.listener(|this, _, window, cx| this.submit(window, cx)))),
+                    .child(footer(&p, t("Create loan", "Crear préstamo"), can_submit, false, cx.listener(|this, _, window, cx| this.submit(window, cx)))),
             )
     }
 }

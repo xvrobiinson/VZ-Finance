@@ -17,7 +17,7 @@ gpui_kit::assets::icon_assets!(
     [
         LayoutDashboard, Users, HandCoins, ArrowLeftRight, ChartLine, Settings, DatabaseBackup, PanelLeftClose, PanelLeftOpen, ShieldCheck,
         Plus, Search, SearchX, Wallet, TrendingUp, Landmark, FileText, CircleAlert, CircleCheck, Check, Receipt, Calculator, UserPlus,
-        Pencil, Archive, ArchiveRestore, ArrowLeft, FolderOpen, FileSpreadsheet, ChartColumn, Table
+        Pencil, Archive, ArchiveRestore, ArrowLeft, FolderOpen, FileSpreadsheet, ChartColumn, Table, Printer, Calendar, ChevronLeft, ChevronRight
     ]
 );
 
@@ -100,11 +100,11 @@ impl Render for StartupError {
                     .w(px(560.))
                     .p(px(32.))
                     .gap(px(12.))
-                    .child(div().text_size(px(18.)).font_weight(FontWeight::SEMIBOLD).text_color(p.text).child("VZ Finance could not open your data"))
+                    .child(div().text_size(px(18.)).font_weight(FontWeight::SEMIBOLD).text_color(p.text).child("VZ Finance could not open your data / No se pudieron abrir tus datos"))
                     .child(div().text_color(p.muted).child(self.message.clone()))
                     .child(div().text_size(px(12.)).text_color(p.faint).child(format!("Database: {}", self.path)))
                     .child(div().text_color(p.muted).child(
-                        "Nothing was changed. If you have a backup, you can copy it over this file after closing the app.",
+                        "Nothing was changed. If you have a backup, you can copy it over this file after closing the app. / No se cambió nada. Si tienes una copia, puedes reemplazar este archivo con ella después de cerrar la app.",
                     )),
             )
     }

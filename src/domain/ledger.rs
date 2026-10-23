@@ -1,16 +1,25 @@
-//! The accrual engine: a loan's actual position on any date, payment
-//! allocation, and delinquency. Pure functions over plain data so every rule
-//! is unit-tested without a database or UI. Rules are documented in
+//! The loan engine: a loan's position on any date, payment allocation and
+//! delinquency, as pure functions over plain data. Rules are documented in
 //! `docs/ACCOUNTING.md`.
+//!
+//! Model: each period's interest is the loan's rate times the capital owed
+//! when the period begins. It is charged at the start of the period and is due
+//! by the period's end. Payments go to fees (as entered), then to interest
+//! owed (oldest first), then to capital. A capital payment lowers the interest
+//! of the *next* period.
+//!
+//! Example: 1,000 at 10% a month. The first period's interest is 100. Paying
+//! 600 covers the 100 of interest and repays 500 of capital, so the next
+//! period's interest is 50.
 
 use chrono::NaiveDate;
 
-use crate::domain::loans::{Installment, InterestMethod};
-use crate::domain::money::{Cents, Rate, interest_for_days};
+use crate::domain::loans::{Frequency, period_interest};
+use crate::domain::money::{Cents, Rate};
+use crate::i18n::t;
 use crate::utils::dates::days_between;
 
-/// Contractual status as stored. Calculated indicators (due soon, overdue)
-/// are derived separately and never written back.
+/// Contractual status as stored. Due soon and overdue are calculated.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum ContractStatus {
     Active,
@@ -39,7 +48,7 @@ impl ContractStatus {
     }
 }
 
-/// What the user sees: contractual status combined with calculated delinquency.
+/// What the user sees: contractual status combined with delinquency.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum DisplayStatus {
     Overdue,
@@ -53,30 +62,27 @@ pub enum DisplayStatus {
 impl DisplayStatus {
     pub fn label(self) -> &'static str {
         match self {
-            DisplayStatus::Active => "Active",
-            DisplayStatus::DueSoon => "Due soon",
-            DisplayStatus::Overdue => "Overdue",
-            DisplayStatus::PaidOff => "Paid off",
-            DisplayStatus::Defaulted => "Defaulted",
-            DisplayStatus::Restructured => "Restructured",
+            DisplayStatus::Active => t("Current", "Al día"),
+            DisplayStatus::DueSoon => t("Due soon", "Vence pronto"),
+            DisplayStatus::Overdue => t("Overdue", "Atrasado"),
+            DisplayStatus::PaidOff => t("Paid off", "Saldado"),
+            DisplayStatus::Defaulted => t("Defaulted", "Incobrable"),
+            DisplayStatus::Restructured => t("Restructured", "Reestructurado"),
         }
     }
 }
 
-/// Days before a due date at which an installment is flagged "Due soon".
-pub const DUE_SOON_DAYS: i64 = 7;
+/// Days before a due date at which a payment is flagged "Due soon".
+pub const DUE_SOON_DAYS: i64 = 5;
 
-/// The facts about a loan the engine needs.
 #[derive(Clone, Debug)]
 pub struct LoanFacts {
     pub principal: Cents,
     pub rate: Rate,
-    pub method: InterestMethod,
+    pub frequency: Frequency,
     pub start_date: NaiveDate,
-    pub maturity_date: NaiveDate,
     pub status: ContractStatus,
-    /// Date the contractual status last changed to Defaulted/Restructured;
-    /// interest stops accruing from that date.
+    /// Date a loan was defaulted or restructured: no new interest after it.
     pub closed_on: Option<NaiveDate>,
 }
 
@@ -95,19 +101,29 @@ impl PaymentFact {
     }
 }
 
-/// A loan's actual position at the end of a given day.
+/// One charged period.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Period {
+    pub seq: u32,
+    pub starts: NaiveDate,
+    pub due: NaiveDate,
+    /// Capital owed when the period began.
+    pub balance: Cents,
+    pub interest: Cents,
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Position {
     pub principal_outstanding: Cents,
-    /// Interest accrued and not yet paid (receivable).
+    /// Interest charged and not yet paid.
     pub interest_outstanding: Cents,
-    /// All interest accrued since the start, paid or not.
-    pub interest_accrued_total: Cents,
+    pub interest_charged_total: Cents,
     pub interest_paid: Cents,
     pub principal_paid: Cents,
     pub fees_paid: Cents,
     pub paid_total: Cents,
     pub last_event: Option<NaiveDate>,
+    pub periods: Vec<Period>,
 }
 
 impl Position {
@@ -116,43 +132,83 @@ impl Position {
     }
 }
 
-/// Replays a loan's payments to `as_of` (inclusive). Payments must be sorted
-/// by date then by id. Interest accrues daily, Actual/365, on the outstanding
-/// principal only (no compounding); each accrual segment between events is
-/// rounded half-up to the cent. Accrual stops on the date a loan is defaulted
-/// or restructured.
-pub fn position(loan: &LoanFacts, payments: &[PaymentFact], as_of: NaiveDate) -> Position {
-    let mut pos = Position { principal_outstanding: loan.principal, ..Default::default() };
-    if as_of < loan.start_date {
+/// Which periods count as charged at the cut-off.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Cutoff {
+    /// End of the day: a period starting on this date is charged, after that
+    /// day's payments.
+    EndOfDay,
+    /// The moment a payment is received: a period starting on this date is
+    /// charged only after the payment, so it is not included.
+    BeforePayment,
+}
+
+struct Replay<'a> {
+    loan: &'a LoanFacts,
+    pos: Position,
+    next_seq: u32,
+    charge_until: NaiveDate,
+}
+
+impl Replay<'_> {
+    /// Charge every period that has started at `at` (strictly before it when
+    /// `strict`), on the capital owed at that moment.
+    fn charge_through(&mut self, at: NaiveDate, strict: bool) {
+        loop {
+            let k = self.next_seq;
+            let starts = self.loan.frequency.period_start(self.loan.start_date, k);
+            let started = if k == 1 { starts <= at } else if strict { starts < at } else { starts <= at };
+            if !started || starts > self.charge_until || self.pos.principal_outstanding <= 0 {
+                break;
+            }
+            let interest = period_interest(self.pos.principal_outstanding, self.loan.rate);
+            self.pos.periods.push(Period {
+                seq: k,
+                starts,
+                due: self.loan.frequency.due_date(self.loan.start_date, k),
+                balance: self.pos.principal_outstanding,
+                interest,
+            });
+            self.pos.interest_outstanding += interest;
+            self.pos.interest_charged_total += interest;
+            self.next_seq += 1;
+        }
+    }
+}
+
+fn replay(loan: &LoanFacts, payments: &[PaymentFact], at: NaiveDate, cutoff: Cutoff) -> Position {
+    if at < loan.start_date {
         return Position::default();
     }
-    let accrual_end = match (loan.status, loan.closed_on) {
-        (ContractStatus::Defaulted | ContractStatus::Restructured, Some(d)) => d.min(as_of),
-        _ => as_of,
+    let charge_until = match (loan.status, loan.closed_on) {
+        (ContractStatus::Defaulted | ContractStatus::Restructured, Some(d)) => d,
+        _ => NaiveDate::MAX,
     };
-    let mut last = loan.start_date;
-    for p in payments.iter().filter(|p| p.paid_on <= as_of) {
-        let until = p.paid_on.min(accrual_end);
-        if until > last {
-            let accrued = interest_for_days(pos.principal_outstanding, loan.rate, days_between(last, until));
-            pos.interest_outstanding += accrued;
-            pos.interest_accrued_total += accrued;
-            last = until;
-        }
-        pos.interest_outstanding -= p.interest;
-        pos.principal_outstanding -= p.principal;
-        pos.interest_paid += p.interest;
-        pos.principal_paid += p.principal;
-        pos.fees_paid += p.fee;
-        pos.paid_total += p.total();
-        pos.last_event = Some(p.paid_on);
+    let mut r = Replay {
+        loan,
+        pos: Position { principal_outstanding: loan.principal, ..Default::default() },
+        next_seq: 1,
+        charge_until,
+    };
+    for p in payments.iter().filter(|p| p.paid_on <= at) {
+        // Payments dated on a due date belong to the period ending then.
+        r.charge_through(p.paid_on, true);
+        r.pos.interest_outstanding -= p.interest;
+        r.pos.principal_outstanding -= p.principal;
+        r.pos.interest_paid += p.interest;
+        r.pos.principal_paid += p.principal;
+        r.pos.fees_paid += p.fee;
+        r.pos.paid_total += p.total();
+        r.pos.last_event = Some(p.paid_on);
     }
-    if accrual_end > last {
-        let accrued = interest_for_days(pos.principal_outstanding, loan.rate, days_between(last, accrual_end));
-        pos.interest_outstanding += accrued;
-        pos.interest_accrued_total += accrued;
-    }
-    pos
+    r.charge_through(at, cutoff == Cutoff::BeforePayment);
+    r.pos
+}
+
+/// The loan's position at the end of `as_of`. Payments must be sorted by
+/// date, then by id.
+pub fn position(loan: &LoanFacts, payments: &[PaymentFact], as_of: NaiveDate) -> Position {
+    replay(loan, payments, as_of, Cutoff::EndOfDay)
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -160,7 +216,8 @@ pub struct Allocation {
     pub interest: Cents,
     pub principal: Cents,
     pub fee: Cents,
-    /// Remaining after this payment.
+    /// Capital owed before this payment.
+    pub principal_before: Cents,
     pub principal_after: Cents,
     pub interest_after: Cents,
 }
@@ -173,25 +230,40 @@ impl Allocation {
 
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum PaymentError {
-    #[error("Enter an amount greater than zero")]
+    #[error("not positive")]
     NotPositive,
-    #[error("This is more than the payoff amount")]
+    #[error("overpayment")]
     Overpayment { payoff: Cents },
-    #[error("The payment date is before the loan started")]
+    #[error("before start")]
     BeforeStart,
-    #[error("The payment date is before the latest recorded payment")]
+    #[error("before last payment")]
     BeforeLastPayment { last: NaiveDate },
-    #[error("The payment date is in the future")]
+    #[error("in future")]
     InFuture,
-    #[error("This loan is closed")]
+    #[error("loan closed")]
     LoanClosed,
-    #[error("The fee is larger than the payment")]
+    #[error("fee too large")]
     FeeTooLarge,
 }
 
-/// Allocates a payment received on `paid_on`. Order: fee (as entered), then
-/// accrued interest, then principal. A payment larger than the payoff is
-/// rejected so no unexplained credit balance is ever created.
+impl PaymentError {
+    pub fn message(&self) -> &'static str {
+        match self {
+            PaymentError::NotPositive => t("Enter an amount greater than zero", "Escribe un monto mayor que cero"),
+            PaymentError::Overpayment { .. } => t("This is more than the client owes", "Es más de lo que debe el cliente"),
+            PaymentError::BeforeStart => t("The date is before the loan started", "La fecha es anterior al inicio del préstamo"),
+            PaymentError::BeforeLastPayment { .. } => {
+                t("A later payment is already recorded", "Ya hay un pago registrado con fecha posterior")
+            }
+            PaymentError::InFuture => t("The date is in the future", "La fecha está en el futuro"),
+            PaymentError::LoanClosed => t("This loan is closed", "Este préstamo está cerrado"),
+            PaymentError::FeeTooLarge => t("The fee is larger than the payment", "El cargo es mayor que el pago"),
+        }
+    }
+}
+
+/// Allocates a payment received on `paid_on`: fee as entered, then interest
+/// owed, then capital. Amounts above what is owed are refused.
 pub fn allocate(
     loan: &LoanFacts,
     payments: &[PaymentFact],
@@ -220,7 +292,7 @@ pub fn allocate(
     {
         return Err(PaymentError::BeforeLastPayment { last });
     }
-    let pos = position(loan, payments, paid_on);
+    let pos = replay(loan, payments, paid_on, Cutoff::BeforePayment);
     let available = amount - fee;
     if available > pos.payoff() {
         return Err(PaymentError::Overpayment { payoff: pos.payoff() + fee });
@@ -231,26 +303,36 @@ pub fn allocate(
         interest,
         principal,
         fee,
+        principal_before: pos.principal_outstanding,
         principal_after: pos.principal_outstanding - principal,
         interest_after: pos.interest_outstanding - interest,
     })
 }
 
+/// What a client owes on a given day (at the moment of a payment), for
+/// quick-fill amounts: interest owed now and the full payoff.
+pub fn owed_at_payment(loan: &LoanFacts, payments: &[PaymentFact], on: NaiveDate) -> Position {
+    replay(loan, payments, on, Cutoff::BeforePayment)
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Delinquency {
-    /// Scheduled amounts past their due date and not yet covered.
+    /// Interest past its due date and not yet paid.
     pub overdue_amount: Cents,
     pub days_overdue: i64,
-    /// The oldest installment not fully covered by payments.
+    /// Due date of the oldest unpaid period that is past due.
+    pub overdue_since: Option<NaiveDate>,
+    /// The next due date, today or later.
     pub next_due: Option<NaiveDate>,
-    /// Amount still owed on that installment.
+    /// Everything that must be paid by that date to be current, including
+    /// any overdue interest.
     pub next_due_amount: Cents,
 }
 
-/// Delinquency as of `today`. Payments are applied to installments oldest
-/// first (by cumulative total). An installment is overdue the day after its
-/// due date. After maturity, everything still owed is overdue.
-pub fn delinquency(loan: &LoanFacts, schedule: &[Installment], payments: &[PaymentFact], today: NaiveDate) -> Delinquency {
+/// Delinquency as of `today`. Interest paid covers periods oldest first; a
+/// period is overdue the day after its due date if its interest is not
+/// covered.
+pub fn delinquency(loan: &LoanFacts, payments: &[PaymentFact], today: NaiveDate) -> Delinquency {
     if loan.status != ContractStatus::Active {
         return Delinquency::default();
     }
@@ -258,33 +340,29 @@ pub fn delinquency(loan: &LoanFacts, schedule: &[Installment], payments: &[Payme
     if pos.payoff() <= 0 {
         return Delinquency::default();
     }
-    let paid = pos.paid_total - pos.fees_paid;
-    let mut cumulative = 0;
     let mut result = Delinquency::default();
-    let mut past_due_scheduled = 0;
-    for row in schedule {
-        let before = cumulative;
-        cumulative += row.total();
-        if row.due_date < today {
-            past_due_scheduled = cumulative;
-        }
-        if result.next_due.is_none() && paid < cumulative {
-            result.next_due = Some(row.due_date);
-            result.next_due_amount = (cumulative - paid.max(before)).min(pos.payoff());
-            if row.due_date < today {
-                result.days_overdue = days_between(row.due_date, today);
+    let mut cumulative = 0;
+    let mut past_due = 0;
+    for p in &pos.periods {
+        cumulative += p.interest;
+        if p.due < today {
+            past_due = cumulative;
+            if result.overdue_since.is_none() && pos.interest_paid < cumulative {
+                result.overdue_since = Some(p.due);
+                result.days_overdue = days_between(p.due, today);
             }
+        } else if result.next_due.is_none() && pos.interest_paid < cumulative {
+            result.next_due = Some(p.due);
+            result.next_due_amount = cumulative - pos.interest_paid;
         }
     }
-    result.overdue_amount = (past_due_scheduled - paid).max(0).min(pos.payoff());
-    if today > loan.maturity_date {
-        // Late interest can leave a balance after every installment is covered.
-        result.overdue_amount = pos.payoff();
-        if result.next_due.is_none() {
-            result.next_due = Some(loan.maturity_date);
-            result.next_due_amount = pos.payoff();
-            result.days_overdue = days_between(loan.maturity_date, today);
-        }
+    result.overdue_amount = (past_due - pos.interest_paid).max(0);
+    if result.next_due.is_none() {
+        // Everything charged by now is paid (or only overdue interest is left):
+        // the next payment is the next period's interest plus anything overdue.
+        let k = pos.periods.last().map(|p| p.seq + 1).unwrap_or(1);
+        result.next_due = Some(loan.frequency.due_date(loan.start_date, k));
+        result.next_due_amount = (cumulative - pos.interest_paid).max(0) + period_interest(pos.principal_outstanding, loan.rate);
     }
     result
 }
@@ -297,10 +375,7 @@ pub fn display_status(loan: &LoanFacts, delinquency: &Delinquency, today: NaiveD
         ContractStatus::Active => {
             if delinquency.overdue_amount > 0 {
                 DisplayStatus::Overdue
-            } else if delinquency
-                .next_due
-                .is_some_and(|d| days_between(today, d) <= DUE_SOON_DAYS)
-            {
+            } else if delinquency.next_due_amount > 0 && delinquency.next_due.is_some_and(|d| days_between(today, d) <= DUE_SOON_DAYS) {
                 DisplayStatus::DueSoon
             } else {
                 DisplayStatus::Active
@@ -309,206 +384,195 @@ pub fn display_status(loan: &LoanFacts, delinquency: &Delinquency, today: NaiveD
     }
 }
 
+/// Coverage of a charged period by interest paid so far.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PeriodState {
+    Paid,
+    PartlyPaid,
+    Overdue,
+    Open,
+}
+
+/// The state of each charged period, oldest first.
+pub fn period_states(pos: &Position, today: NaiveDate) -> Vec<(Period, PeriodState, Cents)> {
+    let mut cumulative = 0;
+    pos.periods
+        .iter()
+        .map(|p| {
+            let before = cumulative;
+            cumulative += p.interest;
+            let paid = (pos.interest_paid - before).clamp(0, p.interest);
+            let state = if paid >= p.interest {
+                PeriodState::Paid
+            } else if p.due < today {
+                PeriodState::Overdue
+            } else if paid > 0 {
+                PeriodState::PartlyPaid
+            } else {
+                PeriodState::Open
+            };
+            (p.clone(), state, paid)
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::loans::{Frequency, LoanTerms};
 
     fn d(y: i32, m: u32, day: u32) -> NaiveDate {
         NaiveDate::from_ymd_opt(y, m, day).unwrap()
     }
 
-    fn facts(terms: &LoanTerms) -> LoanFacts {
-        LoanFacts {
-            principal: terms.principal,
-            rate: terms.rate,
-            method: terms.method,
-            start_date: terms.start_date,
-            maturity_date: terms.maturity_date(),
-            status: ContractStatus::Active,
-            closed_on: None,
-        }
+    fn loan(principal: Cents, pct: i64, frequency: Frequency, start: NaiveDate) -> LoanFacts {
+        LoanFacts { principal, rate: Rate(pct * 10_000), frequency, start_date: start, status: ContractStatus::Active, closed_on: None }
     }
 
-    fn pay(loan: &LoanFacts, history: &mut Vec<PaymentFact>, amount: Cents, on: NaiveDate) -> Allocation {
-        let a = allocate(loan, history, amount, 0, on, d(2030, 1, 1)).expect("allocates");
+    fn pay(l: &LoanFacts, history: &mut Vec<PaymentFact>, amount: Cents, on: NaiveDate) -> Allocation {
+        let a = allocate(l, history, amount, 0, on, d(2030, 1, 1)).expect("allocates");
         history.push(PaymentFact { paid_on: on, principal: a.principal, interest: a.interest, fee: 0 });
         a
     }
 
-    fn amortized() -> LoanTerms {
-        LoanTerms {
-            principal: 1_200_000,
-            rate: Rate(120_000),
-            method: InterestMethod::Amortized,
-            frequency: Frequency::Monthly,
-            term_count: 12,
-            start_date: d(2026, 1, 1),
-        }
+    #[test]
+    fn the_owners_example() {
+        // 1,000 at 10% a month: 100 of interest per month.
+        let l = loan(100_000, 10, Frequency::Monthly, d(2026, 1, 1));
+        let mut h = Vec::new();
+        assert_eq!(position(&l, &h, d(2026, 1, 15)).interest_outstanding, 10_000);
+        // The client pays 600 on the due date: 100 interest, 500 capital.
+        let a = pay(&l, &mut h, 60_000, d(2026, 2, 1));
+        assert_eq!((a.interest, a.principal), (10_000, 50_000));
+        assert_eq!(a.principal_before, 100_000);
+        assert_eq!(a.principal_after, 50_000);
+        // Next month's interest is only 50.
+        let q = delinquency(&l, &h, d(2026, 2, 2));
+        assert_eq!(q.next_due, Some(d(2026, 3, 1)));
+        assert_eq!(q.next_due_amount, 5_000);
+        // Paying just the 50 keeps the capital at 500.
+        let a = pay(&l, &mut h, 5_000, d(2026, 3, 1));
+        assert_eq!((a.interest, a.principal), (5_000, 0));
+        assert_eq!(position(&l, &h, d(2026, 3, 2)).interest_outstanding, 5_000);
     }
 
     #[test]
-    fn on_time_payments_match_schedule_exactly() {
-        let terms = amortized();
-        let loan = facts(&terms);
-        let schedule = terms.schedule().unwrap();
-        let mut history = Vec::new();
-        for row in &schedule {
-            let a = pay(&loan, &mut history, row.total(), row.due_date);
-            assert_eq!((a.interest, a.principal), (row.interest, row.principal), "row {}", row.seq);
-        }
-        let pos = position(&loan, &history, d(2027, 6, 1));
-        assert_eq!(pos.principal_outstanding, 0);
-        assert_eq!(pos.interest_outstanding, 0);
-        assert_eq!(pos.principal_paid, 1_200_000);
-    }
-
-    #[test]
-    fn partial_payment_goes_to_interest_first() {
-        let terms = amortized();
-        let loan = facts(&terms);
-        let mut history = Vec::new();
-        // 31 days on 12,000 at 12% = 122.30
-        let a = pay(&loan, &mut history, 5_000, d(2026, 2, 1));
-        assert_eq!(a.interest, 5_000);
-        assert_eq!(a.principal, 0);
-        assert_eq!(a.interest_after, 12_230 - 5_000);
-        // The unpaid interest stays receivable and does not compound.
-        let pos = position(&loan, &history, d(2026, 3, 1));
-        // 28 more days on 12,000: 110.47
-        assert_eq!(pos.interest_outstanding, 7_230 + 11_047);
-        assert_eq!(pos.principal_outstanding, 1_200_000);
-    }
-
-    #[test]
-    fn early_payment_reduces_principal_and_future_interest() {
-        let terms = amortized();
-        let loan = facts(&terms);
-        let mut history = Vec::new();
-        // Pay 6,000 after 10 days: interest 10 days = 39.45, rest to principal.
-        let a = pay(&loan, &mut history, 600_000, d(2026, 1, 11));
-        assert_eq!(a.interest, 3_945);
-        assert_eq!(a.principal, 596_055);
-        let pos = position(&loan, &history, d(2026, 2, 1));
-        assert_eq!(pos.principal_outstanding, 603_945);
-        // 21 days on 6,039.45 = 41.70
-        assert_eq!(pos.interest_outstanding, 4_170);
-    }
-
-    #[test]
-    fn overpayment_is_rejected_with_payoff() {
-        let terms = amortized();
-        let loan = facts(&terms);
-        let history = Vec::new();
-        let err = allocate(&loan, &history, 2_000_000, 0, d(2026, 2, 1), d(2030, 1, 1)).unwrap_err();
-        assert_eq!(err, PaymentError::Overpayment { payoff: 1_200_000 + 12_230 });
-        // Exactly the payoff closes the loan.
-        let a = allocate(&loan, &history, 1_212_230, 0, d(2026, 2, 1), d(2030, 1, 1)).unwrap();
-        assert!(a.pays_off());
-    }
-
-    #[test]
-    fn rejects_backdated_future_and_closed() {
-        let terms = amortized();
-        let mut loan = facts(&terms);
-        let mut history = Vec::new();
-        pay(&loan, &mut history, 10_000, d(2026, 3, 1));
-        let today = d(2026, 4, 1);
-        assert_eq!(
-            allocate(&loan, &history, 100, 0, d(2026, 2, 1), today),
-            Err(PaymentError::BeforeLastPayment { last: d(2026, 3, 1) })
-        );
-        assert_eq!(allocate(&loan, &history, 100, 0, d(2026, 4, 2), today), Err(PaymentError::InFuture));
-        assert_eq!(allocate(&loan, &history, 100, 0, d(2025, 12, 31), today), Err(PaymentError::BeforeStart));
-        assert_eq!(allocate(&loan, &history, 0, 0, today, today), Err(PaymentError::NotPositive));
-        loan.status = ContractStatus::PaidOff;
-        assert_eq!(allocate(&loan, &history, 100, 0, today, today), Err(PaymentError::LoanClosed));
-    }
-
-    #[test]
-    fn fee_is_allocated_first_and_not_interest() {
-        let terms = amortized();
-        let loan = facts(&terms);
-        let a = allocate(&loan, &[], 15_000, 2_500, d(2026, 2, 1), d(2030, 1, 1)).unwrap();
-        assert_eq!(a.fee, 2_500);
-        assert_eq!(a.interest, 12_230);
-        assert_eq!(a.principal, 15_000 - 2_500 - 12_230);
-    }
-
-    #[test]
-    fn same_day_payments_accrue_nothing_between() {
-        let terms = amortized();
-        let loan = facts(&terms);
-        let mut history = Vec::new();
-        pay(&loan, &mut history, 12_230, d(2026, 2, 1));
-        let a = pay(&loan, &mut history, 1_000, d(2026, 2, 1));
-        assert_eq!(a.interest, 0);
-        assert_eq!(a.principal, 1_000);
-    }
-
-    #[test]
-    fn delinquency_tracks_oldest_uncovered_installment() {
-        let terms = amortized();
-        let loan = facts(&terms);
-        let schedule = terms.schedule().unwrap();
-        let mut history = Vec::new();
-        // Nothing paid; first due Feb 1.
-        let q = delinquency(&loan, &schedule, &history, d(2026, 1, 28));
-        assert_eq!(q.overdue_amount, 0);
-        assert_eq!(q.next_due, Some(d(2026, 2, 1)));
-        assert_eq!(display_status(&loan, &q, d(2026, 1, 28)), DisplayStatus::DueSoon);
-        // Due date itself is not overdue.
-        let q = delinquency(&loan, &schedule, &history, d(2026, 2, 1));
-        assert_eq!(q.overdue_amount, 0);
-        // The day after is.
-        let q = delinquency(&loan, &schedule, &history, d(2026, 2, 13));
-        assert_eq!(q.overdue_amount, schedule[0].total());
-        assert_eq!(q.days_overdue, 12);
-        assert_eq!(display_status(&loan, &q, d(2026, 2, 13)), DisplayStatus::Overdue);
-        // A partial payment reduces the overdue amount but keeps it overdue.
-        pay(&loan, &mut history, 50_000, d(2026, 2, 13));
-        let q = delinquency(&loan, &schedule, &history, d(2026, 2, 14));
-        assert_eq!(q.overdue_amount, schedule[0].total() - 50_000);
-        assert_eq!(q.next_due_amount, schedule[0].total() - 50_000);
-        // Paying the rest clears it.
-        pay(&loan, &mut history, schedule[0].total() - 50_000, d(2026, 2, 14));
-        let q = delinquency(&loan, &schedule, &history, d(2026, 2, 15));
+    fn early_payment_in_the_period_still_covers_its_interest_first() {
+        let l = loan(100_000, 10, Frequency::Monthly, d(2026, 1, 1));
+        let mut h = Vec::new();
+        let a = pay(&l, &mut h, 60_000, d(2026, 1, 20));
+        assert_eq!((a.interest, a.principal), (10_000, 50_000));
+        // Nothing more is owed until the next period begins on Feb 1.
+        let q = delinquency(&l, &h, d(2026, 1, 25));
         assert_eq!(q.overdue_amount, 0);
         assert_eq!(q.next_due, Some(d(2026, 3, 1)));
-        assert_eq!(display_status(&loan, &q, d(2026, 2, 15)), DisplayStatus::Active);
+        assert_eq!(q.next_due_amount, 5_000);
     }
 
     #[test]
-    fn after_maturity_everything_owed_is_overdue() {
-        let terms = LoanTerms {
-            principal: 100_000,
-            rate: Rate(100_000),
-            method: InterestMethod::Simple,
-            frequency: Frequency::AtMaturity,
-            term_count: 1,
-            start_date: d(2026, 1, 1),
-        };
-        let loan = facts(&terms);
-        let schedule = terms.schedule().unwrap();
-        let mut history = Vec::new();
-        // Pay the scheduled amount 10 days late: 10 more days of interest remain.
-        pay(&loan, &mut history, schedule[0].total(), d(2026, 2, 11));
-        let q = delinquency(&loan, &schedule, &history, d(2026, 2, 12));
-        let pos = position(&loan, &history, d(2026, 2, 12));
-        assert!(pos.payoff() > 0);
-        assert_eq!(q.overdue_amount, pos.payoff());
-        assert_eq!(q.days_overdue, 11);
+    fn biweekly_periods() {
+        let l = loan(200_000, 5, Frequency::Biweekly, d(2026, 1, 5));
+        let mut h = Vec::new();
+        // 5% of 2,000 = 100 every 15 days.
+        let a = pay(&l, &mut h, 10_000, d(2026, 1, 20));
+        assert_eq!(a.interest, 10_000);
+        let pos = position(&l, &h, d(2026, 1, 20));
+        assert_eq!(pos.periods.len(), 2);
+        assert_eq!(pos.periods[1].due, d(2026, 2, 5));
     }
 
     #[test]
-    fn default_stops_accrual() {
-        let terms = amortized();
-        let mut loan = facts(&terms);
-        loan.status = ContractStatus::Defaulted;
-        loan.closed_on = Some(d(2026, 2, 1));
-        let pos = position(&loan, &[], d(2026, 12, 1));
-        assert_eq!(pos.interest_outstanding, 12_230);
-        let q = delinquency(&loan, &terms.schedule().unwrap(), &[], d(2026, 12, 1));
-        assert_eq!(q, Delinquency::default());
+    fn partial_interest_carries_over_without_compounding() {
+        let l = loan(100_000, 10, Frequency::Monthly, d(2026, 1, 1));
+        let mut h = Vec::new();
+        pay(&l, &mut h, 4_000, d(2026, 2, 1));
+        let pos = position(&l, &h, d(2026, 2, 1));
+        // 60 left from January plus February's 100, still on 1,000 of capital.
+        assert_eq!(pos.interest_outstanding, 6_000 + 10_000);
+        assert_eq!(pos.principal_outstanding, 100_000);
+        let q = delinquency(&l, &h, d(2026, 2, 2));
+        assert_eq!(q.overdue_amount, 6_000);
+        assert_eq!(q.days_overdue, 1);
+        assert_eq!(q.overdue_since, Some(d(2026, 2, 1)));
+        // To be current by March 1: the 60 overdue plus February's 100.
+        assert_eq!((q.next_due, q.next_due_amount), (Some(d(2026, 3, 1)), 16_000));
+        assert_eq!(display_status(&l, &q, d(2026, 2, 2)), DisplayStatus::Overdue);
+        // The next payment pays the oldest interest first.
+        let a = pay(&l, &mut h, 20_000, d(2026, 2, 10));
+        assert_eq!((a.interest, a.principal), (16_000, 4_000));
+    }
+
+    #[test]
+    fn due_date_is_not_overdue_the_day_after_is() {
+        let l = loan(100_000, 10, Frequency::Monthly, d(2026, 1, 1));
+        let h = Vec::new();
+        let q = delinquency(&l, &h, d(2026, 2, 1));
+        assert_eq!(q.overdue_amount, 0);
+        assert_eq!(display_status(&l, &q, d(2026, 2, 1)), DisplayStatus::DueSoon);
+        let q = delinquency(&l, &h, d(2026, 2, 2));
+        assert_eq!(q.overdue_amount, 10_000);
+    }
+
+    #[test]
+    fn payoff_closes_and_overpayment_is_refused() {
+        let l = loan(100_000, 10, Frequency::Monthly, d(2026, 1, 1));
+        let mut h = Vec::new();
+        assert_eq!(
+            allocate(&l, &h, 200_000, 0, d(2026, 1, 10), d(2030, 1, 1)),
+            Err(PaymentError::Overpayment { payoff: 110_000 })
+        );
+        let a = pay(&l, &mut h, 110_000, d(2026, 1, 10));
+        assert!(a.pays_off());
+        // No interest is charged once the capital is repaid.
+        let pos = position(&l, &h, d(2026, 6, 1));
+        assert_eq!(pos.payoff(), 0);
+        assert_eq!(pos.periods.len(), 1);
+    }
+
+    #[test]
+    fn validation() {
+        let mut l = loan(100_000, 10, Frequency::Monthly, d(2026, 1, 1));
+        let mut h = Vec::new();
+        pay(&l, &mut h, 1_000, d(2026, 3, 1));
+        let today = d(2026, 4, 1);
+        assert_eq!(allocate(&l, &h, 100, 0, d(2026, 2, 1), today), Err(PaymentError::BeforeLastPayment { last: d(2026, 3, 1) }));
+        assert_eq!(allocate(&l, &h, 100, 0, d(2026, 4, 2), today), Err(PaymentError::InFuture));
+        assert_eq!(allocate(&l, &h, 100, 0, d(2025, 12, 31), today), Err(PaymentError::BeforeStart));
+        assert_eq!(allocate(&l, &h, 0, 0, today, today), Err(PaymentError::NotPositive));
+        assert_eq!(allocate(&l, &h, 100, 200, today, today), Err(PaymentError::FeeTooLarge));
+        l.status = ContractStatus::PaidOff;
+        assert_eq!(allocate(&l, &h, 100, 0, today, today), Err(PaymentError::LoanClosed));
+    }
+
+    #[test]
+    fn fee_comes_first() {
+        let l = loan(100_000, 10, Frequency::Monthly, d(2026, 1, 1));
+        let a = allocate(&l, &[], 15_000, 2_500, d(2026, 1, 10), d(2030, 1, 1)).unwrap();
+        assert_eq!((a.fee, a.interest, a.principal), (2_500, 10_000, 2_500));
+    }
+
+    #[test]
+    fn default_stops_new_interest() {
+        let mut l = loan(100_000, 10, Frequency::Monthly, d(2026, 1, 1));
+        l.status = ContractStatus::Defaulted;
+        l.closed_on = Some(d(2026, 2, 15));
+        let pos = position(&l, &[], d(2026, 12, 1));
+        // January and February charged; nothing after the default date.
+        assert_eq!(pos.interest_outstanding, 20_000);
+        assert_eq!(delinquency(&l, &[], d(2026, 12, 1)), Delinquency::default());
+    }
+
+    #[test]
+    fn period_states_cover_oldest_first() {
+        let l = loan(100_000, 10, Frequency::Monthly, d(2026, 1, 1));
+        let mut h = Vec::new();
+        pay(&l, &mut h, 15_000, d(2026, 2, 1));
+        let pos = position(&l, &h, d(2026, 3, 5));
+        let s = period_states(&pos, d(2026, 3, 5));
+        assert_eq!(s.len(), 3);
+        // 150 paid of 100 (Jan) + 95 (Feb, on 950 of capital after 50 repaid).
+        assert_eq!(pos.periods[1].balance, 95_000);
+        assert_eq!(s[0].1, PeriodState::Paid);
+        assert_eq!(s[1].1, PeriodState::Overdue);
+        assert_eq!(s[2].1, PeriodState::Open);
     }
 }

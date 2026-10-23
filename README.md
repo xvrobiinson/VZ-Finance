@@ -8,27 +8,35 @@ Built in Rust with [GPUI](https://gpui.rs) and SQLite.
 
 ## What it does
 
-- **Overview**: portfolio value, outstanding principal, interest earned,
-  available capital, active loans and overdue amount, with a portfolio growth
-  chart, where your money is, recent payments and loans needing attention.
-- **Clients**: searchable directory; each client has a profile with loans, a
-  payment timeline, totals and notes. Clients are archived, never deleted.
-- **Loans**: simple interest, amortized and interest-only loans with a live
-  repayment preview before you create them; detail pages show the schedule
-  with paid, partly paid and overdue installments.
+- **Loans at a rate per period**: lend at 5%, 10%, 15% or any rate, paid
+  monthly or every 15 days. Each period's interest is the rate times the
+  capital still owed; paying more than the interest lowers the capital and so
+  the next interest (1,000 at 10% is 100; paying 600 leaves 500, so next time
+  it is 50).
+- **Overview**: portfolio value, capital lent out, interest earned, available
+  capital, active loans and overdue amount, with a growth chart, where your
+  money is, recent payments and loans needing attention.
+- **Clients**: searchable directory; each client has a profile with loans,
+  payment history, totals and notes. Clients are archived, never deleted.
 - **Payments**: record a payment in a few keystrokes with a live split between
-  interest (income) and principal (capital returned). Mistakes are corrected
-  with audited reversals.
+  interest and capital. Mistakes are corrected with audited reversals.
+- **Printable receipts**: after each payment (or any time later) a receipt
+  opens ready to print, showing what was paid, what is still owed, the
+  percentage of capital paid and the next payment.
 - **Portfolio Analytics**: returns, capital ledger, monthly interest, capital
-  deployment, loan status breakdown and a monthly cash-flow table.
-- **Settings**: currency, number and date formats, defaults, light and dark
-  theme, verified backup and restore, CSV export.
+  lent out, loans by status and a monthly cash-flow table.
+- **Settings**: business name (shown in the app and on receipts), English or
+  Spanish, currency (Dominican peso by default), number and date formats,
+  default rate and payment frequency, light and dark theme, verified backup
+  and restore, CSV export.
 
-Every figure is derived from recorded transactions. The rules (day count,
-rounding, allocation order, overdue logic, portfolio value) are written down in
+Every figure is derived from recorded transactions. The rules (interest,
+rounding, payment order, overdue logic, portfolio value) are written down in
 [docs/ACCOUNTING.md](docs/ACCOUNTING.md).
 
 ![Loan detail](docs/screenshots/loan.png)
+
+![Receipt](docs/screenshots/receipt.png)
 
 ## Privacy
 

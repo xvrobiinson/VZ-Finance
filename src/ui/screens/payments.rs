@@ -1,12 +1,14 @@
 use gpui_kit::assets::IconName;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::Input;
-use gpui_kit::component::{h_flex, v_flex};
+use gpui_kit::component::{Sizable as _, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use super::ncolumn;
 use crate::app::{Route, VzApp};
+use crate::i18n::{count, t};
+use crate::tr;
 use crate::ui::components::{Tone, avatar, card, empty_state, icon, page_header, pill, table_header, table_row, th};
 use crate::ui::theme::{palette, size, space, tabular};
 
@@ -20,7 +22,7 @@ impl VzApp {
         let q = q.trim().to_string();
         let live: Vec<_> = self.snap.payments.iter().filter(|x| !x.is_reversed()).collect();
         let received: i64 = live.iter().map(|x| x.amount).sum();
-        let interest: i64 = live.iter().map(|x| x.interest + x.fee).sum();
+        let income: i64 = live.iter().map(|x| x.interest + x.fee).sum();
         let rows: Vec<_> = self
             .snap
             .payments
@@ -35,23 +37,25 @@ impl VzApp {
             })
             .collect();
 
+        let n = count(live.len(), "payment", "payments", "pago", "pagos");
+        let received = money.format(received);
         let header = page_header(
             &p,
-            "Payments",
+            t("Payments", "Pagos"),
             Some(
                 h_flex()
                     .gap(px(4.))
                     .font_features(tabular())
-                    .child(format!("{} payment{} · {} received, of which", live.len(), if live.len() == 1 { "" } else { "s" }, money.format(received)))
-                    .child(div().text_color(p.positive).child(money.format(interest)))
-                    .child("is income")
+                    .child(tr!("{n} · {received} received, of which", "{n} · {received} recibido, de los cuales"))
+                    .child(div().text_color(p.positive).child(money.format(income)))
+                    .child(t("is interest", "son interés"))
                     .into_any_element(),
             ),
             vec![
                 Button::new("pay-new")
                     .primary()
                     .icon(IconName::Plus)
-                    .label("Record payment")
+                    .label(t("Record payment", "Registrar pago"))
                     .tooltip("Ctrl+P")
                     .on_click(cx.listener(|this, _, w, cx| this.open_payment_form(None, w, cx)))
                     .into_any_element(),
@@ -62,28 +66,42 @@ impl VzApp {
             empty_state(
                 &p,
                 IconName::Receipt,
-                "No payments yet",
-                "Record what a client pays you. VZ Finance splits it into interest (income) and principal (capital returned).",
+                t("No payments yet", "Aún no hay pagos"),
+                t(
+                    "Record what a client pays you. Each payment is split into interest (your income) and capital (your money coming back).",
+                    "Registra lo que te paga un cliente. Cada pago se divide en interés (tu ganancia) y capital (tu dinero que regresa).",
+                ),
                 (!self.snap.loans.is_empty()).then(|| {
                     Button::new("pay-empty")
                         .primary()
-                        .label("Record payment")
+                        .label(t("Record payment", "Registrar pago"))
                         .on_click(cx.listener(|this, _, w, cx| this.open_payment_form(None, w, cx)))
                         .into_any_element()
                 }),
             )
             .into_any_element()
         } else if rows.is_empty() {
-            empty_state(&p, IconName::SearchX, "No matching payments", &format!("Nothing matches “{q}”."), None).into_any_element()
+            empty_state(&p, IconName::SearchX, t("No matching payments", "Ningún pago coincide"), &tr!("Nothing matches “{q}”.", "Nada coincide con “{q}”."), None)
+                .into_any_element()
         } else {
             let items = rows.iter().map(|x| {
                 let loan = self.snap.loan(x.loan_id);
                 let cid = loan.map(|l| l.client_id).unwrap_or(0);
                 let name = self.snap.client_name(cid).to_string();
                 let lid = x.loan_id;
+                let pid = x.id;
                 let rev = x.is_reversed();
                 let dim = |d: Div| if rev { d.text_color(p.muted).line_through() } else { d };
-                table_row(&p, ("payrow", x.id as u64), true)
+                let sub = if rev {
+                    let why = x.reversal_reason.clone().unwrap_or_default();
+                    tr!("Loan #{lid} · reversed: {why}", "Préstamo #{lid} · anulado: {why}")
+                } else if x.notes.is_empty() {
+                    tr!("Loan #{lid}", "Préstamo #{lid}")
+                } else {
+                    let note = &x.notes;
+                    tr!("Loan #{lid} · {note}", "Préstamo #{lid} · {note}")
+                };
+                table_row(&p, ("payrow", pid as u64), true)
                     .font_features(tabular())
                     .child(div().w(px(120.)).text_color(if rev { p.muted } else { p.text }).child(ds.format(x.paid_on)))
                     .child(
@@ -96,32 +114,43 @@ impl VzApp {
                                 v_flex()
                                     .min_w_0()
                                     .child(div().truncate().child(name))
-                                    .child(div().text_size(px(size::META)).text_color(p.muted).truncate().child(if rev {
-                                        format!("Loan #{lid} · reversed: {}", x.reversal_reason.clone().unwrap_or_default())
-                                    } else if x.notes.is_empty() {
-                                        format!("Loan #{lid}")
-                                    } else {
-                                        format!("Loan #{lid} · {}", x.notes)
+                                    .child(div().text_size(px(size::META)).text_color(p.muted).truncate().child(sub)),
+                            ),
+                    )
+                    .child(dim(ncolumn(110.).text_color(p.muted)).child(money.format(x.interest)))
+                    .child(dim(ncolumn(120.).text_color(p.muted)).child(money.format(x.principal)))
+                    .when(!narrow, |d| d.child(dim(ncolumn(90.).text_color(p.muted)).child(if x.fee > 0 { money.format(x.fee) } else { "—".into() })))
+                    .child(dim(ncolumn(130.)).child(money.format(x.amount)))
+                    .child(
+                        h_flex()
+                            .w(px(if narrow { 110. } else { 190. }))
+                            .justify_end()
+                            .gap(px(6.))
+                            .when(rev && !narrow, |d| d.child(pill(&p, t("Reversed", "Anulado"), Tone::Neutral)))
+                            .child(
+                                Button::new(("pay-receipt", pid as u64))
+                                    .ghost()
+                                    .small()
+                                    .icon(IconName::Printer)
+                                    .label(t("Receipt", "Recibo"))
+                                    .on_click(cx.listener(move |this, _, w, cx| {
+                                        cx.stop_propagation();
+                                        this.open_receipt(pid, w, cx)
                                     })),
                             ),
                     )
-                    .child(dim(ncolumn(120.).text_color(p.muted)).child(money.format(x.principal)))
-                    .child(dim(ncolumn(110.).text_color(p.muted)).child(money.format(x.interest)))
-                    .when(!narrow, |d| d.child(dim(ncolumn(90.).text_color(p.muted)).child(if x.fee > 0 { money.format(x.fee) } else { "—".into() })))
-                    .child(dim(ncolumn(130.)).child(money.format(x.amount)))
-                    .when(!narrow, |d| d.child(div().w(px(90.)).flex().justify_end().when(rev, |d| d.child(pill(&p, "Reversed", Tone::Neutral)))))
                     .on_click(cx.listener(move |this, _, w, cx| this.navigate(Route::Loan(lid), w, cx)))
             });
             v_flex()
                 .child(
                     table_header(&p)
-                        .child(div().w(px(120.)).child(th(&p, "Date")))
-                        .child(div().flex_1().min_w(px(180.)).child(th(&p, "Client")))
-                        .child(ncolumn(120.).child(th(&p, "Principal")))
-                        .child(ncolumn(110.).child(th(&p, "Interest")))
-                        .when(!narrow, |d| d.child(ncolumn(90.).child(th(&p, "Fee"))))
-                        .child(ncolumn(130.).child(th(&p, "Amount")))
-                        .when(!narrow, |d| d.child(div().w(px(90.)))),
+                        .child(div().w(px(120.)).child(th(&p, t("Date", "Fecha"))))
+                        .child(div().flex_1().min_w(px(180.)).child(th(&p, t("Client", "Cliente"))))
+                        .child(ncolumn(110.).child(th(&p, t("Interest", "Interés"))))
+                        .child(ncolumn(120.).child(th(&p, t("Capital", "Capital"))))
+                        .when(!narrow, |d| d.child(ncolumn(90.).child(th(&p, t("Fee", "Cargo")))))
+                        .child(ncolumn(130.).child(th(&p, t("Amount", "Monto"))))
+                        .child(div().w(px(if narrow { 110. } else { 190. }))),
                 )
                 .children(items)
                 .into_any_element()

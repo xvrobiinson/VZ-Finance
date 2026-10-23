@@ -7,7 +7,8 @@
 //! - Available cash = net capital invested - principal disbursed + all
 //!   payments received (principal, interest and fees).
 //! - Portfolio value = available cash + outstanding principal on performing
-//!   loans + accrued interest receivable on performing loans. Defaulted
+//!   loans + interest earned and not yet collected on performing loans.
+//!   Interest counts as earned on its period's due date. Defaulted
 //!   balances are excluded (written down) and reported separately.
 //! - Portfolio gain = portfolio value - net capital invested.
 //! - Return on invested capital = gain / net capital invested (simple, not
@@ -20,7 +21,7 @@ use chrono::NaiveDate;
 use crate::domain::ledger::{
     ContractStatus, Delinquency, DisplayStatus, LoanFacts, PaymentFact, Position, delinquency, display_status, position,
 };
-use crate::domain::loans::{Installment, schedule_totals};
+use crate::domain::loans::period_interest;
 use crate::domain::money::Cents;
 use crate::utils::dates::{add_months, month_start};
 
@@ -46,8 +47,8 @@ impl CapitalKind {
     }
     pub fn label(self) -> &'static str {
         match self {
-            CapitalKind::Contribution => "Capital added",
-            CapitalKind::Withdrawal => "Capital withdrawn",
+            CapitalKind::Contribution => crate::i18n::t("Capital added", "Capital agregado"),
+            CapitalKind::Withdrawal => crate::i18n::t("Capital withdrawn", "Capital retirado"),
         }
     }
 }
@@ -74,7 +75,6 @@ pub struct LoanBook {
     pub id: i64,
     pub client_id: i64,
     pub facts: LoanFacts,
-    pub schedule: Vec<Installment>,
     pub payments: Vec<PaymentFact>,
 }
 
@@ -83,7 +83,7 @@ impl LoanBook {
         position(&self.facts, &self.payments, as_of)
     }
     pub fn delinquency(&self, today: NaiveDate) -> Delinquency {
-        delinquency(&self.facts, &self.schedule, &self.payments, today)
+        delinquency(&self.facts, &self.payments, today)
     }
     pub fn display_status(&self, today: NaiveDate) -> DisplayStatus {
         display_status(&self.facts, &self.delinquency(today), today)
@@ -97,8 +97,10 @@ impl LoanBook {
             _ => true,
         }
     }
-    pub fn scheduled_interest(&self) -> Cents {
-        schedule_totals(&self.schedule).1
+    /// Interest earned (periods past their due date) and not yet collected.
+    pub fn interest_receivable(&self, pos: &Position, as_of: NaiveDate) -> Cents {
+        let earned: Cents = pos.periods.iter().filter(|p| p.due <= as_of).map(|p| p.interest).sum();
+        (earned - pos.interest_paid).max(0)
     }
 }
 
@@ -119,7 +121,7 @@ pub struct Summary {
     pub available_cash: Cents,
     /// Outstanding principal on performing (non-defaulted) loans.
     pub outstanding_principal: Cents,
-    /// Accrued, unpaid interest on performing loans.
+    /// Earned, uncollected interest on performing loans.
     pub interest_receivable: Cents,
     pub defaulted_principal: Cents,
     pub defaulted_interest: Cents,
@@ -128,8 +130,8 @@ pub struct Summary {
     pub overdue_loans: usize,
     pub due_soon_loans: usize,
     pub overdue_amount: Cents,
-    /// Contractual interest not yet collected on active loans (projection).
-    pub expected_interest_remaining: Cents,
+    /// Interest active loans produce per month at their current capital.
+    pub expected_monthly_interest: Cents,
 }
 
 impl Summary {
@@ -170,10 +172,10 @@ impl Book {
             s.fees_collected += pos.fees_paid;
             if loan.performing_on(as_of) {
                 s.outstanding_principal += pos.principal_outstanding;
-                s.interest_receivable += pos.interest_outstanding;
+                s.interest_receivable += loan.interest_receivable(&pos, as_of);
             } else {
                 s.defaulted_principal += pos.principal_outstanding;
-                s.defaulted_interest += pos.interest_outstanding;
+                s.defaulted_interest += loan.interest_receivable(&pos, as_of);
             }
             let active = loan.facts.status == ContractStatus::Active && pos.payoff() > 0;
             if active {
@@ -185,7 +187,8 @@ impl Book {
                     DisplayStatus::DueSoon => s.due_soon_loans += 1,
                     _ => {}
                 }
-                s.expected_interest_remaining += (loan.scheduled_interest() - pos.interest_paid).max(0);
+                s.expected_monthly_interest +=
+                    period_interest(pos.principal_outstanding, loan.facts.rate) * loan.facts.frequency.periods_per_month();
             }
         }
         s.available_cash = s.net_invested() - s.principal_disbursed + s.total_received();
@@ -326,33 +329,16 @@ impl MonthFlow {
     }
 }
 
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::domain::ledger::allocate;
-    use crate::domain::loans::{Frequency, InterestMethod, LoanTerms};
+    use crate::domain::loans::Frequency;
     use crate::domain::money::Rate;
 
     fn d(y: i32, m: u32, day: u32) -> NaiveDate {
         NaiveDate::from_ymd_opt(y, m, day).unwrap()
-    }
-
-    fn loan_book(id: i64, terms: LoanTerms) -> LoanBook {
-        LoanBook {
-            id,
-            client_id: 1,
-            facts: LoanFacts {
-                principal: terms.principal,
-                rate: terms.rate,
-                method: terms.method,
-                start_date: terms.start_date,
-                maturity_date: terms.maturity_date(),
-                status: ContractStatus::Active,
-                closed_on: None,
-            },
-            schedule: terms.schedule().unwrap(),
-            payments: Vec::new(),
-        }
     }
 
     fn pay(l: &mut LoanBook, amount: Cents, on: NaiveDate) {
@@ -364,74 +350,84 @@ mod tests {
     }
 
     /// A fixture with known results:
-    /// - Jan 1: contribute 20,000.00
-    /// - Jan 1: lend 10,000.00 simple, 12%, 12 months (365 days)
-    /// - Jul 1: borrower pays 2,000.00 (interest 595.07 for 181 days, principal 1,404.93)
-    /// - Aug 1: withdraw 1,000.00
+    /// - Jan 1: add 20,000.00 of capital; lend 10,000.00 at 10% a month
+    /// - Feb 1: client pays 3,000.00 = 1,000.00 interest + 2,000.00 capital
+    /// - Mar 1: client pays 800.00 = February's interest on 8,000.00
+    /// - Apr 15: withdraw 1,000.00 (April's 800.00 is left unpaid)
     fn fixture() -> Book {
-        let mut l = loan_book(
-            1,
-            LoanTerms {
+        let mut l = LoanBook {
+            id: 1,
+            client_id: 1,
+            facts: LoanFacts {
                 principal: 1_000_000,
-                rate: Rate(120_000),
-                method: InterestMethod::Simple,
-                frequency: Frequency::AtMaturity,
-                term_count: 12,
+                rate: Rate(100_000),
+                frequency: Frequency::Monthly,
                 start_date: d(2026, 1, 1),
+                status: ContractStatus::Active,
+                closed_on: None,
             },
-        );
-        pay(&mut l, 200_000, d(2026, 7, 1));
+            payments: Vec::new(),
+        };
+        pay(&mut l, 300_000, d(2026, 2, 1));
+        pay(&mut l, 80_000, d(2026, 3, 1));
         Book {
             loans: vec![l],
             capital: vec![
                 CapitalFact { kind: CapitalKind::Contribution, amount: 2_000_000, occurred_on: d(2026, 1, 1) },
-                CapitalFact { kind: CapitalKind::Withdrawal, amount: 100_000, occurred_on: d(2026, 8, 1) },
+                CapitalFact { kind: CapitalKind::Withdrawal, amount: 100_000, occurred_on: d(2026, 4, 15) },
             ],
         }
     }
 
     #[test]
-    fn disbursement_is_not_a_loss_and_repayment_is_not_income() {
+    fn lending_is_not_a_loss_and_capital_back_is_not_income() {
         let book = fixture();
         let s = book.summary(d(2026, 1, 1));
         assert_eq!(s.available_cash, 1_000_000);
         assert_eq!(s.outstanding_principal, 1_000_000);
+        // January's interest is earned on its due date, not on the day lent.
+        assert_eq!(s.interest_receivable, 0);
         assert_eq!(s.portfolio_value, 2_000_000);
         assert_eq!(s.gain(), 0);
 
-        let s = book.summary(d(2026, 7, 1));
-        assert_eq!(s.interest_collected, 59_507);
-        assert_eq!(s.principal_repaid, 200_000 - 59_507);
-        assert_eq!(s.realized_income(), 59_507);
-        assert_eq!(s.interest_receivable, 0);
-        assert_eq!(s.gain(), 59_507);
+        let s = book.summary(d(2026, 2, 1));
+        assert_eq!(s.interest_collected, 100_000);
+        assert_eq!(s.principal_repaid, 200_000);
+        assert_eq!(s.outstanding_principal, 800_000);
+        assert_eq!(s.realized_income(), 100_000);
+        assert_eq!(s.gain(), 100_000);
+    }
+
+    #[test]
+    fn unpaid_interest_is_receivable_once_due() {
+        let book = fixture();
+        assert_eq!(book.summary(d(2026, 3, 31)).interest_receivable, 0);
+        let s = book.summary(d(2026, 4, 1));
+        assert_eq!(s.interest_receivable, 80_000);
+        assert_eq!(s.gain(), 100_000 + 80_000 + 80_000);
+        assert_eq!(s.expected_monthly_interest, 80_000);
     }
 
     #[test]
     fn withdrawal_is_not_a_loss() {
         let book = fixture();
-        let before = book.summary(d(2026, 7, 31));
-        let after = book.summary(d(2026, 8, 1));
+        let before = book.summary(d(2026, 4, 14));
+        let after = book.summary(d(2026, 4, 15));
         assert_eq!(after.net_invested(), 1_900_000);
-        // One day of interest accrued between the two dates; the withdrawal
-        // itself does not change the gain.
-        let one_day = after.interest_receivable - before.interest_receivable;
-        assert_eq!(after.gain() - before.gain(), one_day);
+        assert_eq!(after.gain(), before.gain());
     }
 
     #[test]
     fn ledger_invariants_hold_every_day() {
         let book = fixture();
         let mut day = d(2025, 12, 30);
-        while day <= d(2027, 3, 1) {
+        while day <= d(2026, 12, 31) {
             let s = book.summary(day);
-            // Cash + all principal still owed = capital + income received.
             assert_eq!(
                 s.available_cash + s.outstanding_principal + s.defaulted_principal,
                 s.net_invested() + s.interest_collected + s.fees_collected,
                 "{day}"
             );
-            // Gain = realized income + receivable - write-downs.
             assert_eq!(s.gain(), s.realized_income() + s.interest_receivable - s.defaulted_principal, "{day}");
             assert_eq!(book.cash_on(day), s.available_cash, "{day}");
             day += chrono::Duration::days(1);
@@ -442,12 +438,11 @@ mod tests {
     fn default_writes_down_the_balance() {
         let mut book = fixture();
         book.loans[0].facts.status = ContractStatus::Defaulted;
-        book.loans[0].facts.closed_on = Some(d(2026, 9, 1));
-        let before = book.summary(d(2026, 8, 31));
-        assert_eq!(before.defaulted_principal, 0);
-        let s = book.summary(d(2026, 10, 1));
+        book.loans[0].facts.closed_on = Some(d(2026, 5, 10));
+        assert_eq!(book.summary(d(2026, 5, 9)).defaulted_principal, 0);
+        let s = book.summary(d(2026, 6, 1));
         assert_eq!(s.outstanding_principal, 0);
-        assert_eq!(s.defaulted_principal, 1_000_000 - (200_000 - 59_507));
+        assert_eq!(s.defaulted_principal, 800_000);
         assert_eq!(s.active_loans, 0);
         assert_eq!(s.portfolio_value, s.available_cash);
     }
@@ -455,11 +450,9 @@ mod tests {
     #[test]
     fn overdue_totals_roll_up() {
         let book = fixture();
-        let s = book.summary(d(2027, 1, 11));
-        // Simple loan matured Jan 1 2027 with a balance outstanding.
+        let s = book.summary(d(2026, 4, 10));
         assert_eq!(s.overdue_loans, 1);
-        let pos = book.loans[0].position(d(2027, 1, 11));
-        assert_eq!(s.overdue_amount, pos.payoff());
+        assert_eq!(s.overdue_amount, 80_000);
     }
 
     #[test]
@@ -478,21 +471,21 @@ mod tests {
     #[test]
     fn monthly_cash_flow_reconciles_to_cash() {
         let book = fixture();
-        let flows = book.monthly_cash_flow(d(2026, 9, 15));
-        assert_eq!(flows.len(), 9);
+        let flows = book.monthly_cash_flow(d(2026, 4, 20));
+        assert_eq!(flows.len(), 4);
         assert_eq!(flows[0].contributions, 2_000_000);
         assert_eq!(flows[0].disbursed, 1_000_000);
-        assert_eq!(flows[6].interest_received, 59_507);
-        assert_eq!(flows[7].withdrawals, 100_000);
-        assert_eq!(flows.last().unwrap().ending_cash, book.cash_on(d(2026, 9, 15)));
+        assert_eq!((flows[1].interest_received, flows[1].principal_returned), (100_000, 200_000));
+        assert_eq!(flows[2].interest_received, 80_000);
+        assert_eq!(flows[3].withdrawals, 100_000);
+        assert_eq!(flows.last().unwrap().ending_cash, book.cash_on(d(2026, 4, 20)));
     }
 
     #[test]
     fn min_cash_guards_future_outflows() {
         let book = fixture();
-        // Cash on Jan 1 is 10,000; the Aug 1 withdrawal leaves less later.
         assert_eq!(book.cash_on(d(2026, 1, 1)), 1_000_000);
         assert_eq!(book.min_cash_from(d(2026, 1, 1)), 1_000_000);
-        assert_eq!(book.min_cash_from(d(2026, 7, 15)), 1_100_000);
+        assert_eq!(book.min_cash_from(d(2026, 3, 15)), 1_280_000);
     }
 }

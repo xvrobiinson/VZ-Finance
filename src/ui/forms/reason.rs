@@ -2,14 +2,15 @@
 //! payment and marking a loan as defaulted.
 
 use gpui_kit::component::button::{Button, ButtonVariants as _};
-use gpui_kit::component::date_picker::{DatePicker, DatePickerEvent, DatePickerState};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::{Disableable as _, WindowExt as _, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
-use super::{date_picker, error_banner, field, picked_date, value};
+use super::date_field::{DateChanged, DateField};
+use super::{date_field, error_banner, field, picked_date, value};
 use crate::app::VzApp;
+use crate::i18n::t;
 use crate::ui::theme::{palette, space};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -22,7 +23,7 @@ pub struct ReasonForm {
     app: WeakEntity<VzApp>,
     kind: ReasonKind,
     pub reason: Entity<InputState>,
-    date: Entity<DatePickerState>,
+    date: Entity<DateField>,
     error: Option<String>,
     _subs: Vec<Subscription>,
 }
@@ -31,18 +32,18 @@ impl ReasonForm {
     pub fn new(app: WeakEntity<VzApp>, kind: ReasonKind, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let reason = cx.new(|cx| {
             InputState::new(window, cx).placeholder(match kind {
-                ReasonKind::ReversePayment(_) => "e.g. Entered twice, wrong amount",
-                ReasonKind::MarkDefaulted(_) => "Optional: what happened",
+                ReasonKind::ReversePayment(_) => t("e.g. Entered twice, wrong amount", "ej. Registrado dos veces, monto equivocado"),
+                ReasonKind::MarkDefaulted(_) => t("Optional: what happened", "Opcional: qué pasó"),
             })
         });
-        let date = date_picker(crate::utils::dates::today(), window, cx);
+        let date = date_field(crate::utils::dates::today(), window, cx);
         let subs = vec![
             cx.subscribe_in(&reason, window, |_, _, ev: &InputEvent, _, cx| {
                 if let InputEvent::Change = ev {
                     cx.notify()
                 }
             }),
-            cx.subscribe_in(&date, window, |_, _, _: &DatePickerEvent, _, cx| cx.notify()),
+            cx.subscribe(&date, |_, _, _: &DateChanged, cx| cx.notify()),
         ];
         Self { app, kind, reason, date, error: None, _subs: subs }
     }
@@ -73,8 +74,11 @@ impl ReasonForm {
                 let _ = self.app.update(cx, |app, cx| {
                     app.notify_success(
                         match kind {
-                            ReasonKind::ReversePayment(_) => "Payment reversed. The original stays on record.",
-                            ReasonKind::MarkDefaulted(_) => "Loan marked as defaulted. Its balance is excluded from portfolio value.",
+                            ReasonKind::ReversePayment(_) => t("Payment reversed. The original stays on record.", "Pago anulado. El original queda en el historial."),
+                            ReasonKind::MarkDefaulted(_) => t(
+                                "Loan marked as defaulted. Its balance is excluded from portfolio value.",
+                                "Préstamo marcado como incobrable. Su saldo queda fuera del valor de la cartera.",
+                            ),
                         },
                         window,
                         cx,
@@ -96,13 +100,19 @@ impl Render for ReasonForm {
         let reason = value(&self.reason, cx);
         let (explain, label, can) = match self.kind {
             ReasonKind::ReversePayment(_) => (
-                "The payment stays in the history, marked as reversed, and no longer counts toward balances, interest or cash.",
-                "Reverse payment",
+                t(
+                    "The payment stays in the history, marked as reversed, and no longer counts toward balances, interest or cash.",
+                    "El pago queda en el historial marcado como anulado y deja de contar en saldos, intereses y efectivo.",
+                ),
+                t("Reverse payment", "Anular pago"),
                 !reason.trim().is_empty(),
             ),
             ReasonKind::MarkDefaulted(_) => (
-                "Interest stops accruing on the default date and the remaining balance is excluded from portfolio value. You can reinstate the loan later.",
-                "Mark as defaulted",
+                t(
+                    "No new interest is charged after this date and the balance is left out of portfolio value. You can reinstate the loan later.",
+                    "No se cobra más interés después de esta fecha y el saldo queda fuera del valor de la cartera. Puedes reactivar el préstamo luego.",
+                ),
+                t("Mark as defaulted", "Marcar incobrable"),
                 picked_date(&self.date, cx).is_some(),
             ),
         };
@@ -110,14 +120,14 @@ impl Render for ReasonForm {
             .gap(px(space::L))
             .children(error_banner(&p, &self.error))
             .child(div().text_color(p.muted).child(explain))
-            .when(matches!(self.kind, ReasonKind::MarkDefaulted(_)), |d| d.child(field(&p, "Default date", DatePicker::new(&self.date), None, None)))
-            .child(field(&p, "Reason", Input::new(&self.reason), None, None))
+            .when(matches!(self.kind, ReasonKind::MarkDefaulted(_)), |d| d.child(field(&p, t("Date", "Fecha"), self.date.clone(), None, None)))
+            .child(field(&p, t("Reason", "Motivo"), Input::new(&self.reason), None, None))
             .child(
                 h_flex()
                     .justify_end()
                     .gap(px(space::S))
                     .pt(px(space::S))
-                    .child(Button::new("cancel").label("Cancel").on_click(|_, window, cx| window.close_dialog(cx)))
+                    .child(Button::new("cancel").label(t("Cancel", "Cancelar")).on_click(|_, window, cx| window.close_dialog(cx)))
                     .child(Button::new("confirm").danger().label(label).disabled(!can).on_click(cx.listener(|this, _, w, cx| this.submit(w, cx)))),
             )
     }

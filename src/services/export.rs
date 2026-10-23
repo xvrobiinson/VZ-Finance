@@ -39,7 +39,7 @@ pub fn export_all(snap: &Snapshot, dir: &Path) -> Result<Vec<PathBuf>> {
 
     let (mut w, path) = file("loans")?;
     w.write_record([
-        "id", "client_id", "client", "principal", "annual_rate_percent", "method", "frequency", "term_count", "start_date", "maturity_date", "status", "notes",
+        "id", "client_id", "client", "principal", "rate_percent_per_period", "frequency", "start_date", "status", "notes",
     ])?;
     for l in &snap.loans {
         w.write_record([
@@ -48,11 +48,8 @@ pub fn export_all(snap: &Snapshot, dir: &Path) -> Result<Vec<PathBuf>> {
             snap.client_name(l.client_id).to_string(),
             amount(l.terms.principal),
             l.terms.rate.percent_label().trim_end_matches('%').to_string(),
-            l.terms.method.key().to_string(),
             l.terms.frequency.key().to_string(),
-            l.terms.term_count.to_string(),
             to_iso(l.terms.start_date),
-            to_iso(l.maturity_date),
             l.status.key().to_string(),
             l.notes.clone(),
         ])?;

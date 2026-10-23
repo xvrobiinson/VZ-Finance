@@ -1,5 +1,7 @@
 use chrono::{Datelike, Local, Months, NaiveDate};
 
+use crate::i18n::{self, Lang};
+
 pub const ISO: &str = "%Y-%m-%d";
 
 pub fn today() -> NaiveDate {
@@ -28,14 +30,10 @@ pub fn month_start(d: NaiveDate) -> NaiveDate {
     NaiveDate::from_ymd_opt(d.year(), d.month(), 1).unwrap_or(d)
 }
 
-pub fn next_month_start(d: NaiveDate) -> NaiveDate {
-    add_months(month_start(d), 1)
-}
-
 /// User-selectable date display formats.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum DateStyle {
-    /// Oct 21, 2026
+    /// Oct 21, 2026 / 21 oct 2026
     #[default]
     Medium,
     /// 2026-10-21
@@ -65,36 +63,100 @@ impl DateStyle {
             _ => DateStyle::Medium,
         }
     }
-    pub fn pattern(self) -> &'static str {
+
+    pub fn format_in(self, d: NaiveDate, lang: Lang) -> String {
         match self {
-            DateStyle::Medium => "%b %-d, %Y",
-            DateStyle::Iso => "%Y-%m-%d",
-            DateStyle::DayMonthYear => "%d/%m/%Y",
-            DateStyle::MonthDayYear => "%m/%d/%Y",
+            DateStyle::Medium => match lang {
+                Lang::En => format!("{} {}, {}", short_month_in(d.month(), lang), d.day(), d.year()),
+                Lang::Es => format!("{} {} {}", d.day(), short_month_in(d.month(), lang), d.year()),
+            },
+            DateStyle::Iso => d.format("%Y-%m-%d").to_string(),
+            DateStyle::DayMonthYear => d.format("%d/%m/%Y").to_string(),
+            DateStyle::MonthDayYear => d.format("%m/%d/%Y").to_string(),
         }
     }
+
     pub fn format(self, d: NaiveDate) -> String {
-        d.format(self.pattern()).to_string()
+        self.format_in(d, i18n::get())
     }
+
     /// Short form without the year when it is the current year ("Oct 21").
     pub fn format_short(self, d: NaiveDate, today: NaiveDate) -> String {
+        let lang = i18n::get();
         match self {
-            DateStyle::Medium if d.year() == today.year() => d.format("%b %-d").to_string(),
-            _ => self.format(d),
+            DateStyle::Medium if d.year() == today.year() => match lang {
+                Lang::En => format!("{} {}", short_month_in(d.month(), lang), d.day()),
+                Lang::Es => format!("{} {}", d.day(), short_month_in(d.month(), lang)),
+            },
+            _ => self.format_in(d, lang),
         }
     }
 }
 
-/// "Today", "Yesterday", "in 3 days", "12 days ago".
-pub fn relative_days(d: NaiveDate, today: NaiveDate) -> String {
-    let n = days_between(today, d);
-    match n {
-        0 => "Today".into(),
-        1 => "Tomorrow".into(),
-        -1 => "Yesterday".into(),
-        n if n > 1 => format!("in {n} days"),
-        n => format!("{} days ago", -n),
+fn short_month_in(m: u32, lang: Lang) -> String {
+    const EN: [&str; 12] = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+    const ES: [&str; 12] = ["ene", "feb", "mar", "abr", "may", "jun", "jul", "ago", "sept", "oct", "nov", "dic"];
+    let i = (m.clamp(1, 12) - 1) as usize;
+    match lang {
+        Lang::En => EN[i].to_string(),
+        Lang::Es => ES[i].to_string(),
     }
+}
+
+/// "October 2026" / "Octubre 2026".
+pub fn month_year(d: NaiveDate) -> String {
+    let name = i18n::month_name(d.month());
+    let mut c = name.chars();
+    let name = c.next().map(|f| f.to_uppercase().collect::<String>() + c.as_str()).unwrap_or_default();
+    format!("{name} {}", d.year())
+}
+
+/// "Oct 2026" / "oct 2026".
+pub fn short_month_year(d: NaiveDate) -> String {
+    format!("{} {}", short_month_in(d.month(), i18n::get()), d.year())
+}
+
+pub fn short_month(d: NaiveDate) -> String {
+    short_month_in(d.month(), i18n::get())
+}
+
+/// The numeric pattern used for typed dates: dd/mm/yyyy in Spanish,
+/// mm/dd/yyyy in English.
+pub fn input_format(lang: Lang) -> &'static str {
+    match lang {
+        Lang::Es => "%d/%m/%Y",
+        Lang::En => "%m/%d/%Y",
+    }
+}
+
+pub fn input_placeholder(lang: Lang) -> &'static str {
+    match lang {
+        Lang::Es => "dd/mm/aaaa",
+        Lang::En => "mm/dd/yyyy",
+    }
+}
+
+/// Parses a typed date in the language's numeric order. Also accepts ISO
+/// (2026-10-21), dashes or dots as separators, and two-digit years.
+pub fn parse_input(s: &str, lang: Lang) -> Option<NaiveDate> {
+    let s = s.trim();
+    // ISO only when it starts with a four-digit year ("2026-10-21").
+    if s.split('-').next().is_some_and(|y| y.len() == 4)
+        && let Some(d) = parse_iso(s)
+    {
+        return Some(d);
+    }
+    let parts: Vec<&str> = s.split(['/', '-', '.', ' ']).filter(|p| !p.is_empty()).collect();
+    if parts.len() != 3 {
+        return None;
+    }
+    let nums: Vec<u32> = parts.iter().map(|p| p.parse().ok()).collect::<Option<_>>()?;
+    let (day, month) = match lang {
+        Lang::Es => (nums[0], nums[1]),
+        Lang::En => (nums[1], nums[0]),
+    };
+    let year = if nums[2] < 100 { 2000 + nums[2] as i32 } else { nums[2] as i32 };
+    NaiveDate::from_ymd_opt(year, month, day)
 }
 
 #[cfg(test)]
@@ -114,10 +176,20 @@ mod tests {
     }
 
     #[test]
-    fn formats() {
-        assert_eq!(DateStyle::Medium.format(d(2026, 10, 1)), "Oct 1, 2026");
-        assert_eq!(DateStyle::Iso.format(d(2026, 10, 1)), "2026-10-01");
-        assert_eq!(DateStyle::Medium.format_short(d(2026, 10, 1), d(2026, 12, 1)), "Oct 1");
-        assert_eq!(relative_days(d(2026, 10, 1), d(2026, 10, 13)), "12 days ago");
+    fn formats_in_both_languages() {
+        assert_eq!(DateStyle::Medium.format_in(d(2026, 10, 1), Lang::En), "Oct 1, 2026");
+        assert_eq!(DateStyle::Medium.format_in(d(2026, 10, 1), Lang::Es), "1 oct 2026");
+        assert_eq!(DateStyle::Iso.format_in(d(2026, 10, 1), Lang::Es), "2026-10-01");
+        assert_eq!(DateStyle::DayMonthYear.format_in(d(2026, 10, 1), Lang::En), "01/10/2026");
+    }
+
+    #[test]
+    fn parses_typed_dates() {
+        assert_eq!(parse_input("21/10/2026", Lang::Es), Some(d(2026, 10, 21)));
+        assert_eq!(parse_input("10/21/2026", Lang::En), Some(d(2026, 10, 21)));
+        assert_eq!(parse_input("2026-10-21", Lang::Es), Some(d(2026, 10, 21)));
+        assert_eq!(parse_input("5-1-26", Lang::Es), Some(d(2026, 1, 5)));
+        assert_eq!(parse_input("31/02/2026", Lang::Es), None);
+        assert_eq!(parse_input("hoy", Lang::Es), None);
     }
 }

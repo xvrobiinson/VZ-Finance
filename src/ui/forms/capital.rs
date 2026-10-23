@@ -1,15 +1,17 @@
 use std::rc::Rc;
 
-use gpui_kit::component::date_picker::{DatePicker, DatePickerEvent, DatePickerState};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::{WindowExt as _, h_flex, v_flex};
 use gpui_kit::*;
 
-use super::{date_picker, error_banner, field, footer, picked_date, value};
+use super::date_field::{DateChanged, DateField};
+use super::{date_field, error_banner, field, footer, invalid_date, picked_date, value};
 use crate::app::VzApp;
 use crate::domain::money::parse_money;
 use crate::domain::portfolio::CapitalKind;
+use crate::i18n::t;
 use crate::services::Snapshot;
+use crate::tr;
 use crate::ui::theme::{palette, space};
 
 pub struct CapitalForm {
@@ -17,7 +19,7 @@ pub struct CapitalForm {
     snap: Rc<Snapshot>,
     pub kind: CapitalKind,
     pub amount: Entity<InputState>,
-    date: Entity<DatePickerState>,
+    date: Entity<DateField>,
     notes: Entity<InputState>,
     error: Option<String>,
     show_errors: bool,
@@ -29,12 +31,12 @@ impl CapitalForm {
         let amount = cx.new(|cx| InputState::new(window, cx).placeholder("0.00"));
         let notes = cx.new(|cx| {
             InputState::new(window, cx).placeholder(match kind {
-                CapitalKind::Contribution => "Optional: source, e.g. savings account",
-                CapitalKind::Withdrawal => "Optional: reason",
+                CapitalKind::Contribution => t("Optional: source, e.g. savings account", "Opcional: origen, ej. cuenta de ahorros"),
+                CapitalKind::Withdrawal => t("Optional: reason", "Opcional: motivo"),
             })
         });
-        let date = date_picker(crate::utils::dates::today(), window, cx);
-        let mut subs = vec![cx.subscribe_in(&date, window, |_, _, _: &DatePickerEvent, _, cx| cx.notify())];
+        let date = date_field(crate::utils::dates::today(), window, cx);
+        let mut subs = vec![cx.subscribe(&date, |_, _, _: &DateChanged, cx| cx.notify())];
         for input in [&amount, &notes] {
             subs.push(cx.subscribe_in(input, window, |_, _, ev: &InputEvent, _, cx| {
                 if let InputEvent::Change = ev {
@@ -71,8 +73,8 @@ impl CapitalForm {
                 let _ = self.app.update(cx, |app, cx| {
                     let m = app.settings().money().format(amount);
                     let msg = match kind {
-                        CapitalKind::Contribution => format!("{m} added to your lending capital"),
-                        CapitalKind::Withdrawal => format!("{m} withdrawn from your lending capital"),
+                        CapitalKind::Contribution => tr!("{m} added to your lending capital", "{m} agregado a tu capital de préstamos"),
+                        CapitalKind::Withdrawal => tr!("{m} withdrawn from your lending capital", "{m} retirado de tu capital de préstamos"),
                     };
                     app.notify_success(msg, window, cx);
                 });
@@ -91,19 +93,29 @@ impl Render for CapitalForm {
         let p = palette(cx);
         let money = self.snap.settings.money();
         let amount = parse_money(&value(&self.amount, cx));
-        let date = picked_date(&self.date, cx).unwrap_or(crate::utils::dates::today());
+        let picked = picked_date(&self.date, cx);
+        let date = picked.unwrap_or(crate::utils::dates::today());
+        let avail = money.format(self.snap.book.min_cash_from(date).max(0));
         let available = self.snap.book.min_cash_from(date).max(0);
         let amount_err = match (&amount, self.kind) {
             (Err(e), _) if self.show_errors => Some(e.to_string()),
-            (Ok(a), CapitalKind::Withdrawal) if *a > available => Some(format!("Only {} is available to withdraw", money.format(available))),
-            (Ok(0), _) if self.show_errors => Some("Enter an amount greater than zero".into()),
+            (Ok(a), CapitalKind::Withdrawal) if *a > available => Some(tr!("Only {avail} is available to withdraw", "Solo hay {avail} disponible para retirar")),
+            (Ok(0), _) if self.show_errors => Some(t("Enter an amount greater than zero", "Escribe un monto mayor que cero").into()),
             _ => None,
         };
         let hint = match self.kind {
-            CapitalKind::Contribution => "Personal money set aside for lending. Not counted as profit.".to_string(),
-            CapitalKind::Withdrawal => format!("Available to withdraw: {}", money.format(available)),
+            CapitalKind::Contribution => t(
+                "Personal money set aside for lending. Not counted as profit.",
+                "Dinero propio apartado para prestar. No cuenta como ganancia.",
+            )
+            .to_string(),
+            CapitalKind::Withdrawal => tr!("Available to withdraw: {avail}", "Disponible para retirar: {avail}"),
         };
-        let date_err = (date > crate::utils::dates::today()).then(|| "The date can't be in the future".to_string());
+        let date_err = if picked.is_none() {
+            Some(invalid_date())
+        } else {
+            (date > crate::utils::dates::today()).then(|| t("The date can't be in the future", "La fecha no puede ser futura").to_string())
+        };
         let can_submit = matches!(amount, Ok(a) if a > 0) && amount_err.is_none() && date_err.is_none();
         v_flex()
             .gap(px(space::L))
@@ -114,19 +126,19 @@ impl Render for CapitalForm {
                     .gap(px(space::M))
                     .child(div().flex_1().child(field(
                         &p,
-                        "Amount",
+                        t("Amount", "Monto"),
                         Input::new(&self.amount).prefix(div().text_color(p.muted).child(money.symbol.clone())),
                         Some(hint),
                         amount_err,
                     )))
-                    .child(div().w(px(200.)).child(field(&p, "Date", DatePicker::new(&self.date), None, date_err))),
+                    .child(div().w(px(200.)).child(field(&p, t("Date", "Fecha"), self.date.clone(), None, date_err))),
             )
-            .child(field(&p, "Note", Input::new(&self.notes), None, None))
+            .child(field(&p, t("Note", "Nota"), Input::new(&self.notes), None, None))
             .child(footer(
                 &p,
                 match self.kind {
-                    CapitalKind::Contribution => "Add capital",
-                    CapitalKind::Withdrawal => "Withdraw",
+                    CapitalKind::Contribution => t("Add capital", "Agregar capital"),
+                    CapitalKind::Withdrawal => t("Withdraw", "Retirar"),
                 },
                 can_submit,
                 false,

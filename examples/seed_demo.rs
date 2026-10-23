@@ -1,6 +1,6 @@
 //! Builds a demo database for screenshots and manual testing.
 //!
-//!     cargo run --example seed_demo -- <path-to-new.db>
+//!     cargo run --example seed_demo -- <path-to-new.db> [es]
 //!
 //! Refuses to touch an existing file. Every record goes through the same
 //! validated services the app uses, with dates relative to today.
@@ -8,49 +8,46 @@
 use anyhow::{Result, bail};
 use chrono::{Duration, NaiveDate};
 use vz_finance::database::repositories::clients::ClientInput;
-use vz_finance::domain::loans::{Frequency, InterestMethod, LoanTerms};
-use vz_finance::domain::money::Rate;
+use vz_finance::domain::ledger::{delinquency, owed_at_payment};
+use vz_finance::domain::loans::{Frequency, LoanTerms};
+use vz_finance::domain::money::{Cents, Rate};
 use vz_finance::domain::portfolio::CapitalKind;
+use vz_finance::i18n::Lang;
 use vz_finance::services::Store;
 use vz_finance::utils::dates::today;
 
-fn client(s: &mut Store, name: &str, phone: &str, email: &str, notes: &str) -> Result<i64> {
-    s.create_client(&ClientInput { full_name: name.into(), phone: phone.into(), email: email.into(), notes: notes.into() })
+fn client(s: &mut Store, name: &str, phone: &str, notes: &str) -> Result<i64> {
+    s.create_client(&ClientInput { full_name: name.into(), phone: phone.into(), email: String::new(), notes: notes.into() })
 }
 
-#[allow(clippy::too_many_arguments)]
-fn loan(s: &mut Store, client: i64, principal: i64, rate_pct: i64, method: InterestMethod, freq: Frequency, n: u32, start: NaiveDate, notes: &str) -> Result<i64> {
-    let terms = LoanTerms { principal, rate: Rate(rate_pct * 10_000), method, frequency: freq, term_count: n, start_date: start };
-    s.create_loan(client, &terms, notes, today())
+fn loan(s: &mut Store, client: i64, principal: Cents, pct: i64, frequency: Frequency, start: NaiveDate) -> Result<i64> {
+    let terms = LoanTerms { principal, rate: Rate(pct * 10_000), frequency, start_date: start };
+    s.create_loan(client, &terms, "", today())
 }
 
-/// Pays each scheduled installment on its due date while `keep(seq)` holds.
-fn pay_on_schedule(s: &mut Store, loan_id: i64, keep: impl Fn(u32) -> Option<i64>) -> Result<()> {
-    let book = s.snapshot()?.book_loan(loan_id).cloned().expect("loan");
-    for row in &book.schedule {
-        if row.due_date > today() {
+/// Pays on each due date until today: `extra(period)` is the capital paid on
+/// top of the interest, or `None` to skip that payment.
+fn pay_periods(s: &mut Store, loan_id: i64, extra: impl Fn(u32) -> Option<Cents>) -> Result<()> {
+    for k in 1..200 {
+        let snap = s.snapshot()?;
+        let book = snap.book_loan(loan_id).unwrap();
+        let due = book.facts.frequency.due_date(book.facts.start_date, k);
+        if due > today() || snap.loan(loan_id).unwrap().status != vz_finance::domain::ledger::ContractStatus::Active {
             break;
         }
-        match keep(row.seq) {
-            Some(0) => break,
-            Some(amount) => {
-                s.record_payment(loan_id, amount, 0, row.due_date, "", today())?;
-            }
-            None => {
-                // Pay what is actually owed on the day, capped at the payoff.
-                let pos = s.snapshot()?.book_loan(loan_id).unwrap().position(row.due_date);
-                let amount = row.total().min(pos.payoff());
-                if amount > 0 {
-                    s.record_payment(loan_id, amount, 0, row.due_date, "", today())?;
-                }
-            }
+        let Some(capital) = extra(k) else { continue };
+        let owed = owed_at_payment(&book.facts, &book.payments, due);
+        let amount = (owed.interest_outstanding + capital).min(owed.payoff());
+        if amount > 0 {
+            s.record_payment(loan_id, amount, 0, due, "", today())?;
         }
     }
     Ok(())
 }
 
 fn main() -> Result<()> {
-    let Some(path) = std::env::args().nth(1) else { bail!("usage: seed_demo <path-to-new.db>") };
+    let Some(path) = std::env::args().nth(1) else { bail!("usage: seed_demo <path-to-new.db> [es]") };
+    let spanish = std::env::args().nth(2).as_deref() == Some("es");
     let path = std::path::PathBuf::from(path);
     if path.exists() {
         bail!("{} already exists; refusing to modify it", path.display());
@@ -59,50 +56,75 @@ fn main() -> Result<()> {
     let t = today();
     let ago = |d: i64| t - Duration::days(d);
 
-    s.add_capital(CapitalKind::Contribution, 4_000_000, ago(230), "Savings set aside for lending", t)?;
-    s.add_capital(CapitalKind::Contribution, 1_500_000, ago(120), "Bonus", t)?;
+    let mut settings = s.snapshot()?.settings;
+    settings.business_name = "Préstamos Valdez".into();
+    settings.currency_code = "DOP".into();
+    if spanish {
+        settings.language = Lang::Es;
+    }
+    s.save_settings(&settings)?;
 
-    let marta = client(&mut s, "Marta Quiroga", "+1 (305) 555-0142", "marta.quiroga@example.com", "Referred by Daniel. Prefers WhatsApp after 6 pm.")?;
-    let daniel = client(&mut s, "Daniel Okafor", "+1 (305) 555-0178", "", "Runs a catering business; seasonal cash flow in winter.")?;
-    let priya = client(&mut s, "Priya Raman", "", "priya.raman@example.com", "")?;
-    let tomas = client(&mut s, "Tomás Herrera", "+1 (786) 555-0119", "", "Car repair loan. Paid partially in July, promised to catch up.")?;
-    let grace = client(&mut s, "Grace Lindqvist", "+1 (954) 555-0163", "grace.l@example.com", "")?;
-    client(&mut s, "Samuel Mensah", "+1 (305) 555-0101", "", "Asked about a loan for equipment; follow up next month.")?;
+    s.add_capital(CapitalKind::Contribution, 30_000_000, ago(200), "Ahorros para prestar", t)?;
+    s.add_capital(CapitalKind::Contribution, 10_000_000, ago(90), "", t)?;
 
-    let a = loan(&mut s, marta, 1_200_000, 14, InterestMethod::Amortized, Frequency::Monthly, 12, ago(210), "Home renovation")?;
-    pay_on_schedule(&mut s, a, |_| None)?;
+    let marta = client(&mut s, "Marta Quiroga", "809-555-0142", "Prefiere WhatsApp después de las 6 pm.")?;
+    let daniel = client(&mut s, "Daniel Okafor", "829-555-0178", "Negocio de comida; flujo bajo en diciembre.")?;
+    let priya = client(&mut s, "Priya Raman", "849-555-0163", "")?;
+    let tomas = client(&mut s, "Tomás Herrera", "809-555-0119", "Pagó parcial en septiembre.")?;
+    let grace = client(&mut s, "Grace Lindqvist", "829-555-0190", "")?;
+    client(&mut s, "Samuel Mensah", "809-555-0101", "Preguntó por un préstamo para equipo.")?;
 
-    let c = loan(&mut s, priya, 500_000, 12, InterestMethod::Simple, Frequency::AtMaturity, 4, ago(200), "Short bridge loan")?;
-    pay_on_schedule(&mut s, c, |_| None)?;
+    // 50,000 at 10% monthly; pays interest plus 5,000 of capital each month.
+    let a = loan(&mut s, marta, 5_000_000, 10, Frequency::Monthly, ago(185))?;
+    pay_periods(&mut s, a, |_| Some(500_000))?;
 
-    let b = loan(&mut s, daniel, 800_000, 18, InterestMethod::InterestOnly, Frequency::Monthly, 6, ago(150), "Equipment, principal at maturity")?;
-    pay_on_schedule(&mut s, b, |seq| if seq <= 3 { None } else { Some(0) })?;
+    // 20,000 at 15% monthly; paid interest twice, then stopped.
+    let b = loan(&mut s, daniel, 2_000_000, 15, Frequency::Monthly, ago(120))?;
+    pay_periods(&mut s, b, |k| if k <= 2 { Some(0) } else { None })?;
 
-    let e = loan(&mut s, tomas, 1_000_000, 16, InterestMethod::Amortized, Frequency::Monthly, 10, ago(95), "")?;
-    pay_on_schedule(&mut s, e, |seq| match seq {
-        1 | 2 => None,
-        3 => Some(40_000),
-        _ => Some(0),
+    // 10,000 at 5% every 15 days; paid off after a few periods.
+    let c = loan(&mut s, priya, 1_000_000, 5, Frequency::Biweekly, ago(160))?;
+    pay_periods(&mut s, c, |k| if k < 4 { Some(0) } else { Some(1_000_000) })?;
+
+    // 35,000 at 10% monthly; interest only, last one paid short.
+    let d = loan(&mut s, tomas, 3_500_000, 10, Frequency::Monthly, ago(95))?;
+    pay_periods(&mut s, d, |k| match k {
+        1 | 2 => Some(0),
+        _ => None,
     })?;
+    {
+        let snap = s.snapshot()?;
+        let book = snap.book_loan(d).unwrap();
+        let due = book.facts.frequency.due_date(book.facts.start_date, 3);
+        if due <= t {
+            s.record_payment(d, 200_000, 0, due, "Parcial", t)?;
+        }
+    }
 
-    loan(&mut s, grace, 300_000, 10, InterestMethod::Simple, Frequency::AtMaturity, 3, ago(86), "")?;
+    // 15,000 at 10% every 15 days, recent.
+    let e = loan(&mut s, grace, 1_500_000, 10, Frequency::Biweekly, ago(26))?;
+    pay_periods(&mut s, e, |_| Some(0))?;
 
-    let d = loan(&mut s, priya, 650_000, 15, InterestMethod::Amortized, Frequency::Biweekly, 20, ago(60), "Second loan after the bridge was repaid")?;
-    pay_on_schedule(&mut s, d, |_| None)?;
+    // A second loan for Priya, current.
+    let f = loan(&mut s, priya, 2_500_000, 10, Frequency::Monthly, ago(40))?;
+    pay_periods(&mut s, f, |_| Some(250_000))?;
 
-    s.add_capital(CapitalKind::Withdrawal, 250_000, ago(40), "Personal expense", t)?;
+    s.add_capital(CapitalKind::Withdrawal, 2_000_000, ago(30), "Gasto personal", t)?;
 
     let snap = s.snapshot()?;
     let sum = snap.book.summary(t);
+    let m = snap.settings.money();
+    let overdue: Vec<_> = snap.book.loans.iter().filter(|l| delinquency(&l.facts, &l.payments, t).overdue_amount > 0).map(|l| l.id).collect();
     println!(
-        "Seeded {}: {} clients, {} loans, {} payments. Value {} / cash {} / overdue {}",
+        "Seeded {}: {} clients, {} loans, {} payments. Value {} / cash {} / overdue {} (loans {:?})",
         path.display(),
         snap.clients.len(),
         snap.loans.len(),
         snap.payments.len(),
-        snap.settings.money().format(sum.portfolio_value),
-        snap.settings.money().format(sum.available_cash),
-        snap.settings.money().format(sum.overdue_amount)
+        m.format(sum.portfolio_value),
+        m.format(sum.available_cash),
+        m.format(sum.overdue_amount),
+        overdue
     );
     Ok(())
 }

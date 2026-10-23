@@ -9,9 +9,15 @@ use rusqlite::{Connection, OpenFlags, params};
 
 /// Ordered, append-only list of migrations. Never edit a shipped migration;
 /// add a new one instead.
-const MIGRATIONS: &[(i64, &str)] = &[(1, include_str!("migrations/0001_init.sql"))];
+const MIGRATIONS: &[(i64, &str)] = &[
+    (1, include_str!("migrations/0001_init.sql")),
+    (2, include_str!("migrations/0002_period_rate_loans.sql")),
+];
 
-pub const SCHEMA_VERSION: i64 = 1;
+/// Migrations that rebuild tables and must run with foreign keys disabled.
+const REBUILDS: &[i64] = &[2];
+
+pub const SCHEMA_VERSION: i64 = 2;
 
 /// The tables a valid VZ Finance database must contain.
 const REQUIRED_TABLES: &[&str] = &[
@@ -19,7 +25,6 @@ const REQUIRED_TABLES: &[&str] = &[
     "app_settings",
     "clients",
     "loans",
-    "loan_schedules",
     "payments",
     "payment_allocations",
     "capital_transactions",
@@ -42,6 +47,15 @@ pub fn open(path: &Path) -> Result<Connection> {
     }
     let mut conn = Connection::open(path).with_context(|| format!("Could not open {}", path.display()))?;
     configure(&conn)?;
+    let current = schema_version(&conn)?;
+    if current > 0 && current < SCHEMA_VERSION {
+        // Keep a copy of the data exactly as it was before the upgrade.
+        let dir = path.parent().and_then(Path::parent).unwrap_or(Path::new(".")).join("backups");
+        let stamp = chrono::Local::now().format("%Y%m%d-%H%M%S");
+        let copy = dir.join(format!("before-upgrade-v{current}-{stamp}.db"));
+        backup_to(&conn, &copy).context("Could not save a copy of your data before upgrading it")?;
+        log::info!("saved pre-upgrade copy (schema {current})");
+    }
     migrate(&mut conn)?;
     Ok(conn)
 }
@@ -94,13 +108,32 @@ pub fn migrate(conn: &mut Connection) -> Result<()> {
         );
     }
     for (version, sql) in MIGRATIONS.iter().filter(|(v, _)| *v > current) {
-        let tx = conn.transaction()?;
-        tx.execute_batch(sql).with_context(|| format!("Migration {version} failed"))?;
-        tx.execute(
-            "INSERT INTO schema_migrations (version, applied_at) VALUES (?1, ?2)",
-            params![version, now_timestamp()],
-        )?;
-        tx.commit()?;
+        let rebuild = REBUILDS.contains(version);
+        if rebuild {
+            // Required by SQLite's table-rebuild procedure; cannot be changed
+            // inside a transaction.
+            conn.pragma_update(None, "foreign_keys", "OFF")?;
+        }
+        let result = (|| -> Result<()> {
+            let tx = conn.transaction()?;
+            tx.execute_batch(sql).with_context(|| format!("Migration {version} failed"))?;
+            if rebuild {
+                let broken: i64 = tx.query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |r| r.get(0))?;
+                if broken > 0 {
+                    bail!("Migration {version} would leave {broken} broken references; nothing was changed");
+                }
+            }
+            tx.execute(
+                "INSERT INTO schema_migrations (version, applied_at) VALUES (?1, ?2)",
+                params![version, now_timestamp()],
+            )?;
+            tx.commit()?;
+            Ok(())
+        })();
+        if rebuild {
+            conn.pragma_update(None, "foreign_keys", "ON")?;
+        }
+        result?;
         log::info!("applied migration {version}");
     }
     Ok(())
@@ -219,20 +252,54 @@ mod tests {
         let conn = open_in_memory().unwrap();
         assert!(conn.execute("INSERT INTO clients (full_name, created_at) VALUES ('  ', 'x')", []).is_err());
         conn.execute("INSERT INTO clients (full_name, created_at) VALUES ('Ana Ruiz', 'x')", []).unwrap();
-        // Simple method must be paired with at_maturity.
-        let bad = conn.execute(
-            "INSERT INTO loans (client_id, principal, annual_rate, method, frequency, term_count, start_date, maturity_date, created_at)
-             VALUES (1, 100, 0, 'simple', 'monthly', 1, '2026-01-01', '2026-02-01', 'x')",
-            [],
-        );
-        assert!(bad.is_err());
-        // Foreign keys are enforced.
-        let orphan = conn.execute(
-            "INSERT INTO loans (client_id, principal, annual_rate, method, frequency, term_count, start_date, maturity_date, created_at)
-             VALUES (42, 100, 0, 'simple', 'at_maturity', 1, '2026-01-01', '2026-02-01', 'x')",
-            [],
-        );
-        assert!(orphan.is_err());
+        let insert = |client: i64, rate: i64, freq: &str| {
+            conn.execute(
+                "INSERT INTO loans (client_id, principal, period_rate, frequency, start_date, created_at)
+                 VALUES (?1, 100000, ?2, ?3, '2026-01-01', 'x')",
+                params![client, rate, freq],
+            )
+        };
+        assert!(insert(1, 100_000, "monthly").is_ok());
+        assert!(insert(1, 2_000_000, "monthly").is_err(), "rate above 100%");
+        assert!(insert(1, 100_000, "weekly").is_err(), "unknown frequency");
+        assert!(insert(42, 100_000, "monthly").is_err(), "foreign keys are enforced");
+    }
+
+    #[test]
+    fn upgrades_a_version_1_database_and_keeps_a_copy() {
+        let dir = tempfile::tempdir().unwrap();
+        let data = dir.path().join("data");
+        std::fs::create_dir_all(&data).unwrap();
+        let path = data.join("portfolio.db");
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY NOT NULL, applied_at TEXT NOT NULL) STRICT;",
+            )
+            .unwrap();
+            conn.execute_batch(MIGRATIONS[0].1).unwrap();
+            conn.execute_batch(
+                "INSERT INTO schema_migrations VALUES (1, 'x');
+                 INSERT INTO clients (full_name, created_at) VALUES ('Ana Ruiz', 'x');
+                 INSERT INTO loans (client_id, principal, annual_rate, method, frequency, term_count, start_date, maturity_date, created_at)
+                   VALUES (1, 100000, 1200000, 'interest_only', 'monthly', 6, '2026-01-01', '2026-07-01', 'x');
+                 INSERT INTO loan_schedules (loan_id, seq, due_date, principal, interest) VALUES (1, 1, '2026-02-01', 0, 10000);
+                 INSERT INTO payments (loan_id, paid_on, amount, created_at) VALUES (1, '2026-02-01', 10000, 'x');
+                 INSERT INTO payment_allocations (payment_id, principal, interest, fee) VALUES (1, 0, 10000, 0);",
+            )
+            .unwrap();
+        }
+        let conn = open(&path).unwrap();
+        assert_eq!(schema_version(&conn).unwrap(), 2);
+        let (rate, freq): (i64, String) =
+            conn.query_row("SELECT period_rate, frequency FROM loans WHERE id = 1", [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+        assert_eq!((rate, freq.as_str()), (100_000, "monthly"));
+        let payments: i64 = conn.query_row("SELECT COUNT(*) FROM payments WHERE loan_id = 1", [], |r| r.get(0)).unwrap();
+        assert_eq!(payments, 1);
+        let fk: i64 = conn.query_row("PRAGMA foreign_keys", [], |r| r.get(0)).unwrap();
+        assert_eq!(fk, 1);
+        let copies: Vec<_> = std::fs::read_dir(dir.path().join("backups")).unwrap().collect();
+        assert_eq!(copies.len(), 1);
     }
 
     #[test]

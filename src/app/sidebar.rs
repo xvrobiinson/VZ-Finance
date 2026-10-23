@@ -5,17 +5,21 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use super::{Route, VzApp};
-use crate::ui::components::{icon, pill, Tone};
+use crate::i18n::t;
+use crate::tr;
+use crate::ui::components::{Tone, icon, pill};
 use crate::ui::theme::{Palette, SIDEBAR_COLLAPSED, SIDEBAR_WIDTH, palette, size, space};
 
-const NAV: &[(Route, IconName, &str, &str)] = &[
-    (Route::Overview, IconName::LayoutDashboard, "Overview", "Ctrl+1"),
-    (Route::Clients, IconName::Users, "Clients", "Ctrl+2"),
-    (Route::Loans, IconName::HandCoins, "Loans", "Ctrl+3"),
-    (Route::Payments, IconName::ArrowLeftRight, "Payments", "Ctrl+4"),
-    (Route::Analytics, IconName::ChartLine, "Portfolio Analytics", "Ctrl+5"),
-    (Route::Settings, IconName::Settings, "Settings", "Ctrl+6"),
-];
+fn nav() -> [(Route, IconName, &'static str, &'static str); 6] {
+    [
+        (Route::Overview, IconName::LayoutDashboard, t("Overview", "Resumen"), "Ctrl+1"),
+        (Route::Clients, IconName::Users, t("Clients", "Clientes"), "Ctrl+2"),
+        (Route::Loans, IconName::HandCoins, t("Loans", "Préstamos"), "Ctrl+3"),
+        (Route::Payments, IconName::ArrowLeftRight, t("Payments", "Pagos"), "Ctrl+4"),
+        (Route::Analytics, IconName::ChartLine, t("Portfolio Analytics", "Análisis"), "Ctrl+5"),
+        (Route::Settings, IconName::Settings, t("Settings", "Configuración"), "Ctrl+6"),
+    ]
+}
 
 /// The product mark: three ascending bars, the shape of a growing portfolio.
 fn mark(p: &Palette) -> Div {
@@ -45,13 +49,15 @@ impl VzApp {
         let summary = self.snap.book.summary(self.today);
         let overdue = summary.overdue_loans;
 
-        let nav = NAV.iter().map(|(route, icon_name, label, keys)| {
+        let business = self.settings().business_name.clone();
+        let items = nav();
+        let nav = items.iter().map(|(route, icon_name, label, keys)| {
             let active = section == *route;
             let route = *route;
             let tip = format!("{label}  {keys}");
             let badge = (route == Route::Loans && overdue > 0).then(|| pill(&p, overdue.to_string(), Tone::Negative).h(px(20.)).px(px(6.)));
             h_flex()
-                .id(SharedString::from(format!("nav-{label}")))
+                .id(SharedString::from(format!("nav-{:?}", route)))
                 .h(px(36.))
                 .mx(px(10.))
                 .px(px(10.))
@@ -78,8 +84,8 @@ impl VzApp {
         });
 
         let backup_label = match &self.settings().last_backup_at {
-            Some(t) => format!("Last backup {t}"),
-            None => "Not backed up yet".to_string(),
+            Some(when) => tr!("Last backup {when}", "Última copia {when}"),
+            None => t("Not backed up yet", "Sin copia de seguridad").to_string(),
         };
         let backup_tone = if self.settings().last_backup_at.is_some() { p.faint } else { p.warning };
 
@@ -101,10 +107,13 @@ impl VzApp {
                         d.child(
                             div()
                                 .flex_1()
+                                .min_w_0()
+                                .line_clamp(2)
                                 .text_size(px(size::SECTION))
+                                .line_height(px(19.))
                                 .font_weight(FontWeight::SEMIBOLD)
                                 .text_color(p.text)
-                                .child("VZ Finance"),
+                                .child(business),
                         )
                     })
                     .when(!collapsed, |d| {
@@ -117,7 +126,7 @@ impl VzApp {
                                 .cursor_pointer()
                                 .hover(|s| s.bg(p.hover))
                                 .child(icon(IconName::PanelLeftClose, p.faint, 16.))
-                                .tooltip(|window, cx| Tooltip::new("Collapse sidebar  Ctrl+B").build(window, cx))
+                                .tooltip(|window, cx| Tooltip::new(t("Collapse sidebar  Ctrl+B", "Ocultar menú  Ctrl+B")).build(window, cx))
                                 .on_click(cx.listener(|this, _, w, cx| this.toggle_sidebar(&super::ToggleSidebar, w, cx))),
                         )
                     }),
@@ -133,7 +142,7 @@ impl VzApp {
                             .cursor_pointer()
                             .hover(|s| s.bg(p.hover))
                             .child(icon(IconName::PanelLeftOpen, p.faint, 16.))
-                            .tooltip(|window, cx| Tooltip::new("Expand sidebar  Ctrl+B").build(window, cx))
+                            .tooltip(|window, cx| Tooltip::new(t("Expand sidebar  Ctrl+B", "Mostrar menú  Ctrl+B")).build(window, cx))
                             .on_click(cx.listener(|this, _, w, cx| this.toggle_sidebar(&super::ToggleSidebar, w, cx))),
                     ),
                 )
@@ -156,8 +165,8 @@ impl VzApp {
                             .when(collapsed, |d| d.justify_center().px_0())
                             .hover(|s| s.bg(p.hover))
                             .child(icon(IconName::DatabaseBackup, p.muted, 16.))
-                            .when(!collapsed, |d| d.child(div().text_color(p.muted).child("Back up database")))
-                            .tooltip(|window, cx| Tooltip::new("Back up database  Ctrl+S").build(window, cx))
+                            .when(!collapsed, |d| d.child(div().text_color(p.muted).child(t("Back up database", "Copia de seguridad"))))
+                            .tooltip(|window, cx| Tooltip::new(t("Back up database  Ctrl+S", "Copia de seguridad  Ctrl+S")).build(window, cx))
                             .on_click(cx.listener(|this, _, w, cx| this.backup_now(&super::BackupNow, w, cx))),
                     )
                     .when(!collapsed, |d| {
@@ -173,14 +182,14 @@ impl VzApp {
                                     h_flex()
                                         .gap(px(6.))
                                         .child(icon(IconName::ShieldCheck, p.faint, 13.))
-                                        .child(div().text_size(px(size::META)).text_color(p.faint).child("Private · stored on this PC")),
+                                        .child(div().text_size(px(size::META)).text_color(p.faint).child(t("Private · stored on this PC", "Privado · guardado en esta PC"))),
                                 )
                                 .child(div().text_size(px(size::META)).text_color(backup_tone).child(backup_label))
                                 .child(
                                     div()
                                         .text_size(px(size::META))
                                         .text_color(p.faint)
-                                        .child(format!("Version {}", env!("CARGO_PKG_VERSION"))),
+                                        .child(format!("{} {}", t("Version", "Versión"), env!("CARGO_PKG_VERSION"))),
                                 ),
                         )
                     }),

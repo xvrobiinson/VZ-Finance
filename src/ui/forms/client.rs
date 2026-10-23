@@ -5,6 +5,8 @@ use gpui_kit::*;
 use super::{error_banner, field, footer, value};
 use crate::app::{Route, VzApp};
 use crate::database::repositories::clients::{Client, ClientInput};
+use crate::i18n::t;
+use crate::tr;
 use crate::ui::theme::{palette, space};
 
 pub struct ClientForm {
@@ -23,14 +25,17 @@ impl ClientForm {
     pub fn new(app: WeakEntity<VzApp>, existing: Option<Client>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let e = existing.as_ref();
         let name = cx.new(|cx| {
-            InputState::new(window, cx).placeholder("e.g. Marta Quiroga").default_value(e.map(|c| c.full_name.clone()).unwrap_or_default())
+            InputState::new(window, cx).placeholder(t("e.g. Marta Quiroga", "ej. Marta Quiroga")).default_value(e.map(|c| c.full_name.clone()).unwrap_or_default())
         });
-        let phone = cx.new(|cx| InputState::new(window, cx).placeholder("Optional").default_value(e.and_then(|c| c.phone.clone()).unwrap_or_default()));
-        let email = cx.new(|cx| InputState::new(window, cx).placeholder("Optional").default_value(e.and_then(|c| c.email.clone()).unwrap_or_default()));
+        let phone = cx.new(|cx| InputState::new(window, cx).placeholder(t("Optional", "Opcional")).default_value(e.and_then(|c| c.phone.clone()).unwrap_or_default()));
+        let email = cx.new(|cx| InputState::new(window, cx).placeholder(t("Optional", "Opcional")).default_value(e.and_then(|c| c.email.clone()).unwrap_or_default()));
         let notes = cx.new(|cx| {
             TextareaState::new(window, cx)
                 .rows(3)
-                .placeholder("Anything worth remembering: referral, collateral, preferred contact time")
+                .placeholder(t(
+                    "Anything worth remembering: referral, collateral, preferred contact time",
+                    "Lo que valga la pena recordar: referencia, garantía, horario de contacto",
+                ))
                 .default_value(e.map(|c| c.notes.clone()).unwrap_or_default())
         });
         let mut subs = Vec::new();
@@ -81,7 +86,7 @@ impl ClientForm {
                 window.close_dialog(cx);
                 let name = input.full_name.trim().to_string();
                 let _ = self.app.update(cx, |app, cx| {
-                    app.notify_success(if editing.is_some() { format!("Saved {name}") } else { format!("Added {name}") }, window, cx);
+                    app.notify_success(if editing.is_some() { tr!("Saved {name}", "{name} guardado") } else { tr!("Added {name}", "{name} agregado") }, window, cx);
                     if editing.is_none() {
                         app.navigate(Route::Client(id), window, cx);
                     }
@@ -100,23 +105,23 @@ impl Render for ClientForm {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let p = palette(cx);
         let input = self.input(cx);
-        let name_error = (self.show_errors && input.full_name.trim().is_empty()).then(|| "Enter the client's full name".to_string());
+        let name_error = (self.show_errors && input.full_name.trim().is_empty()).then(|| t("Enter the client's full name", "Escribe el nombre completo del cliente").to_string());
         let email = input.email.trim();
-        let email_error = (!email.is_empty() && self.show_errors && !email.contains('@')).then(|| "Enter a valid email address".to_string());
+        let email_error = (!email.is_empty() && self.show_errors && !email.contains('@')).then(|| t("Enter a valid email address", "Escribe un correo válido").to_string());
         v_flex()
             .gap(px(space::L))
             .children(error_banner(&p, &self.error))
-            .child(field(&p, "Full name", Input::new(&self.name), None, name_error))
+            .child(field(&p, t("Full name", "Nombre completo"), Input::new(&self.name), None, name_error))
             .child(
                 h_flex()
                     .gap(px(space::M))
-                    .child(div().flex_1().child(field(&p, "Phone", Input::new(&self.phone), None, None)))
-                    .child(div().flex_1().child(field(&p, "Email", Input::new(&self.email), None, email_error))),
+                    .child(div().flex_1().child(field(&p, t("Phone", "Teléfono"), Input::new(&self.phone), None, None)))
+                    .child(div().flex_1().child(field(&p, t("Email", "Correo"), Input::new(&self.email), None, email_error))),
             )
-            .child(field(&p, "Notes", Textarea::new(&self.notes), None, None))
+            .child(field(&p, t("Notes", "Notas"), Textarea::new(&self.notes), None, None))
             .child(footer(
                 &p,
-                if self.editing.is_some() { "Save changes" } else { "Add client" },
+                if self.editing.is_some() { t("Save changes", "Guardar cambios") } else { t("Add client", "Agregar cliente") },
                 true,
                 false,
                 cx.listener(|this, _, window, cx| this.submit(window, cx)),
