@@ -207,7 +207,9 @@ impl LineChart {
                 .border_color(p.border)
                 .shadow(vec![BoxShadow::new(px(0.), px(6.), p.shadow).blur_radius(px(20.))])
                 .text_size(px(size::META))
-                .child(div().text_color(p.text).font_weight(FontWeight::MEDIUM).child(self.hover_labels.get(i).cloned().unwrap_or_default()))
+                .child(
+                    div().text_color(p.text).font_weight(FontWeight::MEDIUM).child(self.hover_labels.get(i).cloned().unwrap_or_default()),
+                )
                 .children(rows);
             if frac > 0.6 { el.right(relative(1.0 - frac)).mr(px(12.)) } else { el.left(relative(frac)).ml(px(12.)) }
         });

@@ -166,7 +166,9 @@ impl VzApp {
                             .hover(|s| s.bg(p.hover))
                             .child(icon(IconName::DatabaseBackup, p.muted, 16.))
                             .when(!collapsed, |d| d.child(div().text_color(p.muted).child(t("Back up database", "Copia de seguridad"))))
-                            .tooltip(|window, cx| Tooltip::new(t("Back up database  Ctrl+S", "Copia de seguridad  Ctrl+S")).build(window, cx))
+                            .tooltip(|window, cx| {
+                                Tooltip::new(t("Back up database  Ctrl+S", "Copia de seguridad  Ctrl+S")).build(window, cx)
+                            })
                             .on_click(cx.listener(|this, _, w, cx| this.backup_now(&super::BackupNow, w, cx))),
                     )
                     .when(!collapsed, |d| {
@@ -179,18 +181,19 @@ impl VzApp {
                                 .border_color(p.border)
                                 .gap(px(2.))
                                 .child(
-                                    h_flex()
-                                        .gap(px(6.))
-                                        .child(icon(IconName::ShieldCheck, p.faint, 13.))
-                                        .child(div().text_size(px(size::META)).text_color(p.faint).child(t("Private · stored on this PC", "Privado · guardado en esta PC"))),
+                                    h_flex().gap(px(6.)).child(icon(IconName::ShieldCheck, p.faint, 13.)).child(
+                                        div()
+                                            .text_size(px(size::META))
+                                            .text_color(p.faint)
+                                            .child(t("Private · stored on this PC", "Privado · guardado en esta PC")),
+                                    ),
                                 )
                                 .child(div().text_size(px(size::META)).text_color(backup_tone).child(backup_label))
-                                .child(
-                                    div()
-                                        .text_size(px(size::META))
-                                        .text_color(p.faint)
-                                        .child(format!("{} {}", t("Version", "Versión"), env!("CARGO_PKG_VERSION"))),
-                                ),
+                                .child(div().text_size(px(size::META)).text_color(p.faint).child(format!(
+                                    "{} {}",
+                                    t("Version", "Versión"),
+                                    env!("CARGO_PKG_VERSION")
+                                ))),
                         )
                     }),
             )

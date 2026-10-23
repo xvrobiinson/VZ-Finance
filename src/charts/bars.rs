@@ -7,7 +7,14 @@ use crate::domain::money::{Cents, MoneyFormat};
 use crate::ui::theme::{Palette, tabular};
 
 /// Columns with square tops on a zero baseline. Empty periods draw no bar.
-pub fn column_chart(p: &Palette, labels: &[SharedString], values: &[Cents], highlight_last: bool, money: &MoneyFormat, height: f32) -> AnyElement {
+pub fn column_chart(
+    p: &Palette,
+    labels: &[SharedString],
+    values: &[Cents],
+    highlight_last: bool,
+    money: &MoneyFormat,
+    height: f32,
+) -> AnyElement {
     let max = values.iter().copied().max().unwrap_or(0);
     let ticks = nice_ticks(0, max.max(1), 3, true);
     let top = *ticks.last().unwrap_or(&1);
@@ -50,15 +57,7 @@ pub fn column_chart(p: &Palette, labels: &[SharedString], values: &[Cents], high
             .items_center()
             .justify_end()
             .gap(px(6.))
-            .child(
-                div()
-                    .w(relative(0.56))
-                    .max_w(px(36.))
-                    .h(px(h.max(0.0)))
-                    .when(*v > 0, |d| d.min_h(px(2.)))
-                    .bg(color)
-                    .rounded_t(px(3.)),
-            )
+            .child(div().w(relative(0.56)).max_w(px(36.)).h(px(h.max(0.0))).when(*v > 0, |d| d.min_h(px(2.))).bg(color).rounded_t(px(3.)))
             .child(div().h(px(20.)).text_size(px(11.5)).text_color(p.faint).child(label))
             .tooltip(move |window, cx| gpui_kit::component::tooltip::Tooltip::new(value_text.clone()).build(window, cx))
     });

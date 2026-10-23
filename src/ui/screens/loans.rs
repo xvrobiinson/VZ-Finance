@@ -11,7 +11,9 @@ use crate::domain::loans::period_interest;
 use crate::domain::money::percent_label;
 use crate::i18n::{count, t};
 use crate::tr;
-use crate::ui::components::{Tone, avatar, card, card_header, empty_state, figure, kv, label, page_header, pill, progress_bar, table_header, table_row, th, vrule};
+use crate::ui::components::{
+    Tone, avatar, card, card_header, empty_state, figure, kv, label, page_header, pill, progress_bar, table_header, table_row, th, vrule,
+};
 use crate::ui::forms::reason::ReasonKind;
 use crate::ui::theme::{palette, size, space, tabular};
 
@@ -83,40 +85,36 @@ impl VzApp {
             };
             table_row(&p, ("loan", lid as u64), true)
                 .child(
-                    h_flex()
-                        .flex_1()
-                        .min_w(px(200.))
-                        .gap(px(space::M))
-                        .child(avatar(&p, &name, l.client_id, 32.))
-                        .child(
-                            v_flex()
-                                .min_w_0()
-                                .child(div().truncate().child(name))
-                                .child(div().text_size(px(size::META)).text_color(p.muted).truncate().child(desc)),
-                        ),
-                )
-                .when(!narrow, |d| d.child(ncolumn(130.).font_features(tabular()).text_color(p.muted).child(money.format(l.facts.principal))))
-                .child(ncolumn(130.).font_features(tabular()).child(money.format(pos.payoff())))
-                .child(
-                    v_flex()
-                        .w(px(130.))
-                        .items_end()
-                        .child(div().child(next))
-                        .when(q.next_due_amount > 0 && l.facts.status == ContractStatus::Active, |d| {
-                            d.child(div().text_size(px(size::META)).text_color(p.muted).font_features(tabular()).child(money.format(q.next_due_amount)))
-                        }),
+                    h_flex().flex_1().min_w(px(200.)).gap(px(space::M)).child(avatar(&p, &name, l.client_id, 32.)).child(
+                        v_flex()
+                            .min_w_0()
+                            .child(div().truncate().child(name))
+                            .child(div().text_size(px(size::META)).text_color(p.muted).truncate().child(desc)),
+                    ),
                 )
                 .when(!narrow, |d| {
-                    d.child(
-                        v_flex()
-                            .w(px(120.))
-                            .gap(px(4.))
-                            .child(progress_bar(&p, ratio, p.accent))
-                            .child(div().text_size(px(size::META)).text_color(p.muted).font_features(tabular()).child({
-                                let pct = percent_label(pos.principal_paid, l.facts.principal).unwrap_or_default();
-                                tr!("{pct} repaid", "{pct} pagado")
-                            })),
-                    )
+                    d.child(ncolumn(130.).font_features(tabular()).text_color(p.muted).child(money.format(l.facts.principal)))
+                })
+                .child(ncolumn(130.).font_features(tabular()).child(money.format(pos.payoff())))
+                .child(v_flex().w(px(130.)).items_end().child(div().child(next)).when(
+                    q.next_due_amount > 0 && l.facts.status == ContractStatus::Active,
+                    |d| {
+                        d.child(
+                            div()
+                                .text_size(px(size::META))
+                                .text_color(p.muted)
+                                .font_features(tabular())
+                                .child(money.format(q.next_due_amount)),
+                        )
+                    },
+                ))
+                .when(!narrow, |d| {
+                    d.child(v_flex().w(px(120.)).gap(px(4.)).child(progress_bar(&p, ratio, p.accent)).child(
+                        div().text_size(px(size::META)).text_color(p.muted).font_features(tabular()).child({
+                            let pct = percent_label(pos.principal_paid, l.facts.principal).unwrap_or_default();
+                            tr!("{pct} repaid", "{pct} pagado")
+                        }),
+                    ))
                 })
                 .child(div().w(px(130.)).flex().justify_end().child(status_detail_pill(&p, *st, &q, today)))
                 .on_click(cx.listener(move |this, _, w, cx| this.navigate(Route::Loan(lid), w, cx)))
@@ -141,8 +139,14 @@ impl VzApp {
             )
             .into_any_element()
         } else if visible.is_empty() {
-            empty_state(&p, IconName::CircleCheck, t("Nothing here", "Nada por aquí"), t("No loans match this filter.", "Ningún préstamo coincide con este filtro."), None)
-                .into_any_element()
+            empty_state(
+                &p,
+                IconName::CircleCheck,
+                t("Nothing here", "Nada por aquí"),
+                t("No loans match this filter.", "Ningún préstamo coincide con este filtro."),
+                None,
+            )
+            .into_any_element()
         } else {
             v_flex()
                 .child(
@@ -255,7 +259,20 @@ impl VzApp {
                 .py(px(space::L + 2.))
                 .gap(px(6.))
                 .child(label(&p, l.to_string()).truncate())
-                .child(figure(&p, v, if lead { 26. } else if narrow { 19. } else { size::FIGURE }).text_color(color))
+                .child(
+                    figure(
+                        &p,
+                        v,
+                        if lead {
+                            26.
+                        } else if narrow {
+                            19.
+                        } else {
+                            size::FIGURE
+                        },
+                    )
+                    .text_color(color),
+                )
                 .child(div().text_size(px(size::META)).text_color(p.muted).truncate().child(sub))
         };
         let owes_label = match loan.status {
@@ -266,9 +283,21 @@ impl VzApp {
         let interest_now = period_interest(owed_now.principal_outstanding, terms.rate);
         let strip = card(&p)
             .flex_row()
-            .child(cell(owes_label, money.format(owed_now.payoff()), t("Capital plus interest due", "Capital más interés por pagar").into(), true, p.text))
+            .child(cell(
+                owes_label,
+                money.format(owed_now.payoff()),
+                t("Capital plus interest due", "Capital más interés por pagar").into(),
+                true,
+                p.text,
+            ))
             .child(vrule(&p))
-            .child(cell(t("Capital owed", "Capital adeudado"), money.format(owed_now.principal_outstanding), tr!("of {lent} lent", "de {lent} prestado"), false, p.text))
+            .child(cell(
+                t("Capital owed", "Capital adeudado"),
+                money.format(owed_now.principal_outstanding),
+                tr!("of {lent} lent", "de {lent} prestado"),
+                false,
+                p.text,
+            ))
             .child(vrule(&p))
             .child(cell(
                 t("Interest due", "Interés por pagar"),
@@ -283,9 +312,21 @@ impl VzApp {
                 if q.overdue_amount > 0 { p.negative } else { p.text },
             ))
             .child(vrule(&p))
-            .child(cell(t("Interest paid", "Interés pagado"), money.format(pos.interest_paid), t("Income from this loan", "Ganancia de este préstamo").into(), false, p.text))
+            .child(cell(
+                t("Interest paid", "Interés pagado"),
+                money.format(pos.interest_paid),
+                t("Income from this loan", "Ganancia de este préstamo").into(),
+                false,
+                p.text,
+            ))
             .child(vrule(&p))
-            .child(cell(t("Capital repaid", "Capital pagado"), money.format(pos.principal_paid), t("Money returned to you", "Dinero que regresó").into(), false, p.text));
+            .child(cell(
+                t("Capital repaid", "Capital pagado"),
+                money.format(pos.principal_paid),
+                t("Money returned to you", "Dinero que regresó").into(),
+                false,
+                p.text,
+            ));
 
         let ratio = pos.principal_paid as f32 / terms.principal.max(1) as f32;
         let next_line = match (q.next_due, active) {
@@ -295,56 +336,60 @@ impl VzApp {
             }
             _ => "—".to_string(),
         };
-        let details = card(&p)
-            .child(card_header(&p, t("Summary", "Resumen"), None))
-            .child(
-                v_flex()
-                    .px(px(space::XL))
-                    .pb(px(space::XL))
-                    .gap(px(space::M))
-                    .child(
-                        v_flex()
-                            .gap(px(8.))
-                            .child(progress_bar(&p, ratio, if loan.status == ContractStatus::PaidOff { p.positive } else { p.accent }))
-                            .child(
-                                h_flex()
-                                    .justify_between()
-                                    .text_size(px(size::META))
-                                    .text_color(p.muted)
-                                    .font_features(tabular())
-                                    .child({
-                                        let pct = percent_label(pos.principal_paid, terms.principal).unwrap_or_default();
-                                        tr!("{pct} of capital repaid", "{pct} del capital pagado")
-                                    })
-                                    .child({
-                                        let left = money.format(pos.principal_outstanding);
-                                        tr!("{left} left", "faltan {left}")
-                                    }),
-                            ),
+        let details = card(&p).child(card_header(&p, t("Summary", "Resumen"), None)).child(
+            v_flex()
+                .px(px(space::XL))
+                .pb(px(space::XL))
+                .gap(px(space::M))
+                .child(
+                    v_flex()
+                        .gap(px(8.))
+                        .child(progress_bar(&p, ratio, if loan.status == ContractStatus::PaidOff { p.positive } else { p.accent }))
+                        .child(
+                            h_flex()
+                                .justify_between()
+                                .text_size(px(size::META))
+                                .text_color(p.muted)
+                                .font_features(tabular())
+                                .child({
+                                    let pct = percent_label(pos.principal_paid, terms.principal).unwrap_or_default();
+                                    tr!("{pct} of capital repaid", "{pct} del capital pagado")
+                                })
+                                .child({
+                                    let left = money.format(pos.principal_outstanding);
+                                    tr!("{left} left", "faltan {left}")
+                                }),
+                        ),
+                )
+                .child(
+                    v_flex()
+                        .child(kv(&p, t("Amount lent", "Monto prestado"), money.format(terms.principal)))
+                        .child(kv(&p, t("Interest rate", "Tasa de interés"), rate_line.clone()))
+                        .child(kv(&p, t("Interest per period now", "Interés por período ahora"), money.format(interest_now)))
+                        .child(kv(&p, t("Next payment", "Próximo pago"), next_line))
+                        .when(q.overdue_amount > 0, |d| {
+                            d.child(kv(
+                                &p,
+                                t("Overdue", "Atrasado"),
+                                div().text_color(p.negative).child({
+                                    let (a, days) = (money.format(q.overdue_amount), q.days_overdue);
+                                    tr!("{a} · {days} days", "{a} · {days} días")
+                                }),
+                            ))
+                        })
+                        .child(kv(
+                            &p,
+                            t("Total interest charged so far", "Interés generado hasta hoy"),
+                            money.format(pos.interest_charged_total),
+                        ))
+                        .child(kv(&p, t("Loan date", "Fecha del préstamo"), ds.format(terms.start_date))),
+                )
+                .when(!loan.notes.is_empty(), |d| {
+                    d.child(
+                        v_flex().gap(px(4.)).pt(px(space::S)).child(label(&p, t("Notes", "Notas"))).child(div().child(loan.notes.clone())),
                     )
-                    .child(
-                        v_flex()
-                            .child(kv(&p, t("Amount lent", "Monto prestado"), money.format(terms.principal)))
-                            .child(kv(&p, t("Interest rate", "Tasa de interés"), rate_line.clone()))
-                            .child(kv(&p, t("Interest per period now", "Interés por período ahora"), money.format(interest_now)))
-                            .child(kv(&p, t("Next payment", "Próximo pago"), next_line))
-                            .when(q.overdue_amount > 0, |d| {
-                                d.child(kv(
-                                    &p,
-                                    t("Overdue", "Atrasado"),
-                                    div().text_color(p.negative).child({
-                                        let (a, days) = (money.format(q.overdue_amount), q.days_overdue);
-                                        tr!("{a} · {days} days", "{a} · {days} días")
-                                    }),
-                                ))
-                            })
-                            .child(kv(&p, t("Total interest charged so far", "Interés generado hasta hoy"), money.format(pos.interest_charged_total)))
-                            .child(kv(&p, t("Loan date", "Fecha del préstamo"), ds.format(terms.start_date))),
-                    )
-                    .when(!loan.notes.is_empty(), |d| {
-                        d.child(v_flex().gap(px(4.)).pt(px(space::S)).child(label(&p, t("Notes", "Notas"))).child(div().child(loan.notes.clone())))
-                    }),
-            );
+                }),
+        );
 
         // Period by period: the capital it was charged on and whether it is paid.
         let states = period_states(&pos, today);
@@ -407,7 +452,10 @@ impl VzApp {
                     div()
                         .text_size(px(size::META))
                         .text_color(p.muted)
-                        .child(t("Each period's interest is charged on the capital owed when it starts", "El interés de cada período se calcula sobre el capital adeudado al iniciar"))
+                        .child(t(
+                            "Each period's interest is charged on the capital owed when it starts",
+                            "El interés de cada período se calcula sobre el capital adeudado al iniciar",
+                        ))
                         .into_any_element(),
                 ),
             ))
@@ -450,7 +498,12 @@ impl VzApp {
                 }))
                 .child(ncolumn(110.).text_color(p.muted).when(reversed, |d| d.line_through()).child(money.format(x.interest)))
                 .child(ncolumn(110.).text_color(p.muted).when(reversed, |d| d.line_through()).child(money.format(x.principal)))
-                .child(ncolumn(120.).text_color(if reversed { p.muted } else { p.text }).when(reversed, |d| d.line_through()).child(money.format(x.amount)))
+                .child(
+                    ncolumn(120.)
+                        .text_color(if reversed { p.muted } else { p.text })
+                        .when(reversed, |d| d.line_through())
+                        .child(money.format(x.amount)),
+                )
                 .child(
                     h_flex()
                         .w(px(170.))
@@ -478,38 +531,38 @@ impl VzApp {
                         }),
                 )
         });
-        let tx_card = card(&p)
-            .overflow_hidden()
-            .child(card_header(&p, t("Payments", "Pagos"), None))
-            .child(if payments.is_empty() {
-                empty_state(
-                    &p,
-                    IconName::Receipt,
-                    t("No payments yet", "Aún no hay pagos"),
-                    t("Each payment shows how much went to interest and how much to capital.", "Cada pago muestra cuánto fue a interés y cuánto a capital."),
-                    active.then(|| {
-                        Button::new("loan-empty-pay")
-                            .primary()
-                            .label(t("Record payment", "Registrar pago"))
-                            .on_click(cx.listener(move |this, _, w, cx| this.open_payment_form(Some(id), w, cx)))
-                            .into_any_element()
-                    }),
+        let tx_card = card(&p).overflow_hidden().child(card_header(&p, t("Payments", "Pagos"), None)).child(if payments.is_empty() {
+            empty_state(
+                &p,
+                IconName::Receipt,
+                t("No payments yet", "Aún no hay pagos"),
+                t(
+                    "Each payment shows how much went to interest and how much to capital.",
+                    "Cada pago muestra cuánto fue a interés y cuánto a capital.",
+                ),
+                active.then(|| {
+                    Button::new("loan-empty-pay")
+                        .primary()
+                        .label(t("Record payment", "Registrar pago"))
+                        .on_click(cx.listener(move |this, _, w, cx| this.open_payment_form(Some(id), w, cx)))
+                        .into_any_element()
+                }),
+            )
+            .into_any_element()
+        } else {
+            v_flex()
+                .child(
+                    table_header(&p)
+                        .child(div().w(px(150.)).child(th(&p, t("Date", "Fecha"))))
+                        .child(div().flex_1().child(th(&p, t("Note", "Nota"))))
+                        .child(ncolumn(110.).child(th(&p, t("Interest", "Interés"))))
+                        .child(ncolumn(110.).child(th(&p, t("Capital", "Capital"))))
+                        .child(ncolumn(120.).child(th(&p, t("Amount", "Monto"))))
+                        .child(div().w(px(170.))),
                 )
+                .children(tx_rows)
                 .into_any_element()
-            } else {
-                v_flex()
-                    .child(
-                        table_header(&p)
-                            .child(div().w(px(150.)).child(th(&p, t("Date", "Fecha"))))
-                            .child(div().flex_1().child(th(&p, t("Note", "Nota"))))
-                            .child(ncolumn(110.).child(th(&p, t("Interest", "Interés"))))
-                            .child(ncolumn(110.).child(th(&p, t("Capital", "Capital"))))
-                            .child(ncolumn(120.).child(th(&p, t("Amount", "Monto"))))
-                            .child(div().w(px(170.))),
-                    )
-                    .children(tx_rows)
-                    .into_any_element()
-            });
+        });
 
         v_flex()
             .child(crumb(&p, t("Loans", "Préstamos"), Route::Loans, cx))

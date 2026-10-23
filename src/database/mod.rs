@@ -9,10 +9,8 @@ use rusqlite::{Connection, OpenFlags, params};
 
 /// Ordered, append-only list of migrations. Never edit a shipped migration;
 /// add a new one instead.
-const MIGRATIONS: &[(i64, &str)] = &[
-    (1, include_str!("migrations/0001_init.sql")),
-    (2, include_str!("migrations/0002_period_rate_loans.sql")),
-];
+const MIGRATIONS: &[(i64, &str)] =
+    &[(1, include_str!("migrations/0001_init.sql")), (2, include_str!("migrations/0002_period_rate_loans.sql"))];
 
 /// Migrations that rebuild tables and must run with foreign keys disabled.
 const REBUILDS: &[i64] = &[2];
@@ -82,11 +80,8 @@ fn configure(conn: &Connection) -> Result<()> {
 }
 
 pub fn schema_version(conn: &Connection) -> Result<i64> {
-    let exists: bool = conn.query_row(
-        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'schema_migrations')",
-        [],
-        |r| r.get(0),
-    )?;
+    let exists: bool =
+        conn.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'schema_migrations')", [], |r| r.get(0))?;
     if !exists {
         return Ok(0);
     }
@@ -123,10 +118,7 @@ pub fn migrate(conn: &mut Connection) -> Result<()> {
                     bail!("Migration {version} would leave {broken} broken references; nothing was changed");
                 }
             }
-            tx.execute(
-                "INSERT INTO schema_migrations (version, applied_at) VALUES (?1, ?2)",
-                params![version, now_timestamp()],
-            )?;
+            tx.execute("INSERT INTO schema_migrations (version, applied_at) VALUES (?1, ?2)", params![version, now_timestamp()])?;
             tx.commit()?;
             Ok(())
         })();
@@ -180,18 +172,13 @@ pub struct BackupInfo {
 pub fn validate_backup(path: &Path) -> Result<BackupInfo> {
     let conn = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX)
         .context("The file is not a readable SQLite database")?;
-    let integrity: String = conn
-        .query_row("PRAGMA integrity_check", [], |r| r.get(0))
-        .context("The file is not a SQLite database")?;
+    let integrity: String = conn.query_row("PRAGMA integrity_check", [], |r| r.get(0)).context("The file is not a SQLite database")?;
     if integrity != "ok" {
         bail!("The database failed its integrity check: {integrity}");
     }
     for table in REQUIRED_TABLES {
-        let exists: bool = conn.query_row(
-            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1)",
-            [table],
-            |r| r.get(0),
-        )?;
+        let exists: bool =
+            conn.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1)", [table], |r| r.get(0))?;
         if !exists {
             bail!("This is not a VZ Finance database (missing table {table})");
         }
@@ -215,8 +202,7 @@ pub fn restore_from(conn: &mut Connection, source: &Path, safety_dir: &Path) -> 
     let stamp = chrono::Local::now().format("%Y%m%d-%H%M%S");
     let safety = safety_dir.join(format!("before-restore-{stamp}.db"));
     backup_to(conn, &safety).context("Could not save a safety copy of the current data")?;
-    conn.restore(rusqlite::MAIN_DB, source, None::<fn(rusqlite::backup::Progress)>)
-        .context("Restore failed; your data was not changed")?;
+    conn.restore(rusqlite::MAIN_DB, source, None::<fn(rusqlite::backup::Progress)>).context("Restore failed; your data was not changed")?;
     configure(conn)?;
     migrate(conn)?;
     Ok(safety)
@@ -273,10 +259,8 @@ mod tests {
         let path = data.join("portfolio.db");
         {
             let conn = Connection::open(&path).unwrap();
-            conn.execute_batch(
-                "CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY NOT NULL, applied_at TEXT NOT NULL) STRICT;",
-            )
-            .unwrap();
+            conn.execute_batch("CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY NOT NULL, applied_at TEXT NOT NULL) STRICT;")
+                .unwrap();
             conn.execute_batch(MIGRATIONS[0].1).unwrap();
             conn.execute_batch(
                 "INSERT INTO schema_migrations VALUES (1, 'x');

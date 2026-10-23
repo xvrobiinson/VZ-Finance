@@ -102,7 +102,9 @@ impl VzApp {
                 &p,
                 t("Number format", "Formato de números"),
                 None,
-                segmented(&p, "numfmt", &number_opts, s.number_style, cx, |app, v, w, cx| app.update_settings(|s| s.number_style = v, w, cx)),
+                segmented(&p, "numfmt", &number_opts, s.number_style, cx, |app, v, w, cx| {
+                    app.update_settings(|s| s.number_style = v, w, cx)
+                }),
             ))
             .child(row(
                 &p,
@@ -158,10 +160,12 @@ impl VzApp {
                 &p,
                 t("Receipts folder", "Carpeta de recibos"),
                 Some(t("Every receipt is also saved here", "Cada recibo también se guarda aquí")),
-                Button::new("open-receipts").ghost().icon(IconName::FolderOpen).label(t("Open folder", "Abrir carpeta")).on_click(cx.listener(move |_, _, _, cx| {
-                    let _ = std::fs::create_dir_all(&receipts_dir);
-                    cx.open_with_system(&receipts_dir);
-                })),
+                Button::new("open-receipts").ghost().icon(IconName::FolderOpen).label(t("Open folder", "Abrir carpeta")).on_click(
+                    cx.listener(move |_, _, _, cx| {
+                        let _ = std::fs::create_dir_all(&receipts_dir);
+                        cx.open_with_system(&receipts_dir);
+                    }),
+                ),
             ));
 
         let dashboard = v_flex()
@@ -170,7 +174,9 @@ impl VzApp {
                 &p,
                 t("Default chart range", "Rango del gráfico"),
                 None,
-                segmented(&p, "range-set", &range_opts, s.chart_range, cx, |app, v, w, cx| app.update_settings(|s| s.chart_range = v, w, cx)),
+                segmented(&p, "range-set", &range_opts, s.chart_range, cx, |app, v, w, cx| {
+                    app.update_settings(|s| s.chart_range = v, w, cx)
+                }),
             ))
             .child(row(
                 &p,
@@ -195,13 +201,26 @@ impl VzApp {
                 &p,
                 t("Database location", "Ubicación de la base de datos"),
                 None,
-                Button::new("open-folder").ghost().icon(IconName::FolderOpen).label(t("Show in Explorer", "Mostrar en el Explorador")).on_click(cx.listener(move |_, _, _, cx| {
-                    if let Some(d) = &db_dir {
-                        cx.open_with_system(d);
-                    }
-                })),
+                Button::new("open-folder")
+                    .ghost()
+                    .icon(IconName::FolderOpen)
+                    .label(t("Show in Explorer", "Mostrar en el Explorador"))
+                    .on_click(cx.listener(move |_, _, _, cx| {
+                        if let Some(d) = &db_dir {
+                            cx.open_with_system(d);
+                        }
+                    })),
             ))
-            .child(div().px(px(space::M)).py(px(10.)).rounded(px(8.)).bg(p.raised).text_size(px(size::META + 0.5)).text_color(p.muted).child(path_text))
+            .child(
+                div()
+                    .px(px(space::M))
+                    .py(px(10.))
+                    .rounded(px(8.))
+                    .bg(p.raised)
+                    .text_size(px(size::META + 0.5))
+                    .text_color(p.muted)
+                    .child(path_text),
+            )
             .child(row(
                 &p,
                 t("Back up", "Copia de seguridad"),
@@ -209,19 +228,28 @@ impl VzApp {
                     Some(_) => t("A verified copy of all your data", "Una copia verificada de todos tus datos"),
                     None => t("You haven't made a backup yet", "Aún no has hecho una copia"),
                 }),
-                Button::new("backup").icon(IconName::DatabaseBackup).label(t("Back up now", "Hacer copia ahora")).on_click(cx.listener(|this, _, w, cx| this.backup_now(&crate::app::BackupNow, w, cx))),
+                Button::new("backup")
+                    .icon(IconName::DatabaseBackup)
+                    .label(t("Back up now", "Hacer copia ahora"))
+                    .on_click(cx.listener(|this, _, w, cx| this.backup_now(&crate::app::BackupNow, w, cx))),
             ))
             .child(row(
                 &p,
                 t("Restore", "Restaurar"),
                 Some(t("The backup is checked first and a safety copy is kept", "La copia se verifica primero y se guarda un respaldo")),
-                Button::new("restore").icon(IconName::ArchiveRestore).label(t("Restore from backup", "Restaurar una copia")).on_click(cx.listener(|this, _, w, cx| this.choose_restore(w, cx))),
+                Button::new("restore")
+                    .icon(IconName::ArchiveRestore)
+                    .label(t("Restore from backup", "Restaurar una copia"))
+                    .on_click(cx.listener(|this, _, w, cx| this.choose_restore(w, cx))),
             ))
             .child(row(
                 &p,
                 t("Export", "Exportar"),
                 Some(t("Clients, loans, payments and capital as CSV", "Clientes, préstamos, pagos y capital en CSV")),
-                Button::new("export").icon(IconName::FileSpreadsheet).label(t("Export CSV", "Exportar CSV")).on_click(cx.listener(|this, _, w, cx| this.choose_export(w, cx))),
+                Button::new("export")
+                    .icon(IconName::FileSpreadsheet)
+                    .label(t("Export CSV", "Exportar CSV"))
+                    .on_click(cx.listener(|this, _, w, cx| this.choose_export(w, cx))),
             ));
 
         let privacy = v_flex()
@@ -262,12 +290,27 @@ impl VzApp {
             )
             .child(section(&p, t("Business", "Negocio"), t("Your name and language", "Tu nombre e idioma"), business))
             .child(section(&p, t("General", "General"), t("Currency, numbers and dates", "Moneda, números y fechas"), general))
-            .child(section(&p, t("Lending", "Préstamos"), t("Defaults and how interest works", "Valores iniciales y cómo funciona el interés"), lending))
+            .child(section(
+                &p,
+                t("Lending", "Préstamos"),
+                t("Defaults and how interest works", "Valores iniciales y cómo funciona el interés"),
+                lending,
+            ))
             .child(section(&p, t("Receipts", "Recibos"), t("Printing payment receipts", "Impresión de recibos de pago"), receipts))
             .child(section(&p, t("Dashboard", "Panel"), t("Charts and appearance", "Gráficos y apariencia"), dashboard))
-            .child(section(&p, t("Data", "Datos"), t("Your database, backups and exports", "Tu base de datos, copias y exportaciones"), data))
+            .child(section(
+                &p,
+                t("Data", "Datos"),
+                t("Your database, backups and exports", "Tu base de datos, copias y exportaciones"),
+                data,
+            ))
             .child(section(&p, t("Privacy", "Privacidad"), t("How your data is handled", "Cómo se manejan tus datos"), privacy))
-            .child(section(&p, t("Keyboard", "Teclado"), t("Shortcuts available everywhere", "Atajos disponibles en toda la app"), shortcuts))
+            .child(section(
+                &p,
+                t("Keyboard", "Teclado"),
+                t("Shortcuts available everywhere", "Atajos disponibles en toda la app"),
+                shortcuts,
+            ))
             .into_any_element()
     }
 }

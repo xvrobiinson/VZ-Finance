@@ -15,12 +15,7 @@ pub fn icon(name: IconName, color: Hsla, size_px: f32) -> Icon {
 
 /// A gently elevated white surface.
 pub fn card(p: &Palette) -> Div {
-    v_flex()
-        .bg(p.surface)
-        .rounded(px(RADIUS_CARD))
-        .border_1()
-        .border_color(p.border)
-        .shadow(card_shadow(p))
+    v_flex().bg(p.surface).rounded(px(RADIUS_CARD)).border_1().border_color(p.border).shadow(card_shadow(p))
 }
 
 /// Card header: title on the left, optional element on the right.
@@ -111,15 +106,14 @@ pub fn status_pill(p: &Palette, s: DisplayStatus) -> Div {
 
 /// Initials in a pale tint whose hue is stable per client id.
 pub fn avatar(p: &Palette, name: &str, id: i64, diameter: f32) -> Div {
-    let initials: String = name
-        .split_whitespace()
-        .filter_map(|w| w.chars().next())
-        .take(2)
-        .collect::<String>()
-        .to_uppercase();
+    let initials: String = name.split_whitespace().filter_map(|w| w.chars().next()).take(2).collect::<String>().to_uppercase();
     // Golden-angle hue steps keep neighbours far apart.
     let hue = ((id as f32 * 137.508) % 360.0) / 360.0;
-    let (bg, fg) = if p.dark { (hsla(hue, 0.30, 0.22, 1.0), hsla(hue, 0.45, 0.80, 1.0)) } else { (hsla(hue, 0.55, 0.94, 1.0), hsla(hue, 0.45, 0.32, 1.0)) };
+    let (bg, fg) = if p.dark {
+        (hsla(hue, 0.30, 0.22, 1.0), hsla(hue, 0.45, 0.80, 1.0))
+    } else {
+        (hsla(hue, 0.55, 0.94, 1.0), hsla(hue, 0.45, 0.32, 1.0))
+    };
     h_flex()
         .flex_none()
         .size(px(diameter))
@@ -134,12 +128,7 @@ pub fn avatar(p: &Palette, name: &str, id: i64, diameter: f32) -> Div {
 
 pub fn progress_bar(p: &Palette, ratio: f32, color: Hsla) -> Div {
     let ratio = ratio.clamp(0.0, 1.0);
-    div()
-        .w_full()
-        .h(px(6.))
-        .rounded_full()
-        .bg(p.neutral_tint)
-        .child(div().h_full().rounded_full().bg(color).w(relative(ratio)))
+    div().w_full().h(px(6.)).rounded_full().bg(p.neutral_tint).child(div().h_full().rounded_full().bg(color).w(relative(ratio)))
 }
 
 /// An empty block keeps its frame: icon, one sentence, optional action.
@@ -150,14 +139,7 @@ pub fn empty_state(p: &Palette, icon_name: IconName, title: &str, body: &str, ac
         .gap(px(space::S))
         .py(px(40.))
         .px(px(space::XL))
-        .child(
-            h_flex()
-                .size(px(40.))
-                .rounded_full()
-                .bg(p.neutral_tint)
-                .justify_center()
-                .child(icon(icon_name, p.muted, 18.)),
-        )
+        .child(h_flex().size(px(40.)).rounded_full().bg(p.neutral_tint).justify_center().child(icon(icon_name, p.muted, 18.)))
         .child(div().pt(px(4.)).text_size(px(size::SECTION)).font_weight(FontWeight::MEDIUM).text_color(p.text).child(title.to_string()))
         .child(div().max_w(px(380.)).text_center().text_color(p.muted).child(body.to_string()))
         .children(action.map(|a| div().pt(px(space::S)).child(a)))

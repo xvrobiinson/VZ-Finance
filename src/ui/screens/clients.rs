@@ -10,9 +10,11 @@ use crate::app::{Route, VzApp};
 use crate::database::repositories::clients::Client;
 use crate::domain::ledger::{ContractStatus, DisplayStatus};
 use crate::domain::money::Cents;
-use crate::ui::components::{Tone, avatar, card, card_header, empty_state, figure, icon, label, page_header, pill, table_header, table_row, th, vrule};
 use crate::i18n::{count, t};
 use crate::tr;
+use crate::ui::components::{
+    Tone, avatar, card, card_header, empty_state, figure, icon, label, page_header, pill, table_header, table_row, th, vrule,
+};
 use crate::ui::theme::{Palette, palette, size, space, tabular};
 
 /// Per-client figures derived from the ledger.
@@ -148,32 +150,42 @@ impl VzApp {
             )
             .into_any_element()
         } else if visible.is_empty() {
-            empty_state(&p, IconName::SearchX, t("No matching clients", "Ningún cliente coincide"), &{
-                let q = query.trim();
-                tr!("Nothing matches “{q}”.", "Nada coincide con “{q}”.")
-            }, None).into_any_element()
+            empty_state(
+                &p,
+                IconName::SearchX,
+                t("No matching clients", "Ningún cliente coincide"),
+                &{
+                    let q = query.trim();
+                    tr!("Nothing matches “{q}”.", "Nada coincide con “{q}”.")
+                },
+                None,
+            )
+            .into_any_element()
         } else {
             let rows = visible.iter().map(|(c, st)| {
                 let id = c.id;
                 let contact = [c.phone.clone(), c.email.clone()].into_iter().flatten().collect::<Vec<_>>().join(" · ");
                 table_row(&p, ("client", id as u64), true)
                     .child(
-                        h_flex()
-                            .flex_1()
-                            .min_w(px(200.))
-                            .gap(px(space::M))
-                            .child(avatar(&p, &c.full_name, c.id, 32.))
-                            .child(
-                                v_flex()
-                                    .min_w_0()
-                                    .child(div().text_color(if c.is_archived() { p.muted } else { p.text }).truncate().child(c.full_name.clone()))
-                                    .child(div().text_size(px(size::META)).text_color(p.muted).truncate().child(if contact.is_empty() { t("No contact details", "Sin datos de contacto").to_string() } else { contact })),
-                            ),
+                        h_flex().flex_1().min_w(px(200.)).gap(px(space::M)).child(avatar(&p, &c.full_name, c.id, 32.)).child(
+                            v_flex()
+                                .min_w_0()
+                                .child(
+                                    div().text_color(if c.is_archived() { p.muted } else { p.text }).truncate().child(c.full_name.clone()),
+                                )
+                                .child(div().text_size(px(size::META)).text_color(p.muted).truncate().child(if contact.is_empty() {
+                                    t("No contact details", "Sin datos de contacto").to_string()
+                                } else {
+                                    contact
+                                })),
+                        ),
                     )
                     .child(ncolumn(90.).font_features(tabular()).child(st.active_loans.to_string()))
                     .when(!narrow, |d| d.child(ncolumn(140.).font_features(tabular()).text_color(p.muted).child(money.format(st.borrowed))))
                     .child(ncolumn(140.).font_features(tabular()).child(money.format(st.outstanding)))
-                    .when(!narrow, |d| d.child(ncolumn(130.).font_features(tabular()).text_color(p.muted).child(money.format(st.interest_paid))))
+                    .when(!narrow, |d| {
+                        d.child(ncolumn(130.).font_features(tabular()).text_color(p.muted).child(money.format(st.interest_paid)))
+                    })
                     .child(div().w(px(130.)).flex().justify_end().child(self.client_status_pill(&p, c, st)))
                     .on_click(cx.listener(move |this, _, w, cx| this.navigate(Route::Client(id), w, cx)))
             });
@@ -208,18 +220,27 @@ impl VzApp {
         let ds = self.settings().date_style;
         let st = self.client_stats(id);
         let since = chrono::NaiveDate::parse_from_str(client.created_at.get(..10).unwrap_or(""), "%Y-%m-%d").ok();
-        let contact = [client.phone.clone(), client.email.clone(), since.map(|d| {
-            let when = crate::utils::dates::short_month_year(d);
-            tr!("Client since {when}", "Cliente desde {when}")
-        })]
-            .into_iter()
-            .flatten()
-            .collect::<Vec<_>>()
-            .join("  ·  ");
+        let contact = [
+            client.phone.clone(),
+            client.email.clone(),
+            since.map(|d| {
+                let when = crate::utils::dates::short_month_year(d);
+                tr!("Client since {when}", "Cliente desde {when}")
+            }),
+        ]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>()
+        .join("  ·  ");
         let archived = client.is_archived();
 
         let mut actions = vec![
-            Button::new("edit-client").ghost().icon(IconName::Pencil).label(t("Edit", "Editar")).on_click(cx.listener(move |this, _, w, cx| this.open_client_form(Some(id), w, cx))).into_any_element(),
+            Button::new("edit-client")
+                .ghost()
+                .icon(IconName::Pencil)
+                .label(t("Edit", "Editar"))
+                .on_click(cx.listener(move |this, _, w, cx| this.open_client_form(Some(id), w, cx)))
+                .into_any_element(),
             Button::new("archive-client")
                 .ghost()
                 .icon(if archived { IconName::ArchiveRestore } else { IconName::Archive })
@@ -228,7 +249,12 @@ impl VzApp {
                 .into_any_element(),
         ];
         if !archived {
-            actions.push(Button::new("client-new-loan").label(t("New loan", "Nuevo préstamo")).on_click(cx.listener(move |this, _, w, cx| this.open_loan_form(Some(id), w, cx))).into_any_element());
+            actions.push(
+                Button::new("client-new-loan")
+                    .label(t("New loan", "Nuevo préstamo"))
+                    .on_click(cx.listener(move |this, _, w, cx| this.open_loan_form(Some(id), w, cx)))
+                    .into_any_element(),
+            );
         }
         let first_active = self.snap.loans_for_client(id).find(|l| l.status == ContractStatus::Active).map(|l| l.id);
         if st.active_loans > 0 {
@@ -255,12 +281,13 @@ impl VzApp {
             .items_end()
             .gap(px(space::L))
             .pb(px(space::XL))
-            .child(
-                v_flex()
-                    .gap(px(8.))
-                    .child(div().text_size(px(size::TITLE)).font_weight(FontWeight::SEMIBOLD).child(title))
-                    .child(div().pl(px(52.)).text_color(p.muted).child(if contact.is_empty() { t("No contact details", "Sin datos de contacto").to_string() } else { contact })),
-            )
+            .child(v_flex().gap(px(8.)).child(div().text_size(px(size::TITLE)).font_weight(FontWeight::SEMIBOLD).child(title)).child(
+                div().pl(px(52.)).text_color(p.muted).child(if contact.is_empty() {
+                    t("No contact details", "Sin datos de contacto").to_string()
+                } else {
+                    contact
+                }),
+            ))
             .child(h_flex().gap(px(space::S)).children(actions));
 
         let cell = |label_text: &str, value: String, sub: String| {
@@ -277,11 +304,23 @@ impl VzApp {
         };
         let strip = card(&p)
             .flex_row()
-            .child(cell(t("Owes", "Debe"), money.format(st.outstanding), count(st.active_loans, "active loan", "active loans", "préstamo activo", "préstamos activos")))
+            .child(cell(
+                t("Owes", "Debe"),
+                money.format(st.outstanding),
+                count(st.active_loans, "active loan", "active loans", "préstamo activo", "préstamos activos"),
+            ))
             .child(vrule(&p))
-            .child(cell(t("Total paid", "Total pagado"), money.format(st.paid), t("Capital, interest and fees", "Capital, interés y cargos").into()))
+            .child(cell(
+                t("Total paid", "Total pagado"),
+                money.format(st.paid),
+                t("Capital, interest and fees", "Capital, interés y cargos").into(),
+            ))
             .child(vrule(&p))
-            .child(cell(t("Interest paid", "Interés pagado"), money.format(st.interest_paid), t("Income from this client", "Ganancia con este cliente").into()))
+            .child(cell(
+                t("Interest paid", "Interés pagado"),
+                money.format(st.interest_paid),
+                t("Income from this client", "Ganancia con este cliente").into(),
+            ))
             .child(vrule(&p))
             .child(cell(t("Total borrowed", "Total prestado"), money.format(st.borrowed), {
                 let n = count(st.total_loans, "loan", "loans", "préstamo", "préstamos");
@@ -310,41 +349,42 @@ impl VzApp {
                 )
                 .child(ncolumn(130.).font_features(tabular()).text_color(p.muted).child(money.format(l.facts.principal)))
                 .child(ncolumn(130.).font_features(tabular()).child(money.format(pos.payoff())))
-                .child(ncolumn(120.).text_color(p.muted).child(q.next_due.map(|d| ds.format_short(d, self.today)).unwrap_or_else(|| "—".into())))
+                .child(
+                    ncolumn(120.)
+                        .text_color(p.muted)
+                        .child(q.next_due.map(|d| ds.format_short(d, self.today)).unwrap_or_else(|| "—".into())),
+                )
                 .child(div().w(px(130.)).flex().justify_end().child(status_detail_pill(&p, status, &q, self.today)))
                 .on_click(cx.listener(move |this, _, w, cx| this.navigate(Route::Loan(lid), w, cx)))
         });
-        let loans_card = card(&p)
-            .overflow_hidden()
-            .child(card_header(&p, t("Loans", "Préstamos"), None))
-            .child(if loans.is_empty() {
-                empty_state(
-                    &p,
-                    IconName::HandCoins,
-                    t("No loans yet", "Aún no hay préstamos"),
-                    t("Create a loan to track its interest and payments here.", "Crea un préstamo para seguir aquí sus intereses y pagos."),
-                    (!archived).then(|| {
-                        Button::new("cl-empty-loan")
-                            .primary()
-                            .label(t("New loan", "Nuevo préstamo"))
-                            .on_click(cx.listener(move |this, _, w, cx| this.open_loan_form(Some(id), w, cx)))
-                            .into_any_element()
-                    }),
+        let loans_card = card(&p).overflow_hidden().child(card_header(&p, t("Loans", "Préstamos"), None)).child(if loans.is_empty() {
+            empty_state(
+                &p,
+                IconName::HandCoins,
+                t("No loans yet", "Aún no hay préstamos"),
+                t("Create a loan to track its interest and payments here.", "Crea un préstamo para seguir aquí sus intereses y pagos."),
+                (!archived).then(|| {
+                    Button::new("cl-empty-loan")
+                        .primary()
+                        .label(t("New loan", "Nuevo préstamo"))
+                        .on_click(cx.listener(move |this, _, w, cx| this.open_loan_form(Some(id), w, cx)))
+                        .into_any_element()
+                }),
+            )
+            .into_any_element()
+        } else {
+            v_flex()
+                .child(
+                    table_header(&p)
+                        .child(div().flex_1().child(th(&p, t("Loan", "Préstamo"))))
+                        .child(ncolumn(130.).child(th(&p, t("Lent", "Prestado"))))
+                        .child(ncolumn(130.).child(th(&p, t("Owes today", "Debe hoy"))))
+                        .child(ncolumn(120.).child(th(&p, t("Next payment", "Próximo pago"))))
+                        .child(ncolumn(130.).child(th(&p, t("Status", "Estado")))),
                 )
+                .children(loan_rows)
                 .into_any_element()
-            } else {
-                v_flex()
-                    .child(
-                        table_header(&p)
-                            .child(div().flex_1().child(th(&p, t("Loan", "Préstamo"))))
-                            .child(ncolumn(130.).child(th(&p, t("Lent", "Prestado"))))
-                            .child(ncolumn(130.).child(th(&p, t("Owes today", "Debe hoy"))))
-                            .child(ncolumn(120.).child(th(&p, t("Next payment", "Próximo pago"))))
-                            .child(ncolumn(130.).child(th(&p, t("Status", "Estado")))),
-                    )
-                    .children(loan_rows)
-                    .into_any_element()
-            });
+        });
 
         // Payment timeline across all of this client's loans.
         let loan_ids: Vec<i64> = loans.iter().map(|l| l.id).collect();
@@ -386,17 +426,19 @@ impl VzApp {
                         .child(format!("+{}", money.format(x.amount))),
                 )
         });
-        let timeline_card = card(&p)
-            .overflow_hidden()
-            .child(card_header(&p, t("Payment history", "Historial de pagos"), None))
-            .child(if pays.is_empty() {
+        let timeline_card =
+            card(&p).overflow_hidden().child(card_header(&p, t("Payment history", "Historial de pagos"), None)).child(if pays.is_empty() {
                 empty_state(
                     &p,
                     IconName::Receipt,
                     t("No payments yet", "Aún no hay pagos"),
-                    t("Payments from this client appear here, newest first.", "Los pagos de este cliente aparecen aquí, del más reciente al más antiguo."),
+                    t(
+                        "Payments from this client appear here, newest first.",
+                        "Los pagos de este cliente aparecen aquí, del más reciente al más antiguo.",
+                    ),
                     None,
-                ).into_any_element()
+                )
+                .into_any_element()
             } else {
                 v_flex().children(timeline).into_any_element()
             });

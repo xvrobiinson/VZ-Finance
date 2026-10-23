@@ -201,13 +201,7 @@ impl Book {
     pub fn cash_on(&self, as_of: NaiveDate) -> Cents {
         let capital: Cents = self.capital.iter().filter(|c| c.occurred_on <= as_of).map(|c| c.signed()).sum();
         let disbursed: Cents = self.loans.iter().filter(|l| l.facts.start_date <= as_of).map(|l| l.facts.principal).sum();
-        let received: Cents = self
-            .loans
-            .iter()
-            .flat_map(|l| l.payments.iter())
-            .filter(|p| p.paid_on <= as_of)
-            .map(|p| p.total())
-            .sum();
+        let received: Cents = self.loans.iter().flat_map(|l| l.payments.iter()).filter(|p| p.paid_on <= as_of).map(|p| p.total()).sum();
         capital - disbursed + received
     }
 
@@ -239,7 +233,13 @@ impl Book {
             return Vec::new();
         }
         let days = (to - from).num_days();
-        let step = if days <= 120 { 1 } else if days <= 400 { 3 } else { 7 };
+        let step = if days <= 120 {
+            1
+        } else if days <= 400 {
+            3
+        } else {
+            7
+        };
         let mut points = Vec::new();
         let mut d = from;
         while d < to {
@@ -328,7 +328,6 @@ impl MonthFlow {
         self.contributions - self.withdrawals - self.disbursed + self.principal_returned + self.interest_received + self.fees_received
     }
 }
-
 
 #[cfg(test)]
 mod tests {

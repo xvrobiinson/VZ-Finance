@@ -165,7 +165,12 @@ pub const FONT: &str = "Inter";
 pub fn card_shadow(p: &Palette) -> Vec<BoxShadow> {
     vec![
         BoxShadow::new(px(0.), px(4.), p.shadow).blur_radius(px(18.)),
-        BoxShadow::new(px(0.), px(1.), { let mut c = p.shadow; c.a *= 0.8; c }).blur_radius(px(2.)),
+        BoxShadow::new(px(0.), px(1.), {
+            let mut c = p.shadow;
+            c.a *= 0.8;
+            c
+        })
+        .blur_radius(px(2.)),
     ]
 }
 
@@ -207,7 +212,11 @@ pub fn apply(pref: ThemePref, cx: &mut App) {
         c.input = p.control;
         c.ring = p.accent;
         c.caret = p.accent;
-        c.selection = { let mut s = p.accent; s.a = 0.18; s };
+        c.selection = {
+            let mut s = p.accent;
+            s.a = 0.18;
+            s
+        };
         c.muted = p.neutral_tint;
         c.muted_foreground = p.muted;
         c.accent = p.hover;

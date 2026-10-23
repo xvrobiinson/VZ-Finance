@@ -74,7 +74,9 @@ impl CapitalForm {
                     let m = app.settings().money().format(amount);
                     let msg = match kind {
                         CapitalKind::Contribution => tr!("{m} added to your lending capital", "{m} agregado a tu capital de préstamos"),
-                        CapitalKind::Withdrawal => tr!("{m} withdrawn from your lending capital", "{m} retirado de tu capital de préstamos"),
+                        CapitalKind::Withdrawal => {
+                            tr!("{m} withdrawn from your lending capital", "{m} retirado de tu capital de préstamos")
+                        }
                     };
                     app.notify_success(msg, window, cx);
                 });
@@ -99,7 +101,9 @@ impl Render for CapitalForm {
         let available = self.snap.book.min_cash_from(date).max(0);
         let amount_err = match (&amount, self.kind) {
             (Err(e), _) if self.show_errors => Some(e.to_string()),
-            (Ok(a), CapitalKind::Withdrawal) if *a > available => Some(tr!("Only {avail} is available to withdraw", "Solo hay {avail} disponible para retirar")),
+            (Ok(a), CapitalKind::Withdrawal) if *a > available => {
+                Some(tr!("Only {avail} is available to withdraw", "Solo hay {avail} disponible para retirar"))
+            }
             (Ok(0), _) if self.show_errors => Some(t("Enter an amount greater than zero", "Escribe un monto mayor que cero").into()),
             _ => None,
         };

@@ -1,7 +1,6 @@
 // No console window in release builds.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-
 use std::borrow::Cow;
 use std::io::Write as _;
 use std::sync::Mutex;
@@ -15,9 +14,41 @@ use vz_finance::{database, ui};
 gpui_kit::assets::icon_assets!(
     AppIcons,
     [
-        LayoutDashboard, Users, HandCoins, ArrowLeftRight, ChartLine, Settings, DatabaseBackup, PanelLeftClose, PanelLeftOpen, ShieldCheck,
-        Plus, Search, SearchX, Wallet, TrendingUp, Landmark, FileText, CircleAlert, CircleCheck, Check, Receipt, Calculator, UserPlus,
-        Pencil, Archive, ArchiveRestore, ArrowLeft, FolderOpen, FileSpreadsheet, ChartColumn, Table, Printer, Calendar, ChevronLeft, ChevronRight
+        LayoutDashboard,
+        Users,
+        HandCoins,
+        ArrowLeftRight,
+        ChartLine,
+        Settings,
+        DatabaseBackup,
+        PanelLeftClose,
+        PanelLeftOpen,
+        ShieldCheck,
+        Plus,
+        Search,
+        SearchX,
+        Wallet,
+        TrendingUp,
+        Landmark,
+        FileText,
+        CircleAlert,
+        CircleCheck,
+        Check,
+        Receipt,
+        Calculator,
+        UserPlus,
+        Pencil,
+        Archive,
+        ArchiveRestore,
+        ArrowLeft,
+        FolderOpen,
+        FileSpreadsheet,
+        ChartColumn,
+        Table,
+        Printer,
+        Calendar,
+        ChevronLeft,
+        ChevronRight
     ]
 );
 

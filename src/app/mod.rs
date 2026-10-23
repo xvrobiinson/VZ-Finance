@@ -451,24 +451,10 @@ impl Render for VzApp {
             .text_size(px(theme::size::BODY))
             .line_height(px(20.))
             .child(self.render_sidebar(window, cx))
-            .child(
-                v_flex()
-                    .flex_1()
-                    .min_w_0()
-                    .h_full()
-                    .children(banner)
-                    .child(
-                        div().id(SharedString::from(format!("scroll-{:?}", self.route.section()))).flex_1().min_h_0().overflow_y_scroll().child(
-                            div()
-                                .w_full()
-                                .max_w(px(1440.))
-                                .mx_auto()
-                                .px(px(space::XXL + 4.))
-                                .pt(px(space::XXL - 4.))
-                                .pb(px(48.))
-                                .child(content),
-                        ),
-                    ),
-            )
+            .child(v_flex().flex_1().min_w_0().h_full().children(banner).child(
+                div().id(SharedString::from(format!("scroll-{:?}", self.route.section()))).flex_1().min_h_0().overflow_y_scroll().child(
+                    div().w_full().max_w(px(1440.)).mx_auto().px(px(space::XXL + 4.)).pt(px(space::XXL - 4.)).pb(px(48.)).child(content),
+                ),
+            ))
     }
 }

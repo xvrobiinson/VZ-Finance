@@ -81,8 +81,14 @@ impl VzApp {
             )
             .into_any_element()
         } else if rows.is_empty() {
-            empty_state(&p, IconName::SearchX, t("No matching payments", "Ningún pago coincide"), &tr!("Nothing matches “{q}”.", "Nada coincide con “{q}”."), None)
-                .into_any_element()
+            empty_state(
+                &p,
+                IconName::SearchX,
+                t("No matching payments", "Ningún pago coincide"),
+                &tr!("Nothing matches “{q}”.", "Nada coincide con “{q}”."),
+                None,
+            )
+            .into_any_element()
         } else {
             let items = rows.iter().map(|x| {
                 let loan = self.snap.loan(x.loan_id);
@@ -105,21 +111,18 @@ impl VzApp {
                     .font_features(tabular())
                     .child(div().w(px(120.)).text_color(if rev { p.muted } else { p.text }).child(ds.format(x.paid_on)))
                     .child(
-                        h_flex()
-                            .flex_1()
-                            .min_w(px(180.))
-                            .gap(px(space::M))
-                            .child(avatar(&p, &name, cid, 28.))
-                            .child(
-                                v_flex()
-                                    .min_w_0()
-                                    .child(div().truncate().child(name))
-                                    .child(div().text_size(px(size::META)).text_color(p.muted).truncate().child(sub)),
-                            ),
+                        h_flex().flex_1().min_w(px(180.)).gap(px(space::M)).child(avatar(&p, &name, cid, 28.)).child(
+                            v_flex()
+                                .min_w_0()
+                                .child(div().truncate().child(name))
+                                .child(div().text_size(px(size::META)).text_color(p.muted).truncate().child(sub)),
+                        ),
                     )
                     .child(dim(ncolumn(110.).text_color(p.muted)).child(money.format(x.interest)))
                     .child(dim(ncolumn(120.).text_color(p.muted)).child(money.format(x.principal)))
-                    .when(!narrow, |d| d.child(dim(ncolumn(90.).text_color(p.muted)).child(if x.fee > 0 { money.format(x.fee) } else { "—".into() })))
+                    .when(!narrow, |d| {
+                        d.child(dim(ncolumn(90.).text_color(p.muted)).child(if x.fee > 0 { money.format(x.fee) } else { "—".into() }))
+                    })
                     .child(dim(ncolumn(130.)).child(money.format(x.amount)))
                     .child(
                         h_flex()
@@ -158,11 +161,9 @@ impl VzApp {
 
         v_flex()
             .child(header)
-            .child(
-                div()
-                    .pb(px(space::L))
-                    .child(div().w(px(380.)).child(Input::new(&self.payment_search).prefix(icon(IconName::Search, p.faint, 14.)).cleanable(true))),
-            )
+            .child(div().pb(px(space::L)).child(
+                div().w(px(380.)).child(Input::new(&self.payment_search).prefix(icon(IconName::Search, p.faint, 14.)).cleanable(true)),
+            ))
             .child(card(&p).overflow_hidden().child(body))
             .into_any_element()
     }

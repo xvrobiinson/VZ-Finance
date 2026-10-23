@@ -45,7 +45,13 @@ pub fn date_field(date: NaiveDate, window: &mut Window, cx: &mut App) -> Entity<
 }
 
 /// Footer with Cancel and the primary action.
-pub fn footer(p: &Palette, primary_label: &str, enabled: bool, busy: bool, on_primary: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static) -> Div {
+pub fn footer(
+    p: &Palette,
+    primary_label: &str,
+    enabled: bool,
+    busy: bool,
+    on_primary: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+) -> Div {
     h_flex()
         .justify_end()
         .gap(px(space::S))
@@ -55,25 +61,12 @@ pub fn footer(p: &Palette, primary_label: &str, enabled: bool, busy: bool, on_pr
         .border_color(p.rule)
         .child(Button::new("cancel").label(t("Cancel", "Cancelar")).on_click(|_, window, cx| window.close_dialog(cx)))
         .child(
-            Button::new("submit")
-                .primary()
-                .label(primary_label.to_string())
-                .loading(busy)
-                .disabled(!enabled || busy)
-                .on_click(on_primary),
+            Button::new("submit").primary().label(primary_label.to_string()).loading(busy).disabled(!enabled || busy).on_click(on_primary),
         )
 }
 
 pub fn error_banner(p: &Palette, error: &Option<String>) -> Option<Div> {
-    error.as_ref().map(|e| {
-        div()
-            .px(px(space::M))
-            .py(px(10.))
-            .rounded(px(8.))
-            .bg(p.negative_tint)
-            .text_color(p.negative)
-            .child(e.clone())
-    })
+    error.as_ref().map(|e| div().px(px(space::M)).py(px(10.)).rounded(px(8.)).bg(p.negative_tint).text_color(p.negative).child(e.clone()))
 }
 
 /// Focus `handle` the first time the dialog builder runs, never after.

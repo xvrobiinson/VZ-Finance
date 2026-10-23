@@ -25,10 +25,20 @@ impl ClientForm {
     pub fn new(app: WeakEntity<VzApp>, existing: Option<Client>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let e = existing.as_ref();
         let name = cx.new(|cx| {
-            InputState::new(window, cx).placeholder(t("e.g. Marta Quiroga", "ej. Marta Quiroga")).default_value(e.map(|c| c.full_name.clone()).unwrap_or_default())
+            InputState::new(window, cx)
+                .placeholder(t("e.g. Marta Quiroga", "ej. Marta Quiroga"))
+                .default_value(e.map(|c| c.full_name.clone()).unwrap_or_default())
         });
-        let phone = cx.new(|cx| InputState::new(window, cx).placeholder(t("Optional", "Opcional")).default_value(e.and_then(|c| c.phone.clone()).unwrap_or_default()));
-        let email = cx.new(|cx| InputState::new(window, cx).placeholder(t("Optional", "Opcional")).default_value(e.and_then(|c| c.email.clone()).unwrap_or_default()));
+        let phone = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder(t("Optional", "Opcional"))
+                .default_value(e.and_then(|c| c.phone.clone()).unwrap_or_default())
+        });
+        let email = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder(t("Optional", "Opcional"))
+                .default_value(e.and_then(|c| c.email.clone()).unwrap_or_default())
+        });
         let notes = cx.new(|cx| {
             TextareaState::new(window, cx)
                 .rows(3)
@@ -86,7 +96,11 @@ impl ClientForm {
                 window.close_dialog(cx);
                 let name = input.full_name.trim().to_string();
                 let _ = self.app.update(cx, |app, cx| {
-                    app.notify_success(if editing.is_some() { tr!("Saved {name}", "{name} guardado") } else { tr!("Added {name}", "{name} agregado") }, window, cx);
+                    app.notify_success(
+                        if editing.is_some() { tr!("Saved {name}", "{name} guardado") } else { tr!("Added {name}", "{name} agregado") },
+                        window,
+                        cx,
+                    );
                     if editing.is_none() {
                         app.navigate(Route::Client(id), window, cx);
                     }
@@ -105,9 +119,11 @@ impl Render for ClientForm {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let p = palette(cx);
         let input = self.input(cx);
-        let name_error = (self.show_errors && input.full_name.trim().is_empty()).then(|| t("Enter the client's full name", "Escribe el nombre completo del cliente").to_string());
+        let name_error = (self.show_errors && input.full_name.trim().is_empty())
+            .then(|| t("Enter the client's full name", "Escribe el nombre completo del cliente").to_string());
         let email = input.email.trim();
-        let email_error = (!email.is_empty() && self.show_errors && !email.contains('@')).then(|| t("Enter a valid email address", "Escribe un correo válido").to_string());
+        let email_error = (!email.is_empty() && self.show_errors && !email.contains('@'))
+            .then(|| t("Enter a valid email address", "Escribe un correo válido").to_string());
         v_flex()
             .gap(px(space::L))
             .children(error_banner(&p, &self.error))

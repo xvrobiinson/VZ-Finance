@@ -114,7 +114,8 @@ fn main() -> Result<()> {
     let snap = s.snapshot()?;
     let sum = snap.book.summary(t);
     let m = snap.settings.money();
-    let overdue: Vec<_> = snap.book.loans.iter().filter(|l| delinquency(&l.facts, &l.payments, t).overdue_amount > 0).map(|l| l.id).collect();
+    let overdue: Vec<_> =
+        snap.book.loans.iter().filter(|l| delinquency(&l.facts, &l.payments, t).overdue_amount > 0).map(|l| l.id).collect();
     println!(
         "Seeded {}: {} clients, {} loans, {} payments. Value {} / cash {} / overdue {} (loans {:?})",
         path.display(),

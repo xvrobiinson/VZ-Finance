@@ -58,7 +58,10 @@ impl PaymentForm {
         let loan = cx.new(|cx| SelectState::new(choices, selected, window, cx).searchable(true));
         let amount = cx.new(|cx| InputState::new(window, cx).placeholder("0.00"));
         let fee = cx.new(|cx| InputState::new(window, cx).placeholder("0.00"));
-        let notes = cx.new(|cx| InputState::new(window, cx).placeholder(t("Optional: cash, transfer, reference", "Opcional: efectivo, transferencia, referencia")));
+        let notes = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder(t("Optional: cash, transfer, reference", "Opcional: efectivo, transferencia, referencia"))
+        });
         let date = date_field(today, window, cx);
         let mut subs = vec![
             cx.subscribe_in(&loan, window, |this, _, ev: &SelectEvent<Vec<Choice>>, _, cx| {
@@ -77,7 +80,21 @@ impl PaymentForm {
             }));
         }
         let print_receipt = snap.settings.receipt_after_payment;
-        Self { app, snap, loan, loan_id, amount, fee, date, notes, show_fee: false, print_receipt, error: None, show_errors: false, _subs: subs }
+        Self {
+            app,
+            snap,
+            loan,
+            loan_id,
+            amount,
+            fee,
+            date,
+            notes,
+            show_fee: false,
+            print_receipt,
+            error: None,
+            show_errors: false,
+            _subs: subs,
+        }
     }
 
     pub fn first_focus(&self, cx: &App) -> FocusHandle {
@@ -218,7 +235,9 @@ impl Render for PaymentForm {
                         h_flex()
                             .justify_between()
                             .pb(px(6.))
-                            .child(div().font_weight(FontWeight::MEDIUM).child(t("How this payment is applied", "Cómo se aplica este pago")))
+                            .child(
+                                div().font_weight(FontWeight::MEDIUM).child(t("How this payment is applied", "Cómo se aplica este pago")),
+                            )
                             .when(a.pays_off(), |d| d.child(pill(&p, t("Pays off the loan", "Salda el préstamo"), Tone::Positive))),
                     )
                     .when(a.fee > 0, |d| d.child(kv(&p, t("Fee", "Cargo"), money.format(a.fee))))
@@ -226,14 +245,20 @@ impl Render for PaymentForm {
                     .child(kv(&p, t("Capital", "Abono a capital"), money.format(a.principal)))
                     .child(div().h(px(1.)).my(px(6.)).bg(p.border))
                     .child(kv(&p, t("Capital remaining", "Capital pendiente"), money.format(a.principal_after)))
-                    .when(a.interest_after > 0, |d| d.child(kv(&p, t("Interest still due", "Interés aún pendiente"), money.format(a.interest_after))))
-                    .when(after > 0, |d| d.child(kv(&p, t("Next period's interest", "Interés del próximo período"), money.format(next_interest))))
+                    .when(a.interest_after > 0, |d| {
+                        d.child(kv(&p, t("Interest still due", "Interés aún pendiente"), money.format(a.interest_after)))
+                    })
+                    .when(after > 0, |d| {
+                        d.child(kv(&p, t("Next period's interest", "Interés del próximo período"), money.format(next_interest)))
+                    })
                     .into_any_element()
             }
             _ => div()
                 .text_color(p.muted)
                 .child(match (book, &amount) {
-                    (None, _) => t("Choose a loan to see how the payment is applied.", "Elige un préstamo para ver cómo se aplica el pago."),
+                    (None, _) => {
+                        t("Choose a loan to see how the payment is applied.", "Elige un préstamo para ver cómo se aplica el pago.")
+                    }
                     (Some(_), Err(_)) => t(
                         "Enter the amount received to see how much goes to interest and to capital.",
                         "Escribe el monto recibido para ver cuánto va a interés y cuánto a capital.",
@@ -308,7 +333,9 @@ impl Render for PaymentForm {
                     &p,
                     t("Fee included in this payment", "Cargo incluido en este pago"),
                     Input::new(&self.fee).prefix(div().text_color(p.muted).child(money.symbol.clone())),
-                    Some(t("Late or service fee, applied before interest", "Mora o cargo por servicio, se aplica antes del interés").into()),
+                    Some(
+                        t("Late or service fee, applied before interest", "Mora o cargo por servicio, se aplica antes del interés").into(),
+                    ),
                     if let Err(e) = &fee { Some(e.clone()) } else { None },
                 )
                 .into_any_element()
@@ -336,6 +363,12 @@ impl Render for PaymentForm {
                     })))
                     .child(div().child(t("Open the receipt to print after saving", "Abrir el recibo para imprimir al guardar"))),
             )
-            .child(footer(&p, t("Record payment", "Registrar pago"), can_submit, false, cx.listener(|this, _, window, cx| this.submit(window, cx))))
+            .child(footer(
+                &p,
+                t("Record payment", "Registrar pago"),
+                can_submit,
+                false,
+                cx.listener(|this, _, window, cx| this.submit(window, cx)),
+            ))
     }
 }

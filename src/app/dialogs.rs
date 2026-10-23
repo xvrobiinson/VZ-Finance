@@ -8,8 +8,8 @@ use gpui_kit::*;
 use super::VzApp;
 use crate::domain::portfolio::CapitalKind;
 use crate::i18n::t;
-use crate::tr;
 use crate::services::Store;
+use crate::tr;
 use crate::ui::forms::capital::CapitalForm;
 use crate::ui::forms::client::ClientForm;
 use crate::ui::forms::focus_once;
@@ -116,11 +116,8 @@ impl VzApp {
         let Some(client) = self.snap.client(client_id).cloned() else { return };
         let archiving = !client.is_archived();
         let app = cx.entity().downgrade();
-        let open_loans = self
-            .snap
-            .loans_for_client(client_id)
-            .filter(|l| l.status == crate::domain::ledger::ContractStatus::Active)
-            .count();
+        let open_loans =
+            self.snap.loans_for_client(client_id).filter(|l| l.status == crate::domain::ledger::ContractStatus::Active).count();
         let name = client.full_name.clone();
         let loans = crate::i18n::count(open_loans, "active loan", "active loans", "préstamo activo", "préstamos activos");
         let description = if archiving {
@@ -136,7 +133,10 @@ impl VzApp {
                 )
             }
         } else {
-            tr!("{name} will appear in lists again and can receive new loans.", "{name} volverá a aparecer en las listas y podrá recibir préstamos.")
+            tr!(
+                "{name} will appear in lists again and can receive new loans.",
+                "{name} volverá a aparecer en las listas y podrá recibir préstamos."
+            )
         };
         window.open_alert_dialog(cx, move |alert, _, _| {
             let app = app.clone();
@@ -154,7 +154,15 @@ impl VzApp {
                     let _ = app.update(cx, |app, cx| match app.store.set_client_archived(client_id, archiving) {
                         Ok(()) => {
                             app.reload(cx);
-                            app.notify_success(if archiving { t("Client archived", "Cliente archivado") } else { t("Client restored", "Cliente restaurado") }, window, cx);
+                            app.notify_success(
+                                if archiving {
+                                    t("Client archived", "Cliente archivado")
+                                } else {
+                                    t("Client restored", "Cliente restaurado")
+                                },
+                                window,
+                                cx,
+                            );
                         }
                         Err(e) => {
                             let m = app.error_message(&e);
@@ -230,9 +238,20 @@ impl VzApp {
                             app.reload(cx);
                             crate::ui::theme::apply(app.settings().theme, cx);
                             let saved = safety.display().to_string();
-                            app.notify_success(tr!("Backup restored. Previous data saved to {saved}", "Copia restaurada. Los datos anteriores se guardaron en {saved}"), window, cx);
+                            app.notify_success(
+                                tr!(
+                                    "Backup restored. Previous data saved to {saved}",
+                                    "Copia restaurada. Los datos anteriores se guardaron en {saved}"
+                                ),
+                                window,
+                                cx,
+                            );
                         }
-                        Err(e) => app.notify_error(tr!("Restore failed; your data was not changed. {e:#}", "La restauración falló; tus datos no cambiaron. {e:#}"), window, cx),
+                        Err(e) => app.notify_error(
+                            tr!("Restore failed; your data was not changed. {e:#}", "La restauración falló; tus datos no cambiaron. {e:#}"),
+                            window,
+                            cx,
+                        ),
                     });
                     true
                 })

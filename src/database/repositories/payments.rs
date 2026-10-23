@@ -31,7 +31,8 @@ impl Payment {
     }
 }
 
-const SELECT: &str = "SELECT p.id, p.loan_id, p.paid_on, p.amount, a.principal, a.interest, a.fee, p.notes, p.created_at, p.reversed_at, p.reversal_reason
+const SELECT: &str =
+    "SELECT p.id, p.loan_id, p.paid_on, p.amount, a.principal, a.interest, a.fee, p.notes, p.created_at, p.reversed_at, p.reversal_reason
      FROM payments p JOIN payment_allocations a ON a.payment_id = p.id";
 
 fn from_row(r: &Row<'_>) -> rusqlite::Result<Payment> {

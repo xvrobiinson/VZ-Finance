@@ -174,11 +174,14 @@ impl Render for DateField {
             .hover(|s| s.bg(p.hover))
             .when(self.open, |d| d.bg(p.accent_tint).border_color(p.accent))
             .child(icon(IconName::Calendar, if self.open { p.accent_text } else { p.muted }, 15.))
-            .on_mouse_down(MouseButton::Left, cx.listener(|this, _, _, cx| {
-                cx.stop_propagation();
-                this.open = !this.open;
-                cx.notify();
-            }));
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, _, _, cx| {
+                    cx.stop_propagation();
+                    this.open = !this.open;
+                    cx.notify();
+                }),
+            );
         let popup = self.open.then(|| {
             deferred(
                 anchored().offset(point(px(0.), px(36.))).snap_to_window_with_margin(px(8.)).child(

@@ -62,12 +62,8 @@ struct Parsed {
 
 impl LoanForm {
     pub fn new(app: WeakEntity<VzApp>, snap: Rc<Snapshot>, client_id: Option<i64>, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let choices: Vec<Choice> = snap
-            .clients
-            .iter()
-            .filter(|c| !c.is_archived())
-            .map(|c| Choice { id: c.id, title: c.full_name.clone().into() })
-            .collect();
+        let choices: Vec<Choice> =
+            snap.clients.iter().filter(|c| !c.is_archived()).map(|c| Choice { id: c.id, title: c.full_name.clone().into() }).collect();
         let selected = client_id.and_then(|id| choices.iter().position(|c| c.id == id)).map(IndexPath::new);
         let client = cx.new(|cx| SelectState::new(choices, selected, window, cx).searchable(true));
         let principal = cx.new(|cx| InputState::new(window, cx).placeholder("0.00"));
@@ -78,7 +74,8 @@ impl LoanForm {
             if preset.is_none() { s.default_value(default_rate.percent_label().trim_end_matches('%').to_string()) } else { s }
         });
         let start = date_field(crate::utils::dates::today(), window, cx);
-        let notes = cx.new(|cx| TextareaState::new(window, cx).rows(2).placeholder(t("Purpose, collateral, agreement", "Motivo, garantía, acuerdo")));
+        let notes = cx
+            .new(|cx| TextareaState::new(window, cx).rows(2).placeholder(t("Purpose, collateral, agreement", "Motivo, garantía, acuerdo")));
         let frequency = snap.settings.default_frequency;
 
         let mut subs = vec![
@@ -141,7 +138,9 @@ impl LoanForm {
         let today = crate::utils::dates::today();
         let start_err = match start {
             None => Some(invalid_date()),
-            Some(d) if d > today => Some(t("The loan date can't be in the future", "La fecha del préstamo no puede ser futura").to_string()),
+            Some(d) if d > today => {
+                Some(t("The loan date can't be in the future", "La fecha del préstamo no puede ser futura").to_string())
+            }
             _ => None,
         };
         let terms = match (principal, &rate, start) {
@@ -189,7 +188,15 @@ impl LoanForm {
         }
     }
 
-    fn chip(&self, p: &Palette, id: &'static str, label: String, selected: bool, on: impl Fn(&mut Self, &mut Context<Self>) + 'static, cx: &mut Context<Self>) -> Stateful<Div> {
+    fn chip(
+        &self,
+        p: &Palette,
+        id: &'static str,
+        label: String,
+        selected: bool,
+        on: impl Fn(&mut Self, &mut Context<Self>) + 'static,
+        cx: &mut Context<Self>,
+    ) -> Stateful<Div> {
         div()
             .id(id)
             .h(px(34.))
@@ -275,11 +282,11 @@ impl LoanForm {
                 .child(num(i.clone()).text_size(px(size::FIGURE + 2.)).line_height(px(30.)).font_weight(FontWeight::MEDIUM))
                 .child(div().text_size(px(size::META)).text_color(p.muted).child(tr!("{rate} of {principal}", "{rate} de {principal}"))),
         )
-        .child(
-            v_flex()
-                .child(kv(p, t("First payment due", "Primer pago"), ds.format(terms.first_due())))
-                .child(kv(p, t("Loan date", "Fecha del préstamo"), ds.format(terms.start_date))),
-        )
+        .child(v_flex().child(kv(p, t("First payment due", "Primer pago"), ds.format(terms.first_due()))).child(kv(
+            p,
+            t("Loan date", "Fecha del préstamo"),
+            ds.format(terms.start_date),
+        )))
         .child(
             v_flex()
                 .gap(px(8.))
@@ -346,11 +353,17 @@ impl Render for LoanForm {
             let id: &'static str = ["rate-5", "rate-10", "rate-15"][i];
             chips = chips.child(self.chip(&p, id, r.percent_label(), self.preset == Some(r), move |this, _| this.preset = Some(r), cx));
         }
-        chips = chips.child(self.chip(&p, "rate-other", t("Other", "Otra").to_string(), self.preset.is_none(), |this, _| this.preset = None, cx));
-        let rate_control = v_flex()
-            .gap(px(space::S))
-            .child(chips)
-            .when(self.preset.is_none(), |d| d.child(div().w(px(150.)).child(Input::new(&self.custom_rate).suffix(div().text_color(p.muted).child("%")))));
+        chips = chips.child(self.chip(
+            &p,
+            "rate-other",
+            t("Other", "Otra").to_string(),
+            self.preset.is_none(),
+            |this, _| this.preset = None,
+            cx,
+        ));
+        let rate_control = v_flex().gap(px(space::S)).child(chips).when(self.preset.is_none(), |d| {
+            d.child(div().w(px(150.)).child(Input::new(&self.custom_rate).suffix(div().text_color(p.muted).child("%"))))
+        });
 
         h_flex()
             .items_start()
@@ -364,7 +377,9 @@ impl Render for LoanForm {
                     .child(field(
                         &p,
                         t("Client", "Cliente"),
-                        Select::new(&self.client).placeholder(t("Choose a client", "Elige un cliente")).search_placeholder(t("Search clients", "Buscar clientes")),
+                        Select::new(&self.client)
+                            .placeholder(t("Choose a client", "Elige un cliente"))
+                            .search_placeholder(t("Search clients", "Buscar clientes")),
                         None,
                         client_err,
                     ))
@@ -375,21 +390,24 @@ impl Render for LoanForm {
                         principal_hint,
                         principal_err,
                     ))
-                    .child(field(
-                        &p,
-                        t("Interest rate per period", "Tasa de interés por período"),
-                        rate_control,
-                        None,
-                        rate_err,
-                    ))
+                    .child(field(&p, t("Interest rate per period", "Tasa de interés por período"), rate_control, None, rate_err))
                     .child(field(
                         &p,
                         t("Payments", "Pagos"),
-                        h_flex().gap(px(space::S)).items_stretch().children(Frequency::ALL.map(|f| self.frequency_tile(&p, f, cx).into_any_element())),
+                        h_flex()
+                            .gap(px(space::S))
+                            .items_stretch()
+                            .children(Frequency::ALL.map(|f| self.frequency_tile(&p, f, cx).into_any_element())),
                         None,
                         None,
                     ))
-                    .child(field(&p, t("Loan date", "Fecha del préstamo"), self.start.clone(), None, parsed.start_err.clone().filter(|_| show)))
+                    .child(field(
+                        &p,
+                        t("Loan date", "Fecha del préstamo"),
+                        self.start.clone(),
+                        None,
+                        parsed.start_err.clone().filter(|_| show),
+                    ))
                     .child(field(&p, t("Notes", "Notas"), Textarea::new(&self.notes), None, None)),
             )
             .child(
@@ -400,7 +418,13 @@ impl Render for LoanForm {
                     .gap(px(space::S))
                     .child(div().text_size(px(size::META + 1.)).font_weight(FontWeight::MEDIUM).child(t("Preview", "Vista previa")))
                     .child(div().flex_1().child(self.preview(&p, parsed.terms.as_ref())))
-                    .child(footer(&p, t("Create loan", "Crear préstamo"), can_submit, false, cx.listener(|this, _, window, cx| this.submit(window, cx)))),
+                    .child(footer(
+                        &p,
+                        t("Create loan", "Crear préstamo"),
+                        can_submit,
+                        false,
+                        cx.listener(|this, _, window, cx| this.submit(window, cx)),
+                    )),
             )
     }
 }

@@ -12,9 +12,9 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use crate::app::{Route, VzApp};
+use crate::domain::ledger::{Delinquency, DisplayStatus};
 use crate::i18n::t;
 use crate::tr;
-use crate::domain::ledger::{DisplayStatus, Delinquency};
 use crate::ui::components::{Tone, pill, status_tone};
 use crate::ui::theme::{Palette, size};
 use crate::utils::dates::days_between;
@@ -58,7 +58,10 @@ pub fn segmented<K: Copy + PartialEq + 'static>(
             .text_size(px(size::META + 0.5))
             .cursor_pointer()
             .when(is, |d| {
-                d.bg(p.surface).text_color(p.text).font_weight(FontWeight::MEDIUM).shadow(vec![BoxShadow::new(px(0.), px(1.), p.shadow).blur_radius(px(3.))])
+                d.bg(p.surface)
+                    .text_color(p.text)
+                    .font_weight(FontWeight::MEDIUM)
+                    .shadow(vec![BoxShadow::new(px(0.), px(1.), p.shadow).blur_radius(px(3.))])
             })
             .when(!is, |d| d.text_color(p.muted).hover(|s| s.text_color(p.text)))
             .child(label.to_string())

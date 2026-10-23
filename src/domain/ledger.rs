@@ -157,7 +157,13 @@ impl Replay<'_> {
         loop {
             let k = self.next_seq;
             let starts = self.loan.frequency.period_start(self.loan.start_date, k);
-            let started = if k == 1 { starts <= at } else if strict { starts < at } else { starts <= at };
+            let started = if k == 1 {
+                starts <= at
+            } else if strict {
+                starts < at
+            } else {
+                starts <= at
+            };
             if !started || starts > self.charge_until || self.pos.principal_outstanding <= 0 {
                 break;
             }
@@ -184,12 +190,7 @@ fn replay(loan: &LoanFacts, payments: &[PaymentFact], at: NaiveDate, cutoff: Cut
         (ContractStatus::Defaulted | ContractStatus::Restructured, Some(d)) => d,
         _ => NaiveDate::MAX,
     };
-    let mut r = Replay {
-        loan,
-        pos: Position { principal_outstanding: loan.principal, ..Default::default() },
-        next_seq: 1,
-        charge_until,
-    };
+    let mut r = Replay { loan, pos: Position { principal_outstanding: loan.principal, ..Default::default() }, next_seq: 1, charge_until };
     for p in payments.iter().filter(|p| p.paid_on <= at) {
         // Payments dated on a due date belong to the period ending then.
         r.charge_through(p.paid_on, true);
@@ -516,10 +517,7 @@ mod tests {
     fn payoff_closes_and_overpayment_is_refused() {
         let l = loan(100_000, 10, Frequency::Monthly, d(2026, 1, 1));
         let mut h = Vec::new();
-        assert_eq!(
-            allocate(&l, &h, 200_000, 0, d(2026, 1, 10), d(2030, 1, 1)),
-            Err(PaymentError::Overpayment { payoff: 110_000 })
-        );
+        assert_eq!(allocate(&l, &h, 200_000, 0, d(2026, 1, 10), d(2030, 1, 1)), Err(PaymentError::Overpayment { payoff: 110_000 }));
         let a = pay(&l, &mut h, 110_000, d(2026, 1, 10));
         assert!(a.pays_off());
         // No interest is charged once the capital is repaid.

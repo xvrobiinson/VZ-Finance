@@ -22,7 +22,9 @@ pub struct Loan {
 const COLUMNS: &str = "id, client_id, principal, period_rate, frequency, start_date, status, status_date, notes, created_at";
 
 fn from_row(r: &Row<'_>) -> rusqlite::Result<Loan> {
-    let bad = |what: &str, v: String| rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, format!("bad {what} {v:?}").into());
+    let bad = |what: &str, v: String| {
+        rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, format!("bad {what} {v:?}").into())
+    };
     let frequency: String = r.get(4)?;
     let status: String = r.get(6)?;
     let start: Day = r.get(5)?;

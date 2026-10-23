@@ -9,10 +9,10 @@ use crate::charts::bars::column_chart;
 use crate::domain::ledger::DisplayStatus;
 use crate::domain::money::percent_label;
 use crate::domain::portfolio::CapitalKind;
-use crate::services::settings::ChartRange;
-use crate::ui::components::{card, card_header, empty_state, figure, kv, label, page_header, table_header, th, vrule};
 use crate::i18n::t;
+use crate::services::settings::ChartRange;
 use crate::tr;
+use crate::ui::components::{card, card_header, empty_state, figure, kv, label, page_header, table_header, th, vrule};
 use crate::ui::theme::{Palette, palette, size, space, tabular};
 use crate::utils::dates::{month_year, short_month, short_month_year};
 
@@ -31,7 +31,13 @@ impl VzApp {
         let header = page_header(
             &p,
             t("Portfolio Analytics", "Análisis de la cartera"),
-            Some(t("Every figure is computed from your recorded capital, loans and payments.", "Cada cifra se calcula con tu capital, préstamos y pagos registrados.").into_any_element()),
+            Some(
+                t(
+                    "Every figure is computed from your recorded capital, loans and payments.",
+                    "Cada cifra se calcula con tu capital, préstamos y pagos registrados.",
+                )
+                .into_any_element(),
+            ),
             vec![
                 Button::new("an-withdraw")
                     .label(t("Withdraw capital", "Retirar capital"))
@@ -65,9 +71,19 @@ impl VzApp {
         };
         let returns = card(&p)
             .flex_row()
-            .child(cell(t("Portfolio value", "Valor de la cartera"), money.format(s.portfolio_value), t("Cash + capital lent + interest due", "Efectivo + capital prestado + interés vencido").into(), p.text))
+            .child(cell(
+                t("Portfolio value", "Valor de la cartera"),
+                money.format(s.portfolio_value),
+                t("Cash + capital lent + interest due", "Efectivo + capital prestado + interés vencido").into(),
+                p.text,
+            ))
             .child(vrule(&p))
-            .child(cell(t("Portfolio gain", "Ganancia de la cartera"), money.format_signed(gain), t("Value minus capital invested", "Valor menos capital invertido").into(), gain_color))
+            .child(cell(
+                t("Portfolio gain", "Ganancia de la cartera"),
+                money.format_signed(gain),
+                t("Value minus capital invested", "Valor menos capital invertido").into(),
+                gain_color,
+            ))
             .child(vrule(&p))
             .child(cell(
                 t("Return on invested capital", "Rendimiento sobre el capital"),
@@ -76,19 +92,44 @@ impl VzApp {
                 gain_color,
             ))
             .child(vrule(&p))
-            .child(cell(t("Income received", "Ganancia cobrada"), money.format(s.realized_income()), t("Interest and fees received", "Intereses y cargos cobrados").into(), p.text));
+            .child(cell(
+                t("Income received", "Ganancia cobrada"),
+                money.format(s.realized_income()),
+                t("Interest and fees received", "Intereses y cargos cobrados").into(),
+                p.text,
+            ));
         let capital = card(&p)
             .flex_row()
-            .child(cell(t("Capital invested", "Capital invertido"), money.format(invested), {
-                let (i, o) = (money.format(s.contributions), money.format(s.withdrawals));
-                tr!("{i} in · {o} out", "{i} entró · {o} salió")
-            }, p.text))
+            .child(cell(
+                t("Capital invested", "Capital invertido"),
+                money.format(invested),
+                {
+                    let (i, o) = (money.format(s.contributions), money.format(s.withdrawals));
+                    tr!("{i} in · {o} out", "{i} entró · {o} salió")
+                },
+                p.text,
+            ))
             .child(vrule(&p))
-            .child(cell(t("Available cash", "Efectivo disponible"), money.format(s.available_cash), t("Not lent out", "Sin prestar").into(), p.text))
+            .child(cell(
+                t("Available cash", "Efectivo disponible"),
+                money.format(s.available_cash),
+                t("Not lent out", "Sin prestar").into(),
+                p.text,
+            ))
             .child(vrule(&p))
-            .child(cell(t("Interest due, not collected", "Interés vencido sin cobrar"), money.format(s.interest_receivable), t("Past its due date", "Ya pasó su fecha").into(), p.text))
+            .child(cell(
+                t("Interest due, not collected", "Interés vencido sin cobrar"),
+                money.format(s.interest_receivable),
+                t("Past its due date", "Ya pasó su fecha").into(),
+                p.text,
+            ))
             .child(vrule(&p))
-            .child(cell(t("Expected interest per month", "Interés esperado por mes"), money.format(s.expected_monthly_interest), t("At today's capital", "Con el capital de hoy").into(), p.text))
+            .child(cell(
+                t("Expected interest per month", "Interés esperado por mes"),
+                money.format(s.expected_monthly_interest),
+                t("At today's capital", "Con el capital de hoy").into(),
+                p.text,
+            ))
             .child(vrule(&p))
             .child(cell(
                 t("Defaulted balance", "Saldo incobrable"),
@@ -107,13 +148,23 @@ impl VzApp {
                 &p,
                 IconName::ChartLine,
                 t("No history yet", "Aún no hay historial"),
-                t("Record capital and loans to see portfolio value over time.", "Registra capital y préstamos para ver el valor de la cartera en el tiempo."),
+                t(
+                    "Record capital and loans to see portfolio value over time.",
+                    "Registra capital y préstamos para ver el valor de la cartera en el tiempo.",
+                ),
                 None,
-            ).into_any_element()
+            )
+            .into_any_element()
         } else {
-            div().px(px(space::XL)).pb(px(space::L)).child(self.growth_chart(&p, &points, super::overview::ChartSlot::Analytics, 300., cx)).into_any_element()
+            div()
+                .px(px(space::XL))
+                .pb(px(space::L))
+                .child(self.growth_chart(&p, &points, super::overview::ChartSlot::Analytics, 300., cx))
+                .into_any_element()
         };
-        let value_card = card(&p).child(card_header(&p, t("Portfolio value", "Valor de la cartera"), Some(control.into_any_element()))).child(chart_body);
+        let value_card = card(&p)
+            .child(card_header(&p, t("Portfolio value", "Valor de la cartera"), Some(control.into_any_element())))
+            .child(chart_body);
 
         // Monthly interest, last 12 months.
         let flows = self.snap.book.monthly_cash_flow(today);
@@ -136,7 +187,8 @@ impl VzApp {
                     t("No income yet", "Aún no hay ganancias"),
                     t("Monthly interest appears once payments come in.", "El interés mensual aparece cuando lleguen los pagos."),
                     None,
-                ).into_any_element()
+                )
+                .into_any_element()
             } else {
                 v_flex()
                     .px(px(space::XL))
@@ -145,7 +197,11 @@ impl VzApp {
                     .child(column_chart(&p, &labels, &values, true, &money, 260.))
                     .child(div().h(px(1.)).bg(p.border))
                     .child(kv(&p, t("Last 12 months", "Últimos 12 meses"), money.format(values.iter().sum::<i64>())))
-                    .child(kv(&p, t("Monthly average", "Promedio mensual"), money.format(values.iter().sum::<i64>() / values.len().max(1) as i64)))
+                    .child(kv(
+                        &p,
+                        t("Monthly average", "Promedio mensual"),
+                        money.format(values.iter().sum::<i64>() / values.len().max(1) as i64),
+                    ))
                     .into_any_element()
             });
 
@@ -161,26 +217,36 @@ impl VzApp {
                 .border_b_1()
                 .border_color(p.rule)
                 .font_features(tabular())
-                .child(div().flex_1().flex_basis(px(0.)).min_w(px(96.)).child(if narrow { short_month_year(f.month) } else { month_year(f.month) }))
+                .child(div().flex_1().flex_basis(px(0.)).min_w(px(96.)).child(if narrow {
+                    short_month_year(f.month)
+                } else {
+                    month_year(f.month)
+                }))
                 .child(fcol().text_color(p.muted).child(dash(&money, f.contributions)))
                 .child(fcol().text_color(p.muted).child(dash_neg(&money, f.withdrawals)))
                 .child(fcol().text_color(p.muted).child(dash_neg(&money, f.disbursed)))
                 .child(fcol().text_color(p.muted).child(dash(&money, f.principal_returned)))
-                .child(fcol().text_color(if f.interest_received + f.fees_received > 0 { p.positive } else { p.muted }).child(dash(&money, f.interest_received + f.fees_received)))
+                .child(
+                    fcol()
+                        .text_color(if f.interest_received + f.fees_received > 0 { p.positive } else { p.muted })
+                        .child(dash(&money, f.interest_received + f.fees_received)),
+                )
                 .child(fcol().child(money.format_signed(net)))
                 .child(fcol().child(money.format(f.ending_cash)))
         });
-        let flow_card = card(&p)
-            .overflow_hidden()
-            .child(card_header(&p, t("Monthly cash flow", "Flujo de efectivo mensual"), None))
-            .child(if flows.is_empty() {
+        let flow_card = card(&p).overflow_hidden().child(card_header(&p, t("Monthly cash flow", "Flujo de efectivo mensual"), None)).child(
+            if flows.is_empty() {
                 empty_state(
                     &p,
                     IconName::Table,
                     t("No cash movements yet", "Aún no hay movimientos"),
-                    t("Capital, loans and payments are summarised here month by month.", "Aquí se resumen capital, préstamos y pagos mes a mes."),
+                    t(
+                        "Capital, loans and payments are summarised here month by month.",
+                        "Aquí se resumen capital, préstamos y pagos mes a mes.",
+                    ),
                     None,
-                ).into_any_element()
+                )
+                .into_any_element()
             } else {
                 v_flex()
                     .child(
@@ -196,7 +262,8 @@ impl VzApp {
                     )
                     .children(flow_rows)
                     .into_any_element()
-            });
+            },
+        );
 
         // Capital ledger.
         let cap_rows = self.snap.capital.iter().rev().map(|c| {
@@ -215,10 +282,8 @@ impl VzApp {
                 .child(div().flex_1().min_w_0().truncate().text_color(p.muted).child(c.notes.clone()))
                 .child(ncolumn(140.).font_features(tabular()).child(sign))
         });
-        let ledger_card = card(&p)
-            .overflow_hidden()
-            .child(card_header(&p, t("Capital ledger", "Movimientos de capital"), None))
-            .child(if self.snap.capital.is_empty() {
+        let ledger_card = card(&p).overflow_hidden().child(card_header(&p, t("Capital ledger", "Movimientos de capital"), None)).child(
+            if self.snap.capital.is_empty() {
                 empty_state(
                     &p,
                     IconName::Landmark,
@@ -238,7 +303,8 @@ impl VzApp {
                 .into_any_element()
             } else {
                 v_flex().children(cap_rows).into_any_element()
-            });
+            },
+        );
 
         v_flex()
             .child(header)
@@ -248,7 +314,11 @@ impl VzApp {
                     .child(returns)
                     .child(capital)
                     .child(value_card)
-                    .child(if narrow { v_flex().gap(px(space::XL)).child(interest_card).child(deploy_card).into_any_element() } else { h_flex().items_stretch().gap(px(space::XL)).child(interest_card).child(deploy_card).into_any_element() })
+                    .child(if narrow {
+                        v_flex().gap(px(space::XL)).child(interest_card).child(deploy_card).into_any_element()
+                    } else {
+                        h_flex().items_stretch().gap(px(space::XL)).child(interest_card).child(deploy_card).into_any_element()
+                    })
                     .child(flow_card)
                     .child(ledger_card),
             )
@@ -261,7 +331,13 @@ impl VzApp {
         let deployed = s.outstanding_principal;
         let pool = deployed + s.available_cash.max(0);
         let ratio = if pool > 0 { deployed as f32 / pool as f32 } else { 0.0 };
-        let mut counts = [(DisplayStatus::Active, 0usize), (DisplayStatus::DueSoon, 0), (DisplayStatus::Overdue, 0), (DisplayStatus::PaidOff, 0), (DisplayStatus::Defaulted, 0)];
+        let mut counts = [
+            (DisplayStatus::Active, 0usize),
+            (DisplayStatus::DueSoon, 0),
+            (DisplayStatus::Overdue, 0),
+            (DisplayStatus::PaidOff, 0),
+            (DisplayStatus::Defaulted, 0),
+        ];
         for l in &self.snap.book.loans {
             let st = l.display_status(self.today);
             if let Some(c) = counts.iter_mut().find(|(k, _)| *k == st) {
@@ -277,10 +353,7 @@ impl VzApp {
             _ => p.chart_reference,
         };
         let bar = h_flex().h(px(10.)).w_full().rounded(px(3.)).overflow_hidden().gap(px(2.)).bg(p.neutral_tint).children(
-            counts
-                .iter()
-                .filter(|(_, n)| *n > 0)
-                .map(|(st, n)| div().h_full().flex_basis(px(0.)).flex_grow(*n as f32).bg(colors(*st))),
+            counts.iter().filter(|(_, n)| *n > 0).map(|(st, n)| div().h_full().flex_basis(px(0.)).flex_grow(*n as f32).bg(colors(*st))),
         );
         let legend = counts.iter().map(|(st, n)| {
             h_flex()
@@ -290,38 +363,39 @@ impl VzApp {
                 .child(div().flex_1().text_color(p.muted).child(st.label()))
                 .child(div().font_features(tabular()).child(n.to_string()))
         });
-        card(p)
-            .flex_1()
-            .flex_basis(px(0.))
-            .min_w_0()
-            .child(card_header(p, t("Capital lent out", "Capital en la calle"), None))
-            .child(
-                v_flex()
-                    .px(px(space::XL))
-                    .pb(px(space::XL))
-                    .gap(px(space::M))
-                    .child(
-                        h_flex()
-                            .justify_between()
-                            .items_end()
-                            .child(
-                                v_flex()
-                                    .gap(px(2.))
-                                    .child(label(p, t("Share of capital lent", "Porción del capital prestada")))
-                                    .child(figure(p, percent_label(deployed, pool).unwrap_or_else(|| "—".into()), size::FIGURE)),
-                            )
-                            .child(div().text_color(p.muted).font_features(tabular()).child({
-                                let (a, b) = (money.format(deployed), money.format(pool));
-                                tr!("{a} of {b}", "{a} de {b}")
-                            })),
-                    )
-                    .child(crate::ui::components::progress_bar(p, ratio, p.accent))
-                    .child(kv(p, t("Available to lend", "Disponible para prestar"), money.format(s.available_cash)))
-                    .child(div().h(px(1.)).bg(p.border))
-                    .child(div().pt(px(4.)).font_weight(FontWeight::MEDIUM).child(tr!("Loans by status · {total}", "Préstamos por estado · {total}")))
-                    .child(bar)
-                    .child(v_flex().children(legend)),
-            )
+        card(p).flex_1().flex_basis(px(0.)).min_w_0().child(card_header(p, t("Capital lent out", "Capital en la calle"), None)).child(
+            v_flex()
+                .px(px(space::XL))
+                .pb(px(space::XL))
+                .gap(px(space::M))
+                .child(
+                    h_flex()
+                        .justify_between()
+                        .items_end()
+                        .child(
+                            v_flex().gap(px(2.)).child(label(p, t("Share of capital lent", "Porción del capital prestada"))).child(figure(
+                                p,
+                                percent_label(deployed, pool).unwrap_or_else(|| "—".into()),
+                                size::FIGURE,
+                            )),
+                        )
+                        .child(div().text_color(p.muted).font_features(tabular()).child({
+                            let (a, b) = (money.format(deployed), money.format(pool));
+                            tr!("{a} of {b}", "{a} de {b}")
+                        })),
+                )
+                .child(crate::ui::components::progress_bar(p, ratio, p.accent))
+                .child(kv(p, t("Available to lend", "Disponible para prestar"), money.format(s.available_cash)))
+                .child(div().h(px(1.)).bg(p.border))
+                .child(
+                    div()
+                        .pt(px(4.))
+                        .font_weight(FontWeight::MEDIUM)
+                        .child(tr!("Loans by status · {total}", "Préstamos por estado · {total}")),
+                )
+                .child(bar)
+                .child(v_flex().children(legend)),
+        )
     }
 }
 

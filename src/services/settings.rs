@@ -64,7 +64,8 @@ pub enum ChartRange {
 }
 
 impl ChartRange {
-    pub const ALL: [ChartRange; 5] = [ChartRange::OneMonth, ChartRange::ThreeMonths, ChartRange::SixMonths, ChartRange::OneYear, ChartRange::All];
+    pub const ALL: [ChartRange; 5] =
+        [ChartRange::OneMonth, ChartRange::ThreeMonths, ChartRange::SixMonths, ChartRange::OneYear, ChartRange::All];
     pub fn key(self) -> &'static str {
         match self {
             ChartRange::OneMonth => "1m",
@@ -148,7 +149,11 @@ impl Settings {
             currency_code: get("currency").map(|c| currency(c).code.to_string()).unwrap_or(d.currency_code),
             number_style: get("number_style").map(NumberStyle::from_key).unwrap_or(d.number_style),
             date_style: get("date_style").map(DateStyle::from_key).unwrap_or(d.date_style),
-            default_rate: get("default_rate").and_then(|v| v.parse().ok()).map(Rate).filter(|r| r.0 >= 0 && r.0 <= 1_000_000).unwrap_or(d.default_rate),
+            default_rate: get("default_rate")
+                .and_then(|v| v.parse().ok())
+                .map(Rate)
+                .filter(|r| r.0 >= 0 && r.0 <= 1_000_000)
+                .unwrap_or(d.default_rate),
             default_frequency: get("default_frequency").and_then(Frequency::from_key).unwrap_or(d.default_frequency),
             receipt_after_payment: flag("receipt_after_payment", d.receipt_after_payment),
             theme: match get("theme") {

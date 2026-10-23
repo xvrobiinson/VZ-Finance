@@ -38,9 +38,7 @@ pub fn export_all(snap: &Snapshot, dir: &Path) -> Result<Vec<PathBuf>> {
     written.push(path);
 
     let (mut w, path) = file("loans")?;
-    w.write_record([
-        "id", "client_id", "client", "principal", "rate_percent_per_period", "frequency", "start_date", "status", "notes",
-    ])?;
+    w.write_record(["id", "client_id", "client", "principal", "rate_percent_per_period", "frequency", "start_date", "status", "notes"])?;
     for l in &snap.loans {
         w.write_record([
             l.id.to_string(),
@@ -58,7 +56,19 @@ pub fn export_all(snap: &Snapshot, dir: &Path) -> Result<Vec<PathBuf>> {
     written.push(path);
 
     let (mut w, path) = file("payments")?;
-    w.write_record(["id", "loan_id", "client", "paid_on", "amount", "principal", "interest", "fee", "notes", "reversed_at", "reversal_reason"])?;
+    w.write_record([
+        "id",
+        "loan_id",
+        "client",
+        "paid_on",
+        "amount",
+        "principal",
+        "interest",
+        "fee",
+        "notes",
+        "reversed_at",
+        "reversal_reason",
+    ])?;
     for p in &snap.payments {
         let client = snap.loan(p.loan_id).map(|l| snap.client_name(l.client_id)).unwrap_or_default();
         w.write_record([

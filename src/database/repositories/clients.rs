@@ -50,9 +50,7 @@ pub fn list(conn: &Connection) -> Result<Vec<Client>> {
 }
 
 pub fn get(conn: &Connection, id: i64) -> Result<Option<Client>> {
-    Ok(conn
-        .query_row(&format!("SELECT {COLUMNS} FROM clients WHERE id = ?1"), [id], from_row)
-        .optional()?)
+    Ok(conn.query_row(&format!("SELECT {COLUMNS} FROM clients WHERE id = ?1"), [id], from_row).optional()?)
 }
 
 pub fn insert(conn: &Connection, input: &ClientInput) -> Result<i64> {

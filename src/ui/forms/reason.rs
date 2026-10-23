@@ -74,7 +74,9 @@ impl ReasonForm {
                 let _ = self.app.update(cx, |app, cx| {
                     app.notify_success(
                         match kind {
-                            ReasonKind::ReversePayment(_) => t("Payment reversed. The original stays on record.", "Pago anulado. El original queda en el historial."),
+                            ReasonKind::ReversePayment(_) => {
+                                t("Payment reversed. The original stays on record.", "Pago anulado. El original queda en el historial.")
+                            }
                             ReasonKind::MarkDefaulted(_) => t(
                                 "Loan marked as defaulted. Its balance is excluded from portfolio value.",
                                 "Préstamo marcado como incobrable. Su saldo queda fuera del valor de la cartera.",
@@ -120,7 +122,9 @@ impl Render for ReasonForm {
             .gap(px(space::L))
             .children(error_banner(&p, &self.error))
             .child(div().text_color(p.muted).child(explain))
-            .when(matches!(self.kind, ReasonKind::MarkDefaulted(_)), |d| d.child(field(&p, t("Date", "Fecha"), self.date.clone(), None, None)))
+            .when(matches!(self.kind, ReasonKind::MarkDefaulted(_)), |d| {
+                d.child(field(&p, t("Date", "Fecha"), self.date.clone(), None, None))
+            })
             .child(field(&p, t("Reason", "Motivo"), Input::new(&self.reason), None, None))
             .child(
                 h_flex()
@@ -128,7 +132,13 @@ impl Render for ReasonForm {
                     .gap(px(space::S))
                     .pt(px(space::S))
                     .child(Button::new("cancel").label(t("Cancel", "Cancelar")).on_click(|_, window, cx| window.close_dialog(cx)))
-                    .child(Button::new("confirm").danger().label(label).disabled(!can).on_click(cx.listener(|this, _, w, cx| this.submit(w, cx)))),
+                    .child(
+                        Button::new("confirm")
+                            .danger()
+                            .label(label)
+                            .disabled(!can)
+                            .on_click(cx.listener(|this, _, w, cx| this.submit(w, cx))),
+                    ),
             )
     }
 }

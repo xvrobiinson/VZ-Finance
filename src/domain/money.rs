@@ -75,11 +75,7 @@ impl fmt::Display for ParseError {
 /// an integer scaled by 10^decimals. Accepts thousands separators (`,` or a
 /// space) and a leading currency symbol.
 fn parse_fixed(input: &str, decimals: u32) -> Result<i64, ParseError> {
-    let mut s: String = input
-        .trim()
-        .chars()
-        .filter(|c| !matches!(c, ',' | ' ' | '_' | '\u{a0}'))
-        .collect();
+    let mut s: String = input.trim().chars().filter(|c| !matches!(c, ',' | ' ' | '_' | '\u{a0}')).collect();
     if s.starts_with('-') {
         return Err(ParseError::Negative);
     }
@@ -109,10 +105,7 @@ fn parse_fixed(input: &str, decimals: u32) -> Result<i64, ParseError> {
         frac.push('0');
     }
     let frac_value: i64 = if frac.is_empty() { 0 } else { frac.parse().map_err(|_| ParseError::Invalid)? };
-    int_value
-        .checked_mul(10_i64.pow(decimals))
-        .and_then(|v| v.checked_add(frac_value))
-        .ok_or(ParseError::TooLarge)
+    int_value.checked_mul(10_i64.pow(decimals)).and_then(|v| v.checked_add(frac_value)).ok_or(ParseError::TooLarge)
 }
 
 /// Parses a user-entered money amount ("1,250.50", "$300") into cents.
@@ -127,11 +120,7 @@ pub fn parse_money(input: &str) -> Result<Cents, ParseError> {
 /// Rounds `numerator / denominator` half away from zero. `denominator` > 0.
 pub fn div_round_half_up(numerator: i128, denominator: i128) -> i128 {
     debug_assert!(denominator > 0);
-    if numerator >= 0 {
-        (numerator + denominator / 2) / denominator
-    } else {
-        -((-numerator + denominator / 2) / denominator)
-    }
+    if numerator >= 0 { (numerator + denominator / 2) / denominator } else { -((-numerator + denominator / 2) / denominator) }
 }
 
 /// Number formatting style for figures.

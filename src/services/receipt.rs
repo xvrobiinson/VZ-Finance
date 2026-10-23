@@ -137,17 +137,18 @@ pub fn render(d: &ReceiptData, snap: &Snapshot) -> String {
             esc(t("interest", "interés")),
             m(amount)
         ),
-        _ => format!("<p class=\"next done\">{}</p>", esc(t("This loan is fully paid. Thank you!", "Este préstamo quedó saldado. ¡Gracias!"))),
+        _ => format!(
+            "<p class=\"next done\">{}</p>",
+            esc(t("This loan is fully paid. Thank you!", "Este préstamo quedó saldado. ¡Gracias!"))
+        ),
     };
-    let void = d.reversed.as_ref().map(|r| {
-        format!(
-            "<div class=\"void\">{}<span>{}</span></div>",
-            esc(t("VOID", "ANULADO")),
-            esc(r)
-        )
-    });
+    let void = d.reversed.as_ref().map(|r| format!("<div class=\"void\">{}<span>{}</span></div>", esc(t("VOID", "ANULADO")), esc(r)));
     let phone = d.client_phone.as_ref().map(|p| format!("<div class=\"muted\">{}</div>", esc(p))).unwrap_or_default();
-    let notes = if d.notes.trim().is_empty() { String::new() } else { format!("<p class=\"muted\">{} {}</p>", esc(t("Note:", "Nota:")), esc(&d.notes)) };
+    let notes = if d.notes.trim().is_empty() {
+        String::new()
+    } else {
+        format!("<p class=\"muted\">{} {}</p>", esc(t("Note:", "Nota:")), esc(&d.notes))
+    };
     let lang = i18n::get().key();
     let title = tr!("Receipt {number}", "Recibo {number}");
     let share_line = tr!("This payment covered {share} of the balance owed.", "Este pago cubrió el {share} de lo adeudado.");

@@ -190,7 +190,10 @@ impl Store {
         }
         let phone = input.phone.trim();
         if phone.len() > 60 || !phone.chars().all(|c| c.is_ascii_digit() || " +-().ext".contains(c)) {
-            return invalid(t("Phone numbers may contain digits, spaces and + - ( )", "El teléfono solo puede tener números, espacios y + - ( )"));
+            return invalid(t(
+                "Phone numbers may contain digits, spaces and + - ( )",
+                "El teléfono solo puede tener números, espacios y + - ( )",
+            ));
         }
         Ok(())
     }
@@ -247,7 +250,10 @@ impl Store {
         self.write(|c| {
             let loan = loans::get(c, loan_id)?.ok_or_else(|| anyhow!("loan not found"))?;
             if loan.status != ContractStatus::Active {
-                return invalid(t("Only active loans can be marked as defaulted", "Solo los préstamos activos pueden marcarse como incobrables"));
+                return invalid(t(
+                    "Only active loans can be marked as defaulted",
+                    "Solo los préstamos activos pueden marcarse como incobrables",
+                ));
             }
             if on < loan.terms.start_date {
                 return invalid(t("The date is before the loan started", "La fecha es anterior al inicio del préstamo"));
