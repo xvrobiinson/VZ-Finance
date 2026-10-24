@@ -4,7 +4,7 @@ use gpui_kit::component::{Sizable as _, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
-use super::{crumb, ncolumn, segmented, status_detail_pill};
+use super::{crumb, ncolumn, row_icon_button, segmented, status_detail_pill};
 use crate::app::{LoanFilter, Route, VzApp};
 use crate::domain::ledger::{ContractStatus, DisplayStatus, PeriodState, owed_at_payment, period_states};
 use crate::domain::loans::period_interest;
@@ -187,7 +187,26 @@ impl VzApp {
         let terms = &loan.terms;
         let active = loan.status == ContractStatus::Active;
 
-        let mut actions = Vec::new();
+        let mut actions = vec![
+            Button::new("loan-receipt")
+                .ghost()
+                .icon(IconName::Printer)
+                .label(t("Loan receipt", "Recibo del préstamo"))
+                .on_click(cx.listener(move |this, _, w, cx| this.open_loan_receipt(id, w, cx)))
+                .into_any_element(),
+            Button::new("loan-edit")
+                .ghost()
+                .icon(IconName::Pencil)
+                .label(t("Edit", "Editar"))
+                .on_click(cx.listener(move |this, _, w, cx| this.edit_loan(id, w, cx)))
+                .into_any_element(),
+            Button::new("loan-delete")
+                .ghost()
+                .icon(IconName::Trash)
+                .tooltip(t("Delete loan", "Eliminar préstamo"))
+                .on_click(cx.listener(move |this, _, w, cx| this.open_reason_form(ReasonKind::DeleteLoan(id), w, cx)))
+                .into_any_element(),
+        ];
         match loan.status {
             ContractStatus::Active => {
                 actions.push(
@@ -470,10 +489,8 @@ impl VzApp {
             )
             .child(div().id("periods-scroll").max_h(px(440.)).overflow_y_scroll().children(period_rows));
 
-        // Transactions, newest first. Only the latest live payment can be reversed.
+        // Transactions, newest first.
         let payments: Vec<_> = self.snap.payments_for_loan(id).cloned().collect();
-        let latest_live = payments.iter().rfind(|x| !x.is_reversed()).map(|x| x.id);
-        let can_reverse = matches!(loan.status, ContractStatus::Active | ContractStatus::PaidOff);
         let tx_rows = payments.iter().rev().map(|x| {
             let reversed = x.is_reversed();
             let pid = x.id;
@@ -506,9 +523,10 @@ impl VzApp {
                 )
                 .child(
                     h_flex()
-                        .w(px(170.))
+                        .w(px(190.))
                         .justify_end()
-                        .gap(px(4.))
+                        .gap(px(2.))
+                        .when(reversed, |d| d.child(pill(&p, t("Reversed", "Anulado"), Tone::Neutral)))
                         .child(
                             Button::new(("receipt", pid as u64))
                                 .ghost()
@@ -517,18 +535,22 @@ impl VzApp {
                                 .label(t("Receipt", "Recibo"))
                                 .on_click(cx.listener(move |this, _, w, cx| this.open_receipt(pid, w, cx))),
                         )
-                        .child(if reversed {
-                            pill(&p, t("Reversed", "Anulado"), Tone::Neutral).into_any_element()
-                        } else if can_reverse && Some(pid) == latest_live {
-                            Button::new(("reverse", pid as u64))
-                                .ghost()
-                                .small()
-                                .label(t("Reverse", "Anular"))
-                                .on_click(cx.listener(move |this, _, w, cx| this.open_reason_form(ReasonKind::ReversePayment(pid), w, cx)))
-                                .into_any_element()
-                        } else {
-                            div().into_any_element()
-                        }),
+                        .when(!reversed, |d| {
+                            d.child(row_icon_button(
+                                ("pay-edit", pid as u64),
+                                IconName::Pencil,
+                                t("Edit payment", "Editar pago"),
+                                cx,
+                                move |this, w, cx| this.edit_payment(pid, w, cx),
+                            ))
+                        })
+                        .child(row_icon_button(
+                            ("pay-del", pid as u64),
+                            IconName::Trash,
+                            t("Delete payment", "Eliminar pago"),
+                            cx,
+                            move |this, w, cx| this.open_reason_form(ReasonKind::DeletePayment(pid), w, cx),
+                        )),
                 )
         });
         let tx_card = card(&p).overflow_hidden().child(card_header(&p, t("Payments", "Pagos"), None)).child(if payments.is_empty() {
@@ -558,7 +580,7 @@ impl VzApp {
                         .child(ncolumn(110.).child(th(&p, t("Interest", "Interés"))))
                         .child(ncolumn(110.).child(th(&p, t("Capital", "Capital"))))
                         .child(ncolumn(120.).child(th(&p, t("Amount", "Monto"))))
-                        .child(div().w(px(170.))),
+                        .child(div().w(px(190.))),
                 )
                 .children(tx_rows)
                 .into_any_element()
@@ -581,7 +603,11 @@ impl VzApp {
                             .child(v_flex().flex_1().min_w_0().child(periods_card))
                             .into_any_element()
                     })
-                    .child(tx_card),
+                    .child(tx_card)
+                    .children({
+                        let changes: Vec<_> = self.snap.changes.iter().filter(|c| c.loan_id == Some(id)).collect();
+                        (!changes.is_empty()).then(|| self.history_card(&p, &changes, 30))
+                    }),
             )
             .into_any_element()
     }

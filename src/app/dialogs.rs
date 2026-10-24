@@ -6,12 +6,14 @@ use gpui_kit::component::{WindowExt as _, button::ButtonVariant};
 use gpui_kit::*;
 
 use super::VzApp;
-use crate::domain::portfolio::CapitalKind;
+use crate::domain::portfolio::{CapitalKind, EntryKind};
 use crate::i18n::t;
 use crate::services::Store;
 use crate::tr;
+use crate::ui::forms::adjust::AdjustForm;
 use crate::ui::forms::capital::CapitalForm;
 use crate::ui::forms::client::ClientForm;
+use crate::ui::forms::entry::EntryForm;
 use crate::ui::forms::focus_once;
 use crate::ui::forms::loan::LoanForm;
 use crate::ui::forms::payment::PaymentForm;
@@ -41,7 +43,7 @@ macro_rules! submit_impl {
     )*};
 }
 
-submit_impl!(ClientForm, LoanForm, PaymentForm, CapitalForm, ReasonForm);
+submit_impl!(ClientForm, LoanForm, PaymentForm, CapitalForm, ReasonForm, EntryForm, AdjustForm);
 
 impl VzApp {
     pub fn open_client_form(&mut self, client_id: Option<i64>, window: &mut Window, cx: &mut Context<Self>) {
@@ -58,36 +60,69 @@ impl VzApp {
     }
 
     pub fn open_loan_form(&mut self, client_id: Option<i64>, window: &mut Window, cx: &mut Context<Self>) {
+        self.loan_dialog(client_id, None, window, cx)
+    }
+
+    pub fn edit_loan(&mut self, loan_id: i64, window: &mut Window, cx: &mut Context<Self>) {
+        self.loan_dialog(None, Some(loan_id), window, cx)
+    }
+
+    fn loan_dialog(&mut self, client_id: Option<i64>, editing: Option<i64>, window: &mut Window, cx: &mut Context<Self>) {
         let app = cx.entity().downgrade();
         let snap = self.snap.clone();
-        let form = cx.new(|cx| LoanForm::new(app, snap, client_id, window, cx));
+        let form = cx.new(|cx| LoanForm::new(app, snap, client_id, editing, window, cx));
+        let title = match editing {
+            Some(id) => tr!("Edit loan #{id}", "Editar préstamo #{id}"),
+            None => t("New loan", "Nuevo préstamo").to_string(),
+        };
         let first = Cell::new(true);
         window.open_dialog(cx, move |dialog, window, cx| {
             let handle = form.read(cx).first_focus(cx);
             focus_once(&first, &handle, window, cx);
-            dialog.title(t("New loan", "Nuevo préstamo")).w(px(920.)).child(form.clone()).on_ok(confirm(&form))
+            dialog.title(title.clone()).w(px(920.)).child(form.clone()).on_ok(confirm(&form))
         });
     }
 
     pub fn open_payment_form(&mut self, loan_id: Option<i64>, window: &mut Window, cx: &mut Context<Self>) {
+        self.payment_dialog(loan_id, None, window, cx)
+    }
+
+    pub fn edit_payment(&mut self, payment_id: i64, window: &mut Window, cx: &mut Context<Self>) {
+        self.payment_dialog(None, Some(payment_id), window, cx)
+    }
+
+    fn payment_dialog(&mut self, loan_id: Option<i64>, editing: Option<i64>, window: &mut Window, cx: &mut Context<Self>) {
         let app = cx.entity().downgrade();
         let snap = self.snap.clone();
-        let form = cx.new(|cx| PaymentForm::new(app, snap, loan_id, window, cx));
+        let form = cx.new(|cx| PaymentForm::new(app, snap, loan_id, editing, window, cx));
+        let title = match editing {
+            Some(_) => t("Edit payment", "Editar pago"),
+            None => t("Record payment", "Registrar pago"),
+        };
         let first = Cell::new(true);
         window.open_dialog(cx, move |dialog, window, cx| {
             let handle = form.read(cx).first_focus(cx);
             focus_once(&first, &handle, window, cx);
-            dialog.title(t("Record payment", "Registrar pago")).w(px(600.)).child(form.clone()).on_ok(confirm(&form))
+            dialog.title(title).w(px(600.)).child(form.clone()).on_ok(confirm(&form))
         });
     }
 
     pub fn open_capital_form(&mut self, kind: CapitalKind, window: &mut Window, cx: &mut Context<Self>) {
+        self.capital_dialog(kind, None, window, cx)
+    }
+
+    pub fn edit_capital(&mut self, id: i64, window: &mut Window, cx: &mut Context<Self>) {
+        self.capital_dialog(CapitalKind::Contribution, Some(id), window, cx)
+    }
+
+    fn capital_dialog(&mut self, kind: CapitalKind, editing: Option<i64>, window: &mut Window, cx: &mut Context<Self>) {
         let app = cx.entity().downgrade();
         let snap = self.snap.clone();
-        let form = cx.new(|cx| CapitalForm::new(app, snap, kind, window, cx));
-        let title = match kind {
-            CapitalKind::Contribution => t("Add capital", "Agregar capital"),
-            CapitalKind::Withdrawal => t("Withdraw capital", "Retirar capital"),
+        let form = cx.new(|cx| CapitalForm::new(app, snap, kind, editing, window, cx));
+        let title = match (editing, kind) {
+            (Some(_), _) => t("Edit capital entry", "Editar movimiento de capital"),
+            (None, CapitalKind::Contribution) => t("Add capital", "Agregar capital"),
+            (None, CapitalKind::Withdrawal) => t("Withdraw capital", "Retirar capital"),
         };
         let first = Cell::new(true);
         window.open_dialog(cx, move |dialog, window, cx| {
@@ -97,13 +132,37 @@ impl VzApp {
         });
     }
 
+    /// A new expense or transfer, or (with `editing`) any cash entry.
+    pub fn open_entry_form(&mut self, kind: EntryKind, editing: Option<i64>, window: &mut Window, cx: &mut Context<Self>) {
+        let kind = editing.and_then(|id| self.snap.entry(id)).map_or(kind, |e| e.kind);
+        let app = cx.entity().downgrade();
+        let snap = self.snap.clone();
+        let form = cx.new(|cx| EntryForm::new(app, snap, kind, editing, window, cx));
+        let title = EntryForm::title(kind, editing.is_some());
+        let first = Cell::new(true);
+        window.open_dialog(cx, move |dialog, window, cx| {
+            let handle = form.read(cx).amount.focus_handle(cx);
+            focus_once(&first, &handle, window, cx);
+            dialog.title(title).w(px(560.)).child(form.clone()).on_ok(confirm(&form))
+        });
+    }
+
+    pub fn open_adjust_form(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let app = cx.entity().downgrade();
+        let snap = self.snap.clone();
+        let form = cx.new(|cx| AdjustForm::new(app, snap, window, cx));
+        let first = Cell::new(true);
+        window.open_dialog(cx, move |dialog, window, cx| {
+            let handle = form.read(cx).capital.focus_handle(cx);
+            focus_once(&first, &handle, window, cx);
+            dialog.title(t("Adjust balances", "Ajustar saldos")).w(px(600.)).child(form.clone()).on_ok(confirm(&form))
+        });
+    }
+
     pub fn open_reason_form(&mut self, kind: ReasonKind, window: &mut Window, cx: &mut Context<Self>) {
         let app = cx.entity().downgrade();
         let form = cx.new(|cx| ReasonForm::new(app, kind, window, cx));
-        let title = match kind {
-            ReasonKind::ReversePayment(_) => t("Reverse payment", "Anular pago"),
-            ReasonKind::MarkDefaulted(_) => t("Mark loan as defaulted", "Marcar préstamo como incobrable"),
-        };
+        let title = kind.title();
         let first = Cell::new(true);
         window.open_dialog(cx, move |dialog, window, cx| {
             let handle = form.read(cx).reason.focus_handle(cx);
@@ -188,6 +247,54 @@ impl VzApp {
     }
 
     // ----- files ----------------------------------------------------------
+
+    /// Picks a picture to use as the business logo.
+    pub fn choose_logo(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let rx = cx.prompt_for_paths(PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: false,
+            prompt: Some(t("Use as logo", "Usar como logo").into()),
+        });
+        cx.spawn_in(window, async move |this, cx| {
+            let Ok(Ok(Some(paths))) = rx.await else { return };
+            let Some(path) = paths.into_iter().next() else { return };
+            let _ = this.update_in(cx, |app, window, cx| {
+                let result = std::fs::read(&path).map_err(anyhow::Error::from).and_then(|bytes| app.store.set_logo(&bytes));
+                match result {
+                    Ok(()) => {
+                        app.reload(cx);
+                        app.notify_success(
+                            t(
+                                "Logo saved. It now appears in the app and on receipts.",
+                                "Logo guardado. Ahora aparece en la app y en los recibos.",
+                            ),
+                            window,
+                            cx,
+                        );
+                    }
+                    Err(e) => {
+                        let m = app.error_message(&e);
+                        app.notify_error(m, window, cx);
+                    }
+                }
+            });
+        })
+        .detach();
+    }
+
+    pub fn remove_logo(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        match self.store.remove_logo() {
+            Ok(()) => {
+                self.reload(cx);
+                self.notify_success(t("Logo removed", "Logo eliminado"), window, cx);
+            }
+            Err(e) => {
+                let m = self.error_message(&e);
+                self.notify_error(m, window, cx);
+            }
+        }
+    }
 
     pub fn choose_restore(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let rx = cx.prompt_for_paths(PathPromptOptions {

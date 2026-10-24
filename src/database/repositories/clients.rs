@@ -69,6 +69,12 @@ pub fn update(conn: &Connection, id: i64, input: &ClientInput) -> Result<()> {
     Ok(())
 }
 
+/// Deletes a client with no loans (loans keep their client).
+pub fn delete(conn: &Connection, id: i64) -> Result<()> {
+    conn.execute("DELETE FROM clients WHERE id = ?1", [id])?;
+    Ok(())
+}
+
 pub fn set_archived(conn: &Connection, id: i64, archived: bool) -> Result<()> {
     let value = archived.then(now_timestamp);
     conn.execute("UPDATE clients SET archived_at = ?1 WHERE id = ?2", params![value, id])?;

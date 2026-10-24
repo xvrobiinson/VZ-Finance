@@ -102,7 +102,16 @@ impl VzApp {
                     .px(px(if collapsed { 0. } else { 20. }))
                     .when(collapsed, |d| d.justify_center())
                     .gap(px(10.))
-                    .child(mark(&p))
+                    .child(match &self.logo {
+                        Some(logo) => div()
+                            .flex_none()
+                            .size(px(32.))
+                            .rounded(px(7.))
+                            .overflow_hidden()
+                            .child(img(logo.clone()).size_full().object_fit(ObjectFit::Contain))
+                            .into_any_element(),
+                        None => mark(&p).into_any_element(),
+                    })
                     .when(!collapsed, |d| {
                         d.child(
                             div()

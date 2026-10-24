@@ -48,7 +48,14 @@ gpui_kit::assets::icon_assets!(
         Printer,
         Calendar,
         ChevronLeft,
-        ChevronRight
+        ChevronRight,
+        Trash,
+        Upload,
+        ImagePlus,
+        ArrowRightLeft,
+        SlidersHorizontal,
+        ReceiptText,
+        Coins
     ]
 );
 

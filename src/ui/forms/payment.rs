@@ -11,13 +11,13 @@ use gpui_kit::*;
 
 use super::date_field::{DateChanged, DateField};
 use super::loan::Choice;
-use super::{date_field, error_banner, field, footer, invalid_date, picked_date, value};
+use super::{date_field, error_banner, field, footer, invalid_date, picked_date, reason_input, value};
 use crate::app::VzApp;
-use crate::domain::ledger::{Allocation, ContractStatus, PaymentError, owed_at_payment};
+use crate::domain::ledger::{Allocation, ContractStatus, PaymentError, Position, owed_at_payment};
 use crate::domain::loans::period_interest;
 use crate::domain::money::{Cents, MoneyFormat, parse_money};
 use crate::i18n::t;
-use crate::services::{Snapshot, preview_allocation};
+use crate::services::{Snapshot, loan_facts, payments_before, preview_payment};
 use crate::tr;
 use crate::ui::components::{Tone, kv, pill};
 use crate::ui::theme::{palette, size, space};
@@ -33,14 +33,26 @@ pub struct PaymentForm {
     notes: Entity<InputState>,
     show_fee: bool,
     print_receipt: bool,
+    /// The payment being edited, if any. Its loan can't change.
+    editing: Option<i64>,
+    reason: Entity<InputState>,
     error: Option<String>,
     show_errors: bool,
     _subs: Vec<Subscription>,
 }
 
 impl PaymentForm {
-    pub fn new(app: WeakEntity<VzApp>, snap: Rc<Snapshot>, loan_id: Option<i64>, window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(
+        app: WeakEntity<VzApp>,
+        snap: Rc<Snapshot>,
+        loan_id: Option<i64>,
+        editing: Option<i64>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let today = crate::utils::dates::today();
+        let existing = editing.and_then(|id| snap.payment(id).cloned());
+        let loan_id = existing.as_ref().map(|x| x.loan_id).or(loan_id);
         let money = snap.settings.money();
         let mut open: Vec<_> = snap.book.loans.iter().filter(|l| l.facts.status == ContractStatus::Active).collect();
         open.sort_by(|a, b| snap.client_name(a.client_id).cmp(snap.client_name(b.client_id)).then(a.id.cmp(&b.id)));
@@ -56,13 +68,28 @@ impl PaymentForm {
         let loan_id = loan_id.or_else(|| (choices.len() == 1).then(|| choices[0].id));
         let selected = loan_id.and_then(|id| choices.iter().position(|c| c.id == id)).map(IndexPath::new);
         let loan = cx.new(|cx| SelectState::new(choices, selected, window, cx).searchable(true));
-        let amount = cx.new(|cx| InputState::new(window, cx).placeholder("0.00"));
-        let fee = cx.new(|cx| InputState::new(window, cx).placeholder("0.00"));
-        let notes = cx.new(|cx| {
-            InputState::new(window, cx)
-                .placeholder(t("Optional: cash, transfer, reference", "Opcional: efectivo, transferencia, referencia"))
+        let prefill = |s: InputState, v: Option<String>| match v {
+            Some(v) => s.default_value(v),
+            None => s,
+        };
+        let amount = cx.new(|cx| {
+            prefill(InputState::new(window, cx).placeholder("0.00"), existing.as_ref().map(|x| MoneyFormat::input_value(x.amount)))
         });
-        let date = date_field(today, window, cx);
+        let fee = cx.new(|cx| {
+            prefill(
+                InputState::new(window, cx).placeholder("0.00"),
+                existing.as_ref().filter(|x| x.fee > 0).map(|x| MoneyFormat::input_value(x.fee)),
+            )
+        });
+        let notes = cx.new(|cx| {
+            prefill(
+                InputState::new(window, cx)
+                    .placeholder(t("Optional: cash, transfer, reference", "Opcional: efectivo, transferencia, referencia")),
+                existing.as_ref().map(|x| x.notes.clone()),
+            )
+        });
+        let date = date_field(existing.as_ref().map_or(today, |x| x.paid_on), window, cx);
+        let reason = reason_input(window, cx);
         let mut subs = vec![
             cx.subscribe_in(&loan, window, |this, _, ev: &SelectEvent<Vec<Choice>>, _, cx| {
                 let SelectEvent::Confirm(v) = ev;
@@ -89,12 +116,28 @@ impl PaymentForm {
             fee,
             date,
             notes,
-            show_fee: false,
+            show_fee: existing.as_ref().is_some_and(|x| x.fee > 0),
             print_receipt,
+            editing,
+            reason,
             error: None,
             show_errors: false,
             _subs: subs,
         }
+    }
+
+    /// What the client owed at the moment of this payment.
+    fn owed(&self, on: chrono::NaiveDate) -> Option<Position> {
+        let loan = self.snap.loan(self.loan_id?)?;
+        Some(owed_at_payment(&loan_facts(loan), &payments_before(&self.snap, loan.id, self.editing, on), on))
+    }
+
+    /// Live payments on the loan dated after this one; they are split again
+    /// on save.
+    fn later_payments(&self, on: chrono::NaiveDate) -> usize {
+        let Some(loan_id) = self.loan_id else { return 0 };
+        let key = (on, self.editing.unwrap_or(i64::MAX));
+        self.snap.payments_for_loan(loan_id).filter(|x| !x.is_reversed() && Some(x.id) != self.editing && (x.paid_on, x.id) > key).count()
     }
 
     pub fn first_focus(&self, cx: &App) -> FocusHandle {
@@ -109,10 +152,9 @@ impl PaymentForm {
     }
 
     fn preview(&self, cx: &App) -> Option<Result<Allocation, PaymentError>> {
-        let loan = self.snap.book_loan(self.loan_id?)?;
         let (Ok(amount), Ok(fee)) = self.amounts(cx) else { return None };
         let date = picked_date(&self.date, cx)?;
-        Some(preview_allocation(loan, amount, fee, date, crate::utils::dates::today()))
+        preview_payment(&self.snap, self.loan_id?, self.editing, amount, fee, date, crate::utils::dates::today())
     }
 
     fn set_amount(&mut self, cents: Cents, window: &mut Window, cx: &mut Context<Self>) {
@@ -129,6 +171,37 @@ impl PaymentForm {
             return;
         };
         let notes = value(&self.notes, cx);
+        if let Some(id) = self.editing {
+            let reason = value(&self.reason, cx);
+            let result = self.app.update(cx, |app, cx| match app.store.update_payment(id, amount, fee, date, &notes, &reason, app.today) {
+                Ok(()) => {
+                    app.reload(cx);
+                    Ok(())
+                }
+                Err(e) => Err(app.error_message(&e)),
+            });
+            match result {
+                Ok(Ok(())) => {
+                    window.close_dialog(cx);
+                    let _ = self.app.update(cx, |app, cx| {
+                        app.notify_success(
+                            t(
+                                "Payment updated. The loan's payments were split again.",
+                                "Pago actualizado. Los pagos del préstamo se recalcularon.",
+                            ),
+                            window,
+                            cx,
+                        );
+                    });
+                }
+                Ok(Err(msg)) => {
+                    self.error = Some(msg);
+                    cx.notify();
+                }
+                Err(_) => window.close_dialog(cx),
+            }
+            return;
+        }
         let print = self.print_receipt;
         let result = self.app.update(cx, |app, cx| {
             let today = app.today;
@@ -183,7 +256,8 @@ impl Render for PaymentForm {
         let picked = picked_date(&self.date, cx);
 
         // What the client owes on the chosen date, for the quick-fill buttons.
-        let owed = book.map(|l| owed_at_payment(&l.facts, &l.payments, picked.unwrap_or(today)));
+        let owed = self.owed(picked.unwrap_or(today));
+        let later = self.later_payments(picked.unwrap_or(today));
 
         let amount_err = match (&amount, &preview) {
             (Err(e), _) if self.show_errors => Some(e.clone()),
@@ -197,14 +271,12 @@ impl Render for PaymentForm {
         let date_err = match (&preview, picked) {
             (_, None) => Some(invalid_date()),
             (Some(Err(e @ (PaymentError::BeforeStart | PaymentError::InFuture))), _) => Some(e.message().to_string()),
-            (Some(Err(PaymentError::BeforeLastPayment { last })), _) => {
-                let last = self.snap.settings.date_style.format(*last);
-                Some(tr!(
-                    "A later payment is recorded ({last}). Payments are recorded in date order.",
-                    "Hay un pago posterior registrado ({last}). Los pagos se registran en orden de fecha."
-                ))
-            }
             _ => None,
+        };
+        let date_hint = match later {
+            0 => None,
+            1 => Some(t("1 later payment will be split again", "1 pago posterior se volverá a dividir").to_string()),
+            n => Some(tr!("{n} later payments will be split again", "{n} pagos posteriores se volverán a dividir")),
         };
         let loan_err = (self.show_errors && self.loan_id.is_none()).then(|| {
             if self.snap.book.loans.iter().any(|l| l.facts.status == ContractStatus::Active) {
@@ -295,21 +367,30 @@ impl Render for PaymentForm {
         });
 
         let can_submit = matches!(preview, Some(Ok(_))) && fee.is_ok();
+        let editing = self.editing.is_some();
+        let loan_control = if editing {
+            let lid = self.loan_id.unwrap_or_default();
+            let name = self.snap.loan(lid).map(|l| self.snap.client_name(l.client_id).to_string()).unwrap_or_default();
+            div()
+                .h(px(32.))
+                .px(px(space::M))
+                .flex()
+                .items_center()
+                .rounded(px(8.))
+                .bg(p.raised)
+                .text_color(p.muted)
+                .child(tr!("{name} — Loan #{lid}", "{name} — Préstamo #{lid}"))
+                .into_any_element()
+        } else {
+            Select::new(&self.loan)
+                .placeholder(t("Choose a client's loan", "Elige el préstamo de un cliente"))
+                .search_placeholder(t("Search by client", "Buscar por cliente"))
+                .into_any_element()
+        };
         v_flex()
             .gap(px(space::L))
             .children(error_banner(&p, &self.error))
-            .child(
-                field(
-                    &p,
-                    t("Loan", "Préstamo"),
-                    Select::new(&self.loan)
-                        .placeholder(t("Choose a client's loan", "Elige el préstamo de un cliente"))
-                        .search_placeholder(t("Search by client", "Buscar por cliente")),
-                    None,
-                    loan_err,
-                )
-                .children(summary),
-            )
+            .child(field(&p, t("Loan", "Préstamo"), loan_control, None, loan_err).children(summary))
             .child(
                 h_flex()
                     .items_start()
@@ -326,7 +407,13 @@ impl Render for PaymentForm {
                             .children(quick_el),
                         ),
                     )
-                    .child(div().w(px(200.)).child(field(&p, t("Date received", "Fecha del pago"), self.date.clone(), None, date_err))),
+                    .child(div().w(px(200.)).child(field(
+                        &p,
+                        t("Date received", "Fecha del pago"),
+                        self.date.clone(),
+                        date_hint,
+                        date_err,
+                    ))),
             )
             .child(if self.show_fee {
                 field(
@@ -354,18 +441,23 @@ impl Render for PaymentForm {
             })
             .child(field(&p, t("Note", "Nota"), Input::new(&self.notes), None, None))
             .child(div().p(px(space::L)).rounded(px(10.)).bg(p.raised).border_1().border_color(p.rule).child(allocation))
-            .child(
-                h_flex()
-                    .gap(px(10.))
-                    .child(Switch::new("print-receipt").checked(self.print_receipt).on_click(cx.listener(|this, checked: &bool, _, cx| {
-                        this.print_receipt = *checked;
-                        cx.notify();
-                    })))
-                    .child(div().child(t("Open the receipt to print after saving", "Abrir el recibo para imprimir al guardar"))),
-            )
+            .when(editing, |d| d.child(field(&p, t("Reason for the change", "Motivo del cambio"), Input::new(&self.reason), None, None)))
+            .when(!editing, |d| {
+                d.child(
+                    h_flex()
+                        .gap(px(10.))
+                        .child(Switch::new("print-receipt").checked(self.print_receipt).on_click(cx.listener(
+                            |this, checked: &bool, _, cx| {
+                                this.print_receipt = *checked;
+                                cx.notify();
+                            },
+                        )))
+                        .child(div().child(t("Open the receipt to print after saving", "Abrir el recibo para imprimir al guardar"))),
+                )
+            })
             .child(footer(
                 &p,
-                t("Record payment", "Registrar pago"),
+                if editing { t("Save changes", "Guardar cambios") } else { t("Record payment", "Registrar pago") },
                 can_submit,
                 false,
                 cx.listener(|this, _, window, cx| this.submit(window, cx)),

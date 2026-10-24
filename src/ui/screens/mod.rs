@@ -7,17 +7,101 @@ pub mod overview;
 pub mod payments;
 pub mod settings;
 
-use gpui_kit::component::{h_flex, v_flex};
+use gpui_kit::assets::IconName;
+use gpui_kit::component::button::{Button, ButtonVariants as _};
+use gpui_kit::component::{Sizable as _, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use crate::app::{Route, VzApp};
+use crate::database::repositories::changes::{Action, Change};
 use crate::domain::ledger::{Delinquency, DisplayStatus};
 use crate::i18n::t;
 use crate::tr;
-use crate::ui::components::{Tone, pill, status_tone};
-use crate::ui::theme::{Palette, size};
+use crate::ui::components::{Tone, card, card_header, icon, pill, status_tone};
+use crate::ui::theme::{Palette, size, space};
 use crate::utils::dates::days_between;
+
+/// A small icon button for a table row (edit, delete). Clicks don't reach
+/// the row underneath.
+pub fn row_icon_button(
+    id: impl Into<ElementId>,
+    icon_name: IconName,
+    tip: &'static str,
+    cx: &mut Context<VzApp>,
+    on_click: impl Fn(&mut VzApp, &mut Window, &mut Context<VzApp>) + 'static,
+) -> Button {
+    Button::new(id).ghost().small().icon(icon_name).tooltip(tip).on_click(cx.listener(move |this, _, w, cx| {
+        cx.stop_propagation();
+        on_click(this, w, cx)
+    }))
+}
+
+impl VzApp {
+    /// Edits and deletions, newest first, each with what changed and why.
+    pub(crate) fn history_card(&self, p: &Palette, changes: &[&Change], limit: usize) -> AnyElement {
+        let rows = changes.iter().take(limit).map(|c| {
+            let d = crate::ui::history::describe(c, &self.snap);
+            let deleted = c.action == Action::Delete;
+            h_flex()
+                .items_start()
+                .gap(px(space::M))
+                .px(px(space::XL))
+                .py(px(space::M))
+                .border_b_1()
+                .border_color(p.rule)
+                .child(
+                    h_flex()
+                        .flex_none()
+                        .mt(px(1.))
+                        .size(px(24.))
+                        .rounded_full()
+                        .justify_center()
+                        .bg(if deleted { p.negative_tint } else { p.neutral_tint })
+                        .child(icon(
+                            if deleted { IconName::Trash } else { IconName::Pencil },
+                            if deleted { p.negative } else { p.muted },
+                            12.,
+                        )),
+                )
+                .child(
+                    v_flex()
+                        .flex_1()
+                        .min_w_0()
+                        .gap(px(2.))
+                        .child(
+                            h_flex()
+                                .justify_between()
+                                .gap(px(space::M))
+                                .child(div().font_weight(FontWeight::MEDIUM).min_w_0().truncate().child(d.title))
+                                .child(div().flex_none().text_size(px(size::META)).text_color(p.faint).child(d.when)),
+                        )
+                        .children(d.lines.into_iter().map(|l| {
+                            div().text_size(px(size::META + 0.5)).text_color(p.muted).font_features(crate::ui::theme::tabular()).child(l)
+                        }))
+                        .when(!d.reason.is_empty(), |el| {
+                            let why = d.reason.clone();
+                            el.child(div().text_size(px(size::META + 0.5)).text_color(p.text).child(tr!("Reason: {why}", "Motivo: {why}")))
+                        }),
+                )
+        });
+        card(p)
+            .overflow_hidden()
+            .child(card_header(
+                p,
+                t("Change history", "Historial de cambios"),
+                Some(
+                    div()
+                        .text_size(px(size::META))
+                        .text_color(p.muted)
+                        .child(t("Every edit and deletion is kept here", "Aquí queda cada edición y eliminación"))
+                        .into_any_element(),
+                ),
+            ))
+            .child(v_flex().children(rows))
+            .into_any_element()
+    }
+}
 
 /// Status pill with the delinquency spelled out ("12 days overdue").
 pub fn status_detail_pill(p: &Palette, status: DisplayStatus, q: &Delinquency, today: chrono::NaiveDate) -> Div {

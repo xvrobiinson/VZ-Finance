@@ -1,7 +1,7 @@
 use gpui_kit::assets::IconName;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::Input;
-use gpui_kit::component::{Sizable as _, h_flex, v_flex};
+use gpui_kit::component::{Disableable as _, Sizable as _, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
@@ -15,6 +15,7 @@ use crate::tr;
 use crate::ui::components::{
     Tone, avatar, card, card_header, empty_state, figure, icon, label, page_header, pill, table_header, table_row, th, vrule,
 };
+use crate::ui::forms::reason::ReasonKind;
 use crate::ui::theme::{Palette, palette, size, space, tabular};
 
 /// Per-client figures derived from the ledger.
@@ -246,6 +247,20 @@ impl VzApp {
                 .icon(if archived { IconName::ArchiveRestore } else { IconName::Archive })
                 .label(if archived { t("Restore", "Restaurar") } else { t("Archive", "Archivar") })
                 .on_click(cx.listener(move |this, _, w, cx| this.confirm_archive(id, w, cx)))
+                .into_any_element(),
+            Button::new("delete-client")
+                .ghost()
+                .icon(IconName::Trash)
+                .disabled(st.total_loans > 0)
+                .tooltip(if st.total_loans > 0 {
+                    t(
+                        "Clients with loans can't be deleted. Delete the loans or move them to another client first.",
+                        "No se puede eliminar un cliente con préstamos. Elimínalos o pásalos a otro cliente primero.",
+                    )
+                } else {
+                    t("Delete client", "Eliminar cliente")
+                })
+                .on_click(cx.listener(move |this, _, w, cx| this.open_reason_form(ReasonKind::DeleteClient(id), w, cx)))
                 .into_any_element(),
         ];
         if !archived {

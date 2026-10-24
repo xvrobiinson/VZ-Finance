@@ -110,6 +110,8 @@ pub struct Settings {
     pub default_frequency: Frequency,
     /// Open a printable receipt right after recording a payment.
     pub receipt_after_payment: bool,
+    /// Open the printable loan receipt right after creating a loan.
+    pub receipt_after_loan: bool,
     pub theme: ThemePref,
     pub chart_range: ChartRange,
     pub show_interest_line: bool,
@@ -129,6 +131,7 @@ impl Default for Settings {
             default_rate: Rate(100_000),
             default_frequency: Frequency::Monthly,
             receipt_after_payment: true,
+            receipt_after_loan: true,
             theme: ThemePref::Light,
             chart_range: ChartRange::SixMonths,
             show_interest_line: true,
@@ -156,6 +159,7 @@ impl Settings {
                 .unwrap_or(d.default_rate),
             default_frequency: get("default_frequency").and_then(Frequency::from_key).unwrap_or(d.default_frequency),
             receipt_after_payment: flag("receipt_after_payment", d.receipt_after_payment),
+            receipt_after_loan: flag("receipt_after_loan", d.receipt_after_loan),
             theme: match get("theme") {
                 Some("dark") => ThemePref::Dark,
                 _ => ThemePref::Light,
@@ -178,6 +182,7 @@ impl Settings {
             ("default_rate", self.default_rate.0.to_string()),
             ("default_frequency", self.default_frequency.key().into()),
             ("receipt_after_payment", b(self.receipt_after_payment)),
+            ("receipt_after_loan", b(self.receipt_after_loan)),
             ("theme", self.theme.key().into()),
             ("chart_range", self.chart_range.key().into()),
             ("show_interest_line", b(self.show_interest_line)),

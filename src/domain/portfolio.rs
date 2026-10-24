@@ -1,15 +1,18 @@
-//! Portfolio accounting: the capital cash ledger, portfolio value, returns,
+//! Portfolio accounting: the two cash accounts, portfolio value, returns,
 //! history and monthly cash flow. Everything is derived from persisted
-//! transactions (capital movements, loan disbursements, payments).
+//! transactions (capital movements, loans, payments, expenses, transfers and
+//! adjustments).
 //!
 //! Definitions (see `docs/ACCOUNTING.md`):
-//! - Net capital invested = contributions - withdrawals.
-//! - Available cash = net capital invested - principal disbursed + all
-//!   payments received (principal, interest and fees).
-//! - Portfolio value = available cash + outstanding principal on performing
-//!   loans + interest earned and not yet collected on performing loans.
-//!   Interest counts as earned on its period's due date. Defaulted
-//!   balances are excluded (written down) and reported separately.
+//! - Cash is held in two accounts. **Available capital** receives capital
+//!   added and the capital part of payments; **available interest** receives
+//!   interest and fees. A loan is paid from capital first, then interest.
+//! - Net capital invested = contributions - withdrawals + capital
+//!   adjustments - expenses paid from capital.
+//! - Portfolio value = available capital + available interest + outstanding
+//!   principal on performing loans + interest earned and not yet collected on
+//!   performing loans. Interest counts as earned on its period's due date.
+//!   Defaulted balances are excluded (written down) and reported separately.
 //! - Portfolio gain = portfolio value - net capital invested.
 //! - Return on invested capital = gain / net capital invested (simple, not
 //!   annualized).
@@ -23,6 +26,7 @@ use crate::domain::ledger::{
 };
 use crate::domain::loans::period_interest;
 use crate::domain::money::Cents;
+use crate::i18n::t;
 use crate::utils::dates::{add_months, month_start};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -47,26 +51,103 @@ impl CapitalKind {
     }
     pub fn label(self) -> &'static str {
         match self {
-            CapitalKind::Contribution => crate::i18n::t("Capital added", "Capital agregado"),
-            CapitalKind::Withdrawal => crate::i18n::t("Capital withdrawn", "Capital retirado"),
+            CapitalKind::Contribution => t("Capital added", "Capital agregado"),
+            CapitalKind::Withdrawal => t("Capital withdrawn", "Capital retirado"),
+        }
+    }
+}
+
+/// The two places cash is kept.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Account {
+    Capital,
+    Interest,
+}
+
+impl Account {
+    pub const ALL: [Account; 2] = [Account::Capital, Account::Interest];
+
+    pub fn key(self) -> &'static str {
+        match self {
+            Account::Capital => "capital",
+            Account::Interest => "interest",
+        }
+    }
+    pub fn from_key(key: &str) -> Option<Self> {
+        match key {
+            "capital" => Some(Account::Capital),
+            "interest" => Some(Account::Interest),
+            _ => None,
+        }
+    }
+    pub fn label(self) -> &'static str {
+        match self {
+            Account::Capital => t("Available capital", "Capital disponible"),
+            Account::Interest => t("Available interest", "Interés disponible"),
+        }
+    }
+    pub fn other(self) -> Account {
+        match self {
+            Account::Capital => Account::Interest,
+            Account::Interest => Account::Capital,
+        }
+    }
+}
+
+/// Cash movements that are not loans, payments or capital.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum EntryKind {
+    /// Money spent outside the business, paid from one account.
+    Expense,
+    /// Money moved from one account to the other.
+    Transfer,
+    /// A correction of one account's balance (signed).
+    Adjustment,
+}
+
+impl EntryKind {
+    pub fn key(self) -> &'static str {
+        match self {
+            EntryKind::Expense => "expense",
+            EntryKind::Transfer => "transfer",
+            EntryKind::Adjustment => "adjustment",
+        }
+    }
+    pub fn from_key(key: &str) -> Option<Self> {
+        match key {
+            "expense" => Some(EntryKind::Expense),
+            "transfer" => Some(EntryKind::Transfer),
+            "adjustment" => Some(EntryKind::Adjustment),
+            _ => None,
+        }
+    }
+    pub fn label(self) -> &'static str {
+        match self {
+            EntryKind::Expense => t("Expense", "Gasto"),
+            EntryKind::Transfer => t("Money moved", "Dinero movido"),
+            EntryKind::Adjustment => t("Balance adjustment", "Ajuste de saldo"),
         }
     }
 }
 
 #[derive(Clone, Debug)]
 pub struct CapitalFact {
+    pub id: i64,
     pub kind: CapitalKind,
     pub amount: Cents,
     pub occurred_on: NaiveDate,
 }
 
-impl CapitalFact {
-    fn signed(&self) -> Cents {
-        match self.kind {
-            CapitalKind::Contribution => self.amount,
-            CapitalKind::Withdrawal => -self.amount,
-        }
-    }
+#[derive(Clone, Debug)]
+pub struct EntryFact {
+    pub id: i64,
+    pub kind: EntryKind,
+    /// Expense: the account that paid. Transfer: the account money left.
+    /// Adjustment: the account corrected.
+    pub account: Account,
+    /// Positive for expenses and transfers; signed for adjustments.
+    pub amount: Cents,
+    pub occurred_on: NaiveDate,
 }
 
 /// One loan with everything needed to evaluate it.
@@ -108,6 +189,53 @@ impl LoanBook {
 pub struct Book {
     pub loans: Vec<LoanBook>,
     pub capital: Vec<CapitalFact>,
+    pub entries: Vec<EntryFact>,
+}
+
+/// Cash in each account.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Balances {
+    pub capital: Cents,
+    pub interest: Cents,
+}
+
+impl Balances {
+    pub fn total(&self) -> Cents {
+        self.capital + self.interest
+    }
+    pub fn get(&self, a: Account) -> Cents {
+        match a {
+            Account::Capital => self.capital,
+            Account::Interest => self.interest,
+        }
+    }
+    fn add(&mut self, a: Account, amount: Cents) {
+        match a {
+            Account::Capital => self.capital += amount,
+            Account::Interest => self.interest += amount,
+        }
+    }
+}
+
+/// The first point at which an account would hold less than nothing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Shortfall {
+    pub date: NaiveDate,
+    /// The account that went below zero, or `None` for a loan larger than
+    /// both accounts together.
+    pub account: Option<Account>,
+    /// What that account (or both together) would hold.
+    pub balance: Cents,
+}
+
+/// One cash movement, applied in date order and, within a day, money in
+/// before money out: capital and adjustments, then payments, transfers,
+/// loans, expenses and withdrawals.
+#[derive(Clone, Copy, Debug)]
+enum Move {
+    Add(Account, Cents),
+    Transfer(Account, Cents),
+    Lend(Cents),
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -118,6 +246,13 @@ pub struct Summary {
     pub principal_repaid: Cents,
     pub interest_collected: Cents,
     pub fees_collected: Cents,
+    pub capital_expenses: Cents,
+    pub interest_expenses: Cents,
+    pub capital_adjustments: Cents,
+    pub interest_adjustments: Cents,
+    pub available_capital: Cents,
+    pub available_interest: Cents,
+    /// Both accounts together.
     pub available_cash: Cents,
     /// Outstanding principal on performing (non-defaulted) loans.
     pub outstanding_principal: Cents,
@@ -136,7 +271,7 @@ pub struct Summary {
 
 impl Summary {
     pub fn net_invested(&self) -> Cents {
-        self.contributions - self.withdrawals
+        self.contributions - self.withdrawals + self.capital_adjustments - self.capital_expenses
     }
     pub fn gain(&self) -> Cents {
         self.portfolio_value - self.net_invested()
@@ -148,9 +283,114 @@ impl Summary {
     pub fn realized_income(&self) -> Cents {
         self.interest_collected + self.fees_collected
     }
+    pub fn expenses(&self) -> Cents {
+        self.capital_expenses + self.interest_expenses
+    }
 }
 
 impl Book {
+    /// Every cash movement in the order it is applied.
+    fn moves(&self) -> Vec<(NaiveDate, u8, Move)> {
+        let mut out = Vec::new();
+        for c in &self.capital {
+            match c.kind {
+                CapitalKind::Contribution => out.push((c.occurred_on, 0, Move::Add(Account::Capital, c.amount))),
+                CapitalKind::Withdrawal => out.push((c.occurred_on, 5, Move::Add(Account::Capital, -c.amount))),
+            }
+        }
+        for e in &self.entries {
+            match e.kind {
+                EntryKind::Adjustment => out.push((e.occurred_on, 0, Move::Add(e.account, e.amount))),
+                EntryKind::Transfer => out.push((e.occurred_on, 2, Move::Transfer(e.account, e.amount))),
+                EntryKind::Expense => out.push((e.occurred_on, 4, Move::Add(e.account, -e.amount))),
+            }
+        }
+        for l in &self.loans {
+            out.push((l.facts.start_date, 3, Move::Lend(l.facts.principal)));
+            for p in &l.payments {
+                out.push((p.paid_on, 1, Move::Add(Account::Capital, p.principal)));
+                out.push((p.paid_on, 1, Move::Add(Account::Interest, p.interest + p.fee)));
+            }
+        }
+        // Stable: equal keys keep their recorded order.
+        out.sort_by_key(|(d, order, _)| (*d, *order));
+        out
+    }
+
+    /// Replays every movement, calling `visit` with the balances after each.
+    /// Stops early when `visit` returns false.
+    fn replay_cash(&self, mut visit: impl FnMut(NaiveDate, Move, Balances) -> bool) {
+        let mut b = Balances::default();
+        for (date, _, m) in self.moves() {
+            match m {
+                Move::Add(a, amount) => b.add(a, amount),
+                Move::Transfer(from, amount) => {
+                    b.add(from, -amount);
+                    b.add(from.other(), amount);
+                }
+                Move::Lend(amount) => {
+                    let from_capital = amount.min(b.capital.max(0));
+                    b.capital -= from_capital;
+                    b.interest -= amount - from_capital;
+                }
+            }
+            if !visit(date, m, b) {
+                return;
+            }
+        }
+    }
+
+    /// Account balances at the end of `as_of`.
+    pub fn balances_on(&self, as_of: NaiveDate) -> Balances {
+        let mut last = Balances::default();
+        self.replay_cash(|d, _, b| {
+            if d > as_of {
+                return false;
+            }
+            last = b;
+            true
+        });
+        last
+    }
+
+    /// Cash available at the end of `as_of`, both accounts together.
+    pub fn cash_on(&self, as_of: NaiveDate) -> Cents {
+        self.balances_on(as_of).total()
+    }
+
+    /// The most a new outflow dated `from` could take without leaving
+    /// `account` (both accounts together when `None`, as for a loan) below
+    /// zero then or at any later point.
+    pub fn available_from(&self, from: NaiveDate, account: Option<Account>) -> Cents {
+        let pick = |b: &Balances| account.map_or(b.total(), |a| b.get(a));
+        let mut low = pick(&self.balances_on(from));
+        self.replay_cash(|d, _, b| {
+            if d > from {
+                low = low.min(pick(&b));
+            }
+            true
+        });
+        low
+    }
+
+    /// The first point where recorded movements leave an account below zero,
+    /// if any. Writes are refused when they would cause one.
+    pub fn shortfall(&self) -> Option<Shortfall> {
+        let mut found = None;
+        self.replay_cash(|date, m, b| {
+            if b.capital >= 0 && b.interest >= 0 {
+                return true;
+            }
+            found = Some(match m {
+                Move::Lend(_) => Shortfall { date, account: None, balance: b.total() },
+                _ if b.capital < 0 => Shortfall { date, account: Some(Account::Capital), balance: b.capital },
+                _ => Shortfall { date, account: Some(Account::Interest), balance: b.interest },
+            });
+            false
+        });
+        found
+    }
+
     /// The portfolio position at the end of `as_of`, with delinquency judged
     /// against `as_of` as "today".
     pub fn summary(&self, as_of: NaiveDate) -> Summary {
@@ -159,6 +399,15 @@ impl Book {
             match c.kind {
                 CapitalKind::Contribution => s.contributions += c.amount,
                 CapitalKind::Withdrawal => s.withdrawals += c.amount,
+            }
+        }
+        for e in self.entries.iter().filter(|e| e.occurred_on <= as_of) {
+            match (e.kind, e.account) {
+                (EntryKind::Expense, Account::Capital) => s.capital_expenses += e.amount,
+                (EntryKind::Expense, Account::Interest) => s.interest_expenses += e.amount,
+                (EntryKind::Adjustment, Account::Capital) => s.capital_adjustments += e.amount,
+                (EntryKind::Adjustment, Account::Interest) => s.interest_adjustments += e.amount,
+                (EntryKind::Transfer, _) => {}
             }
         }
         for loan in &self.loans {
@@ -191,39 +440,22 @@ impl Book {
                     period_interest(pos.principal_outstanding, loan.facts.rate) * loan.facts.frequency.periods_per_month();
             }
         }
-        s.available_cash = s.net_invested() - s.principal_disbursed + s.total_received();
+        let b = self.balances_on(as_of);
+        s.available_capital = b.capital;
+        s.available_interest = b.interest;
+        s.available_cash = b.total();
         s.portfolio_value = s.available_cash + s.outstanding_principal + s.interest_receivable;
         s
     }
 
-    /// Cash available at the end of `as_of` (used to validate disbursements
-    /// and withdrawals).
-    pub fn cash_on(&self, as_of: NaiveDate) -> Cents {
-        let capital: Cents = self.capital.iter().filter(|c| c.occurred_on <= as_of).map(|c| c.signed()).sum();
-        let disbursed: Cents = self.loans.iter().filter(|l| l.facts.start_date <= as_of).map(|l| l.facts.principal).sum();
-        let received: Cents = self.loans.iter().flat_map(|l| l.payments.iter()).filter(|p| p.paid_on <= as_of).map(|p| p.total()).sum();
-        capital - disbursed + received
-    }
-
-    /// The lowest cash balance on or after `from`, given all recorded
-    /// movements. A new outflow dated `from` must not exceed this, or cash
-    /// would go negative at some later point in the ledger.
-    pub fn min_cash_from(&self, from: NaiveDate) -> Cents {
-        let mut dates: Vec<NaiveDate> = vec![from];
-        dates.extend(self.capital.iter().map(|c| c.occurred_on).filter(|d| *d > from));
-        dates.extend(self.loans.iter().map(|l| l.facts.start_date).filter(|d| *d > from));
-        dates.sort();
-        dates.dedup();
-        dates.into_iter().map(|d| self.cash_on(d)).min().unwrap_or(0)
-    }
-
     pub fn first_activity(&self) -> Option<NaiveDate> {
-        let a = self.capital.iter().map(|c| c.occurred_on).min();
-        let b = self.loans.iter().map(|l| l.facts.start_date).min();
-        match (a, b) {
-            (Some(a), Some(b)) => Some(a.min(b)),
-            (a, b) => a.or(b),
-        }
+        let dates = self
+            .capital
+            .iter()
+            .map(|c| c.occurred_on)
+            .chain(self.loans.iter().map(|l| l.facts.start_date))
+            .chain(self.entries.iter().map(|e| e.occurred_on));
+        dates.min()
     }
 
     /// Daily or weekly points between `from` and `to` (inclusive), always
@@ -261,6 +493,8 @@ impl Book {
     }
 
     /// Cash flow per calendar month from the first activity through `to`.
+    /// Capital adjustments count as capital in or out, interest adjustments
+    /// as interest; transfers move money between accounts and cancel out.
     pub fn monthly_cash_flow(&self, to: NaiveDate) -> Vec<MonthFlow> {
         let Some(first) = self.first_activity() else {
             return Vec::new();
@@ -276,6 +510,17 @@ impl Book {
                 match c.kind {
                     CapitalKind::Contribution => f.contributions += c.amount,
                     CapitalKind::Withdrawal => f.withdrawals += c.amount,
+                }
+            }
+        }
+        for e in self.entries.iter().filter(|e| e.occurred_on <= to) {
+            if let Some(f) = months.get_mut(&month_start(e.occurred_on)) {
+                match (e.kind, e.account) {
+                    (EntryKind::Expense, _) => f.expenses += e.amount,
+                    (EntryKind::Adjustment, Account::Capital) if e.amount > 0 => f.contributions += e.amount,
+                    (EntryKind::Adjustment, Account::Capital) => f.withdrawals -= e.amount,
+                    (EntryKind::Adjustment, Account::Interest) => f.interest_received += e.amount,
+                    (EntryKind::Transfer, _) => {}
                 }
             }
         }
@@ -320,12 +565,14 @@ pub struct MonthFlow {
     pub principal_returned: Cents,
     pub interest_received: Cents,
     pub fees_received: Cents,
+    pub expenses: Cents,
     pub ending_cash: Cents,
 }
 
 impl MonthFlow {
     pub fn net(&self) -> Cents {
         self.contributions - self.withdrawals - self.disbursed + self.principal_returned + self.interest_received + self.fees_received
+            - self.expenses
     }
 }
 
@@ -348,33 +595,46 @@ mod tests {
         }
     }
 
+    fn loan(id: i64, principal: Cents, start: NaiveDate) -> LoanBook {
+        LoanBook {
+            id,
+            client_id: 1,
+            facts: LoanFacts {
+                principal,
+                rate: Rate(100_000),
+                frequency: Frequency::Monthly,
+                start_date: start,
+                status: ContractStatus::Active,
+                closed_on: None,
+            },
+            payments: Vec::new(),
+        }
+    }
+
+    fn capital(id: i64, kind: CapitalKind, amount: Cents, on: NaiveDate) -> CapitalFact {
+        CapitalFact { id, kind, amount, occurred_on: on }
+    }
+
+    fn entry(id: i64, kind: EntryKind, account: Account, amount: Cents, on: NaiveDate) -> EntryFact {
+        EntryFact { id, kind, account, amount, occurred_on: on }
+    }
+
     /// A fixture with known results:
     /// - Jan 1: add 20,000.00 of capital; lend 10,000.00 at 10% a month
     /// - Feb 1: client pays 3,000.00 = 1,000.00 interest + 2,000.00 capital
     /// - Mar 1: client pays 800.00 = February's interest on 8,000.00
     /// - Apr 15: withdraw 1,000.00 (April's 800.00 is left unpaid)
     fn fixture() -> Book {
-        let mut l = LoanBook {
-            id: 1,
-            client_id: 1,
-            facts: LoanFacts {
-                principal: 1_000_000,
-                rate: Rate(100_000),
-                frequency: Frequency::Monthly,
-                start_date: d(2026, 1, 1),
-                status: ContractStatus::Active,
-                closed_on: None,
-            },
-            payments: Vec::new(),
-        };
+        let mut l = loan(1, 1_000_000, d(2026, 1, 1));
         pay(&mut l, 300_000, d(2026, 2, 1));
         pay(&mut l, 80_000, d(2026, 3, 1));
         Book {
             loans: vec![l],
             capital: vec![
-                CapitalFact { kind: CapitalKind::Contribution, amount: 2_000_000, occurred_on: d(2026, 1, 1) },
-                CapitalFact { kind: CapitalKind::Withdrawal, amount: 100_000, occurred_on: d(2026, 4, 15) },
+                capital(1, CapitalKind::Contribution, 2_000_000, d(2026, 1, 1)),
+                capital(2, CapitalKind::Withdrawal, 100_000, d(2026, 4, 15)),
             ],
+            entries: Vec::new(),
         }
     }
 
@@ -398,6 +658,76 @@ mod tests {
     }
 
     #[test]
+    fn payments_fill_the_two_accounts() {
+        let book = fixture();
+        let s = book.summary(d(2026, 3, 1));
+        // 20,000 - 10,000 lent + 2,000 capital back; 1,000 + 800 interest.
+        assert_eq!((s.available_capital, s.available_interest), (1_200_000, 180_000));
+        // The withdrawal comes out of capital.
+        let s = book.summary(d(2026, 4, 15));
+        assert_eq!((s.available_capital, s.available_interest), (1_100_000, 180_000));
+    }
+
+    #[test]
+    fn loans_use_capital_first_then_interest() {
+        let mut book = fixture();
+        // Mar 2: lend 12,500 with 12,000 capital and 1,800 interest available.
+        book.loans.push(loan(2, 1_250_000, d(2026, 3, 2)));
+        let b = book.balances_on(d(2026, 3, 2));
+        assert_eq!((b.capital, b.interest), (0, 130_000));
+        // Repaid capital always returns to capital.
+        pay(&mut book.loans[1], 1_250_000 + 125_000, d(2026, 4, 2));
+        let b = book.balances_on(d(2026, 4, 2));
+        assert_eq!((b.capital, b.interest), (1_250_000, 255_000));
+    }
+
+    #[test]
+    fn expenses_and_transfers_move_only_their_account() {
+        let mut book = fixture();
+        book.entries.push(entry(1, EntryKind::Expense, Account::Interest, 50_000, d(2026, 3, 5)));
+        book.entries.push(entry(2, EntryKind::Transfer, Account::Interest, 100_000, d(2026, 3, 6)));
+        book.entries.push(entry(3, EntryKind::Expense, Account::Capital, 20_000, d(2026, 3, 7)));
+        let before = book.summary(d(2026, 3, 1));
+        let s = book.summary(d(2026, 3, 7));
+        assert_eq!(s.available_interest, 180_000 - 50_000 - 100_000);
+        assert_eq!(s.available_capital, 1_200_000 + 100_000 - 20_000);
+        assert_eq!(s.interest_collected, before.interest_collected, "interest earned is unchanged");
+        // An expense from capital lowers invested capital, not the gain.
+        assert_eq!(s.net_invested(), before.net_invested() - 20_000);
+        assert_eq!(s.gain(), before.gain() - 50_000);
+    }
+
+    #[test]
+    fn adjustments_correct_an_account() {
+        let mut book = fixture();
+        book.entries.push(entry(1, EntryKind::Adjustment, Account::Capital, -30_000, d(2026, 3, 10)));
+        book.entries.push(entry(2, EntryKind::Adjustment, Account::Interest, 5_000, d(2026, 3, 10)));
+        let s = book.summary(d(2026, 3, 10));
+        assert_eq!((s.available_capital, s.available_interest), (1_170_000, 185_000));
+        assert_eq!(s.net_invested(), 2_000_000 - 30_000);
+    }
+
+    #[test]
+    fn shortfall_finds_the_first_negative_account() {
+        let mut book = fixture();
+        assert_eq!(book.shortfall(), None);
+        book.entries.push(entry(1, EntryKind::Expense, Account::Interest, 200_000, d(2026, 3, 5)));
+        assert_eq!(book.shortfall(), Some(Shortfall { date: d(2026, 3, 5), account: Some(Account::Interest), balance: -20_000 }));
+        book.entries.clear();
+        book.loans.push(loan(2, 2_000_000, d(2026, 3, 2)));
+        assert_eq!(book.shortfall(), Some(Shortfall { date: d(2026, 3, 2), account: None, balance: 1_380_000 - 2_000_000 }));
+    }
+
+    #[test]
+    fn availability_looks_ahead() {
+        let book = fixture();
+        assert_eq!(book.available_from(d(2026, 1, 1), None), 1_000_000);
+        assert_eq!(book.available_from(d(2026, 3, 15), None), 1_280_000);
+        assert_eq!(book.available_from(d(2026, 3, 15), Some(Account::Capital)), 1_100_000);
+        assert_eq!(book.available_from(d(2026, 3, 15), Some(Account::Interest)), 180_000);
+    }
+
+    #[test]
     fn unpaid_interest_is_receivable_once_due() {
         let book = fixture();
         assert_eq!(book.summary(d(2026, 3, 31)).interest_receivable, 0);
@@ -418,16 +748,23 @@ mod tests {
 
     #[test]
     fn ledger_invariants_hold_every_day() {
-        let book = fixture();
+        let mut book = fixture();
+        book.entries.push(entry(1, EntryKind::Expense, Account::Interest, 30_000, d(2026, 3, 5)));
+        book.entries.push(entry(2, EntryKind::Transfer, Account::Interest, 50_000, d(2026, 3, 9)));
+        book.entries.push(entry(3, EntryKind::Adjustment, Account::Capital, 7_000, d(2026, 5, 1)));
         let mut day = d(2025, 12, 30);
         while day <= d(2026, 12, 31) {
             let s = book.summary(day);
             assert_eq!(
                 s.available_cash + s.outstanding_principal + s.defaulted_principal,
-                s.net_invested() + s.interest_collected + s.fees_collected,
+                s.net_invested() + s.interest_collected + s.fees_collected + s.interest_adjustments - s.interest_expenses,
                 "{day}"
             );
-            assert_eq!(s.gain(), s.realized_income() + s.interest_receivable - s.defaulted_principal, "{day}");
+            assert_eq!(
+                s.gain(),
+                s.realized_income() + s.interest_adjustments - s.interest_expenses + s.interest_receivable - s.defaulted_principal,
+                "{day}"
+            );
             assert_eq!(book.cash_on(day), s.available_cash, "{day}");
             day += chrono::Duration::days(1);
         }
@@ -469,22 +806,15 @@ mod tests {
 
     #[test]
     fn monthly_cash_flow_reconciles_to_cash() {
-        let book = fixture();
+        let mut book = fixture();
+        book.entries.push(entry(1, EntryKind::Expense, Account::Interest, 30_000, d(2026, 4, 3)));
         let flows = book.monthly_cash_flow(d(2026, 4, 20));
         assert_eq!(flows.len(), 4);
         assert_eq!(flows[0].contributions, 2_000_000);
         assert_eq!(flows[0].disbursed, 1_000_000);
         assert_eq!((flows[1].interest_received, flows[1].principal_returned), (100_000, 200_000));
         assert_eq!(flows[2].interest_received, 80_000);
-        assert_eq!(flows[3].withdrawals, 100_000);
+        assert_eq!((flows[3].withdrawals, flows[3].expenses), (100_000, 30_000));
         assert_eq!(flows.last().unwrap().ending_cash, book.cash_on(d(2026, 4, 20)));
-    }
-
-    #[test]
-    fn min_cash_guards_future_outflows() {
-        let book = fixture();
-        assert_eq!(book.cash_on(d(2026, 1, 1)), 1_000_000);
-        assert_eq!(book.min_cash_from(d(2026, 1, 1)), 1_000_000);
-        assert_eq!(book.min_cash_from(d(2026, 3, 15)), 1_280_000);
     }
 }

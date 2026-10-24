@@ -1,9 +1,11 @@
 //! Dialog forms. Each form is its own view so previews update as you type;
 //! persistent input state is created once when the dialog opens.
 
+pub mod adjust;
 pub mod capital;
 pub mod client;
 pub mod date_field;
+pub mod entry;
 pub mod loan;
 pub mod payment;
 pub mod reason;
@@ -78,4 +80,28 @@ pub fn focus_once(guard: &Cell<bool>, handle: &FocusHandle, window: &mut Window,
 
 pub fn invalid_date() -> String {
     t("Enter a valid date", "Escribe una fecha válida").to_string()
+}
+
+/// Optional "why" for an edit, kept in the change history.
+pub fn reason_input<T: 'static>(window: &mut Window, cx: &mut Context<T>) -> Entity<InputState> {
+    cx.new(|cx| InputState::new(window, cx).placeholder(t("Optional: why it changed", "Opcional: por qué cambió")))
+}
+
+/// A selectable tile with a title and an optional line under it. The caller
+/// adds the click handler.
+pub fn choice_tile(p: &Palette, id: &'static str, title: &str, sub: Option<String>, selected: bool) -> Stateful<Div> {
+    v_flex()
+        .id(id)
+        .flex_1()
+        .min_w_0()
+        .p(px(10.))
+        .gap(px(2.))
+        .rounded(px(8.))
+        .border_1()
+        .border_color(if selected { p.accent } else { p.border })
+        .when(selected, |d| d.bg(p.accent_tint))
+        .when(!selected, |d| d.hover(|s| s.bg(p.hover)))
+        .cursor_pointer()
+        .child(div().font_weight(FontWeight::MEDIUM).text_color(if selected { p.accent_text } else { p.text }).child(title.to_string()))
+        .children(sub.map(|s| div().text_size(px(size::META)).text_color(p.muted).truncate().child(s)))
 }

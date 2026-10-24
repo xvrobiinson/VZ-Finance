@@ -1,8 +1,11 @@
 //! Typed access to each table. Repositories only read and write rows; rules
 //! about what may be written live in `services`.
 
+pub mod assets;
 pub mod capital;
+pub mod changes;
 pub mod clients;
+pub mod entries;
 pub mod loans;
 pub mod payments;
 pub mod settings;

@@ -5,11 +5,12 @@ use gpui_kit::component::{Sizable as _, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
-use super::ncolumn;
+use super::{ncolumn, row_icon_button};
 use crate::app::{Route, VzApp};
 use crate::i18n::{count, t};
 use crate::tr;
 use crate::ui::components::{Tone, avatar, card, empty_state, icon, page_header, pill, table_header, table_row, th};
+use crate::ui::forms::reason::ReasonKind;
 use crate::ui::theme::{palette, size, space, tabular};
 
 impl VzApp {
@@ -126,21 +127,38 @@ impl VzApp {
                     .child(dim(ncolumn(130.)).child(money.format(x.amount)))
                     .child(
                         h_flex()
-                            .w(px(if narrow { 110. } else { 190. }))
+                            .w(px(if narrow { 150. } else { 240. }))
                             .justify_end()
-                            .gap(px(6.))
+                            .gap(px(2.))
                             .when(rev && !narrow, |d| d.child(pill(&p, t("Reversed", "Anulado"), Tone::Neutral)))
                             .child(
                                 Button::new(("pay-receipt", pid as u64))
                                     .ghost()
                                     .small()
                                     .icon(IconName::Printer)
-                                    .label(t("Receipt", "Recibo"))
+                                    .when(!narrow, |b| b.label(t("Receipt", "Recibo")))
+                                    .tooltip(t("Print receipt", "Imprimir recibo"))
                                     .on_click(cx.listener(move |this, _, w, cx| {
                                         cx.stop_propagation();
                                         this.open_receipt(pid, w, cx)
                                     })),
-                            ),
+                            )
+                            .when(!rev, |d| {
+                                d.child(row_icon_button(
+                                    ("pl-edit", pid as u64),
+                                    IconName::Pencil,
+                                    t("Edit payment", "Editar pago"),
+                                    cx,
+                                    move |this, w, cx| this.edit_payment(pid, w, cx),
+                                ))
+                            })
+                            .child(row_icon_button(
+                                ("pl-del", pid as u64),
+                                IconName::Trash,
+                                t("Delete payment", "Eliminar pago"),
+                                cx,
+                                move |this, w, cx| this.open_reason_form(ReasonKind::DeletePayment(pid), w, cx),
+                            )),
                     )
                     .on_click(cx.listener(move |this, _, w, cx| this.navigate(Route::Loan(lid), w, cx)))
             });
@@ -153,7 +171,7 @@ impl VzApp {
                         .child(ncolumn(120.).child(th(&p, t("Capital", "Capital"))))
                         .when(!narrow, |d| d.child(ncolumn(90.).child(th(&p, t("Fee", "Cargo")))))
                         .child(ncolumn(130.).child(th(&p, t("Amount", "Monto"))))
-                        .child(div().w(px(if narrow { 110. } else { 190. }))),
+                        .child(div().w(px(if narrow { 150. } else { 240. }))),
                 )
                 .children(items)
                 .into_any_element()

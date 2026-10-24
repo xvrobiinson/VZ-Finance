@@ -19,13 +19,21 @@ Built in Rust with [GPUI](https://gpui.rs) and SQLite.
 - **Clients**: searchable directory; each client has a profile with loans,
   payment history, totals and notes. Clients are archived, never deleted.
 - **Payments**: record a payment in a few keystrokes with a live split between
-  interest and capital. Mistakes are corrected with audited reversals.
-- **Printable receipts**: after each payment (or any time later) a receipt
-  opens ready to print, showing what was paid, what is still owed, the
-  percentage of capital paid and the next payment.
+  interest and capital.
+- **Two accounts**: available capital and available interest. Loans use
+  capital first, then interest; repaid capital goes back to capital, interest
+  to interest. Record expenses from either account, move money between them,
+  or adjust both to what you really have on hand.
+- **Everything is editable**: loans, payments, capital, expenses and clients
+  can be edited or deleted. Payment splits are recalculated automatically and
+  every change is kept in a change history with the old and new values.
+- **Printable receipts**: a payment receipt (what was paid, what is still
+  owed, the percentage of capital paid, the next payment) and a loan receipt
+  (amount, rate, payment dates, how payments work, signature lines), both with
+  your logo.
 - **Portfolio Analytics**: returns, capital ledger, monthly interest, capital
   lent out, loans by status and a monthly cash-flow table.
-- **Settings**: business name (shown in the app and on receipts), English or
+- **Settings**: business name and logo (shown in the app and on receipts), English or
   Spanish, currency (Dominican peso by default), number and date formats,
   default rate and payment frequency, light and dark theme, verified backup
   and restore, CSV export.
@@ -52,6 +60,7 @@ app; use BitLocker or device encryption for encryption at rest.
 | Record payment | Ctrl P |
 | New loan | Ctrl L |
 | New client | Ctrl N |
+| New expense | Ctrl E |
 | Search clients | Ctrl F |
 | Back up | Ctrl S |
 | Toggle sidebar | Ctrl B |

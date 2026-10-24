@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use anyhow::Result;
 
 use super::Snapshot;
+use crate::database::repositories::changes::Action;
 use crate::domain::money::{Cents, MoneyFormat};
 use crate::utils::dates::to_iso;
 
@@ -92,6 +93,45 @@ pub fn export_all(snap: &Snapshot, dir: &Path) -> Result<Vec<PathBuf>> {
     w.write_record(["id", "kind", "amount", "occurred_on", "notes"])?;
     for c in &snap.capital {
         w.write_record([c.id.to_string(), c.kind.key().to_string(), amount(c.amount), to_iso(c.occurred_on), c.notes.clone()])?;
+    }
+    w.flush()?;
+    written.push(path);
+
+    // Expenses, transfers (from `account` to the other) and adjustments
+    // (signed).
+    let (mut w, path) = file("cash-entries")?;
+    w.write_record(["id", "kind", "account", "amount", "occurred_on", "description"])?;
+    for e in &snap.entries {
+        w.write_record([
+            e.id.to_string(),
+            e.kind.key().to_string(),
+            e.account.key().to_string(),
+            amount(e.amount),
+            to_iso(e.occurred_on),
+            e.description.clone(),
+        ])?;
+    }
+    w.flush()?;
+    written.push(path);
+
+    // One row per changed field; raw values as stored.
+    let (mut w, path) = file("change-history")?;
+    w.write_record(["id", "changed_at", "record", "record_id", "loan_id", "action", "field", "old", "new", "reason"])?;
+    for c in &snap.changes {
+        for f in &c.fields {
+            w.write_record([
+                c.id.to_string(),
+                c.created_at.clone(),
+                c.entity.key().to_string(),
+                c.entity_id.to_string(),
+                c.loan_id.map(|l| l.to_string()).unwrap_or_default(),
+                if c.action == Action::Delete { "delete" } else { "update" }.to_string(),
+                f.field.clone(),
+                f.old.clone(),
+                f.new.clone(),
+                c.reason.clone(),
+            ])?;
+        }
     }
     w.flush()?;
     written.push(path);

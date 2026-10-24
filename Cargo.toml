@@ -1,6 +1,6 @@
 [package]
 name = "vz-finance"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 description = "VZ Finance: a private, offline lending portfolio manager for Windows"
 license = "Proprietary"
@@ -16,11 +16,14 @@ path = "src/main.rs"
 
 [dependencies]
 anyhow = "1.0.104"
+base64 = "0.22.1"
 chrono = "0.4.45"
 csv = "1.4.0"
 dirs = "7.0.0"
 env_logger = "0.11.11"
 gpui-kit = "0.8.0"
+# Same version GPUI already builds; used to shrink an uploaded logo.
+image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "gif", "bmp", "webp"] }
 log = "0.4.34"
 rusqlite = { version = "0.40.2", features = ["bundled", "backup"] }
 thiserror = "2.0.21"

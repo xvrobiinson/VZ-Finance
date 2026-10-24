@@ -310,6 +310,42 @@ pub fn allocate(
     })
 }
 
+/// A recorded payment before its split is known.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PaymentInput {
+    pub paid_on: NaiveDate,
+    pub amount: Cents,
+    pub fee: Cents,
+}
+
+/// Splits every payment on a loan again, oldest first, from the loan's
+/// current terms. Used after a loan or any of its payments is edited, added
+/// or deleted, so every split follows the same rules as a new payment.
+/// Payments must be sorted by date, then by id. On failure returns the index
+/// of the first payment that no longer fits and why.
+pub fn reallocate(loan: &LoanFacts, payments: &[PaymentInput], today: NaiveDate) -> Result<Vec<Allocation>, (usize, PaymentError)> {
+    // Payments are allowed up to a default date; the split itself is the one
+    // an active loan would have.
+    let open = LoanFacts { status: ContractStatus::Active, closed_on: None, ..loan.clone() };
+    let limit = match (loan.status, loan.closed_on) {
+        (ContractStatus::Defaulted | ContractStatus::Restructured, Some(d)) => Some(d),
+        _ => None,
+    };
+    let mut facts: Vec<PaymentFact> = Vec::with_capacity(payments.len());
+    let mut out = Vec::with_capacity(payments.len());
+    for (i, p) in payments.iter().enumerate() {
+        if limit.is_some_and(|d| p.paid_on > d) {
+            return Err((i, PaymentError::LoanClosed));
+        }
+        // After a payoff nothing is owed, so a later payment is refused as
+        // an overpayment.
+        let a = allocate(&open, &facts, p.amount, p.fee, p.paid_on, today).map_err(|e| (i, e))?;
+        facts.push(PaymentFact { paid_on: p.paid_on, principal: a.principal, interest: a.interest, fee: a.fee });
+        out.push(a);
+    }
+    Ok(out)
+}
+
 /// What a client owes on a given day (at the moment of a payment), for
 /// quick-fill amounts: interest owed now and the full payoff.
 pub fn owed_at_payment(loan: &LoanFacts, payments: &[PaymentFact], on: NaiveDate) -> Position {
@@ -557,6 +593,41 @@ mod tests {
         // January and February charged; nothing after the default date.
         assert_eq!(pos.interest_outstanding, 20_000);
         assert_eq!(delinquency(&l, &[], d(2026, 12, 1)), Delinquency::default());
+    }
+
+    #[test]
+    fn reallocation_follows_edited_terms() {
+        let input = |amount: Cents, on: NaiveDate| PaymentInput { paid_on: on, amount, fee: 0 };
+        let payments = [input(60_000, d(2026, 2, 1)), input(5_000, d(2026, 3, 1))];
+        let today = d(2026, 6, 1);
+        let l = loan(100_000, 10, Frequency::Monthly, d(2026, 1, 1));
+        let a = reallocate(&l, &payments, today).unwrap();
+        assert_eq!((a[0].interest, a[0].principal, a[1].interest, a[1].principal), (10_000, 50_000, 5_000, 0));
+
+        // The loan was really 2,000: both payments are split again.
+        let l = loan(200_000, 10, Frequency::Monthly, d(2026, 1, 1));
+        let a = reallocate(&l, &payments, today).unwrap();
+        assert_eq!((a[0].interest, a[0].principal), (20_000, 40_000));
+        assert_eq!((a[1].interest, a[1].principal), (5_000, 0), "only part of February's 160 of interest");
+        assert_eq!(a[1].interest_after, 11_000);
+
+        // A smaller loan makes the first payment more than was owed.
+        let l = loan(40_000, 10, Frequency::Monthly, d(2026, 1, 1));
+        assert_eq!(reallocate(&l, &payments, today), Err((0, PaymentError::Overpayment { payoff: 44_000 })));
+
+        // A later loan date puts a payment before the loan.
+        let l = loan(100_000, 10, Frequency::Monthly, d(2026, 2, 15));
+        assert_eq!(reallocate(&l, &payments, today), Err((0, PaymentError::BeforeStart)));
+    }
+
+    #[test]
+    fn nothing_is_owed_after_a_payoff() {
+        let l = loan(100_000, 10, Frequency::Monthly, d(2026, 1, 1));
+        let payments = [
+            PaymentInput { paid_on: d(2026, 1, 10), amount: 110_000, fee: 0 },
+            PaymentInput { paid_on: d(2026, 2, 1), amount: 1_000, fee: 0 },
+        ];
+        assert_eq!(reallocate(&l, &payments, d(2026, 6, 1)), Err((1, PaymentError::Overpayment { payoff: 0 })));
     }
 
     #[test]

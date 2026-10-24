@@ -66,6 +66,21 @@ pub fn insert(conn: &Connection, client_id: i64, terms: &LoanTerms, notes: &str)
     Ok(conn.last_insert_rowid())
 }
 
+pub fn update(conn: &Connection, id: i64, client_id: i64, terms: &LoanTerms, notes: &str) -> Result<()> {
+    conn.execute(
+        "UPDATE loans SET client_id = ?1, principal = ?2, period_rate = ?3, frequency = ?4, start_date = ?5, notes = ?6 WHERE id = ?7",
+        params![client_id, terms.principal, terms.rate.0, terms.frequency.key(), Day(terms.start_date), notes.trim(), id],
+    )
+    .context("Could not save the loan")?;
+    Ok(())
+}
+
+/// Deletes a loan and its status history. Delete its payments first.
+pub fn delete(conn: &Connection, id: i64) -> Result<()> {
+    conn.execute("DELETE FROM loans WHERE id = ?1", [id])?;
+    Ok(())
+}
+
 pub fn set_status(conn: &Connection, loan_id: i64, status: ContractStatus, on: NaiveDate, note: &str) -> Result<()> {
     conn.execute("UPDATE loans SET status = ?1, status_date = ?2 WHERE id = ?3", params![status.key(), Day(on), loan_id])?;
     conn.execute(

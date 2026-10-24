@@ -9,15 +9,19 @@ use rusqlite::{Connection, OpenFlags, params};
 
 /// Ordered, append-only list of migrations. Never edit a shipped migration;
 /// add a new one instead.
-const MIGRATIONS: &[(i64, &str)] =
-    &[(1, include_str!("migrations/0001_init.sql")), (2, include_str!("migrations/0002_period_rate_loans.sql"))];
+const MIGRATIONS: &[(i64, &str)] = &[
+    (1, include_str!("migrations/0001_init.sql")),
+    (2, include_str!("migrations/0002_period_rate_loans.sql")),
+    (3, include_str!("migrations/0003_editable_records.sql")),
+];
 
 /// Migrations that rebuild tables and must run with foreign keys disabled.
 const REBUILDS: &[i64] = &[2];
 
-pub const SCHEMA_VERSION: i64 = 2;
+pub const SCHEMA_VERSION: i64 = 3;
 
-/// The tables a valid VZ Finance database must contain.
+/// The tables every VZ Finance database has had since version 1 (backups
+/// from older versions are upgraded after they are restored).
 const REQUIRED_TABLES: &[&str] = &[
     "schema_migrations",
     "app_settings",
@@ -274,7 +278,7 @@ mod tests {
             .unwrap();
         }
         let conn = open(&path).unwrap();
-        assert_eq!(schema_version(&conn).unwrap(), 2);
+        assert_eq!(schema_version(&conn).unwrap(), SCHEMA_VERSION);
         let (rate, freq): (i64, String) =
             conn.query_row("SELECT period_rate, frequency FROM loans WHERE id = 1", [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
         assert_eq!((rate, freq.as_str()), (100_000, "monthly"));

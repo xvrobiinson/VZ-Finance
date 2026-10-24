@@ -2,27 +2,32 @@
 //! the accounting rules and committed atomically in one SQLite transaction.
 
 pub mod export;
+pub mod logo;
 pub mod receipt;
+mod records;
 pub mod settings;
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
-use anyhow::{Result, anyhow, bail};
+use anyhow::{Result, anyhow};
 use chrono::NaiveDate;
 use rusqlite::{Connection, TransactionBehavior};
 
 use crate::database::repositories::{
+    assets,
     capital::{self, CapitalTx},
+    changes::{self, Action, Change, Entity, FieldChange},
     clients::{self, Client, ClientInput},
+    entries::{self, CashEntry},
     loans::{self, Loan},
     payments::{self, Payment},
     settings as settings_repo,
 };
 use crate::database::{self, BackupInfo};
-use crate::domain::ledger::{Allocation, ContractStatus, LoanFacts, PaymentError, allocate};
-use crate::domain::loans::LoanTerms;
+use crate::domain::ledger::{Allocation, ContractStatus, LoanFacts, PaymentError, PaymentFact, allocate};
 use crate::domain::money::Cents;
-use crate::domain::portfolio::{Book, CapitalKind, LoanBook};
+use crate::domain::portfolio::{Account, Book, LoanBook, Shortfall};
 use crate::i18n::t;
 use settings::Settings;
 
@@ -31,13 +36,22 @@ use settings::Settings;
 #[error("{0}")]
 pub struct Invalid(pub String);
 
-/// A loan or withdrawal larger than the cash available on (and after) its
-/// date.
+/// A new loan, withdrawal, expense or transfer larger than what is
+/// available on (and after) its date.
 #[derive(Debug, thiserror::Error)]
-#[error("Not enough available capital")]
+#[error("Not enough available money")]
 pub struct InsufficientCash {
     pub available: Cents,
+    /// The account it comes from, or `None` for a loan (capital first, then
+    /// interest).
+    pub account: Option<Account>,
 }
+
+/// A change that would leave an account below zero at some point, because
+/// the money was already lent, spent or withdrawn later.
+#[derive(Debug, thiserror::Error)]
+#[error("An account would go below zero")]
+pub struct CashShortfall(pub Shortfall);
 
 fn invalid<T>(msg: impl Into<String>) -> Result<T> {
     Err(Invalid(msg.into()).into())
@@ -50,6 +64,11 @@ pub struct Snapshot {
     pub loans: Vec<Loan>,
     pub payments: Vec<Payment>,
     pub capital: Vec<CapitalTx>,
+    pub entries: Vec<CashEntry>,
+    /// Edits and deletions, newest first.
+    pub changes: Vec<Change>,
+    /// The business logo as PNG.
+    pub logo: Option<Arc<[u8]>>,
     pub book: Book,
     pub settings: Settings,
 }
@@ -60,6 +79,15 @@ impl Snapshot {
     }
     pub fn loan(&self, id: i64) -> Option<&Loan> {
         self.loans.iter().find(|l| l.id == id)
+    }
+    pub fn payment(&self, id: i64) -> Option<&Payment> {
+        self.payments.iter().find(|p| p.id == id)
+    }
+    pub fn capital_tx(&self, id: i64) -> Option<&CapitalTx> {
+        self.capital.iter().find(|c| c.id == id)
+    }
+    pub fn entry(&self, id: i64) -> Option<&CashEntry> {
+        self.entries.iter().find(|e| e.id == id)
     }
     pub fn book_loan(&self, id: i64) -> Option<&LoanBook> {
         self.book.loans.iter().find(|l| l.id == id)
@@ -73,6 +101,25 @@ impl Snapshot {
     pub fn payments_for_loan(&self, loan_id: i64) -> impl Iterator<Item = &Payment> {
         self.payments.iter().filter(move |p| p.loan_id == loan_id)
     }
+    /// The ledger without one record, so a form editing it can show what
+    /// would be available with the record changed.
+    pub fn book_without(&self, record: Record) -> Book {
+        let mut book = self.book.clone();
+        match record {
+            Record::Loan(id) => book.loans.retain(|l| l.id != id),
+            Record::Capital(id) => book.capital.retain(|c| c.id != id),
+            Record::Entry(id) => book.entries.retain(|e| e.id != id),
+        }
+        book
+    }
+}
+
+/// A record that moves cash, for [`Snapshot::book_without`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Record {
+    Loan(i64),
+    Capital(i64),
+    Entry(i64),
 }
 
 pub fn loan_facts(loan: &Loan) -> LoanFacts {
@@ -89,7 +136,7 @@ pub fn loan_facts(loan: &Loan) -> LoanFacts {
     }
 }
 
-fn build_book(loans: &[Loan], payments: &[Payment], capital: &[CapitalTx]) -> Book {
+fn build_book(loans: &[Loan], payments: &[Payment], capital: &[CapitalTx], entries: &[CashEntry]) -> Book {
     Book {
         loans: loans
             .iter()
@@ -101,11 +148,50 @@ fn build_book(loans: &[Loan], payments: &[Payment], capital: &[CapitalTx]) -> Bo
             })
             .collect(),
         capital: capital.iter().map(CapitalTx::fact).collect(),
+        entries: entries.iter().map(CashEntry::fact).collect(),
     }
 }
 
 fn load_book(conn: &Connection) -> Result<Book> {
-    Ok(build_book(&loans::list(conn)?, &payments::list(conn)?, &capital::list(conn)?))
+    Ok(build_book(&loans::list(conn)?, &payments::list(conn)?, &capital::list(conn)?, &entries::list(conn)?))
+}
+
+/// Refuses a write that leaves an account below zero at any point.
+fn check_cash(conn: &Connection) -> Result<()> {
+    match load_book(conn)?.shortfall() {
+        Some(s) => Err(CashShortfall(s).into()),
+        None => Ok(()),
+    }
+}
+
+/// Field-by-field record of an edit, for the change history.
+#[derive(Default)]
+struct Diff(Vec<FieldChange>);
+
+impl Diff {
+    fn field(mut self, name: &str, old: impl ToString, new: impl ToString) -> Self {
+        let (old, new) = (old.to_string(), new.to_string());
+        if old != new {
+            self.0.push(FieldChange { field: name.into(), old, new });
+        }
+        self
+    }
+    /// A deleted record's values.
+    fn removed(mut self, name: &str, old: impl ToString) -> Self {
+        self.0.push(FieldChange { field: name.into(), old: old.to_string(), new: String::new() });
+        self
+    }
+    fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+    fn log(self, c: &Connection, entity: Entity, id: i64, loan_id: Option<i64>, action: Action, reason: &str) -> Result<()> {
+        changes::insert(c, entity, id, loan_id, action, &self.0, reason)?;
+        Ok(())
+    }
+}
+
+fn opt(s: &Option<String>) -> &str {
+    s.as_deref().unwrap_or("")
 }
 
 pub struct Store {
@@ -141,13 +227,17 @@ impl Store {
     }
 
     pub fn snapshot(&self) -> Result<Snapshot> {
-        let clients = clients::list(&self.conn)?;
-        let loans = loans::list(&self.conn)?;
-        let payments = payments::list(&self.conn)?;
-        let capital = capital::list(&self.conn)?;
-        let book = build_book(&loans, &payments, &capital);
-        let settings = Settings::from_map(&settings_repo::all(&self.conn)?);
-        Ok(Snapshot { clients, loans, payments, capital, book, settings })
+        let c = &self.conn;
+        let clients = clients::list(c)?;
+        let loans = loans::list(c)?;
+        let payments = payments::list(c)?;
+        let capital = capital::list(c)?;
+        let entries = entries::list(c)?;
+        let book = build_book(&loans, &payments, &capital, &entries);
+        let settings = Settings::from_map(&settings_repo::all(c)?);
+        let changes = changes::list(c)?;
+        let logo = assets::get(c, assets::LOGO)?.map(Arc::from);
+        Ok(Snapshot { clients, loans, payments, capital, entries, changes, logo, book, settings })
     }
 
     fn write<T>(&mut self, f: impl FnOnce(&Connection) -> Result<T>) -> Result<T> {
@@ -172,6 +262,28 @@ impl Store {
             }
             Ok(())
         })
+    }
+
+    /// Saves an uploaded picture as the business logo, shrunk to a size
+    /// that fits receipts and the sidebar.
+    pub fn set_logo(&mut self, bytes: &[u8]) -> Result<()> {
+        let png = logo::prepare(bytes).map_err(|e| {
+            Invalid(match e {
+                logo::LogoError::TooLarge => {
+                    t("The picture is too large (20 MB at most)", "La imagen es demasiado grande (máximo 20 MB)").into()
+                }
+                logo::LogoError::Unreadable => t(
+                    "This file isn't a picture the app can read. Use a PNG, JPG, GIF, BMP or WebP image.",
+                    "La app no puede leer este archivo. Usa una imagen PNG, JPG, GIF, BMP o WebP.",
+                )
+                .into(),
+            })
+        })?;
+        self.write(|c| assets::set(c, assets::LOGO, "image/png", &png))
+    }
+
+    pub fn remove_logo(&mut self) -> Result<()> {
+        self.write(|c| assets::remove(c, assets::LOGO))
     }
 
     // ----- clients --------------------------------------------------------
@@ -206,8 +318,17 @@ impl Store {
     pub fn update_client(&mut self, id: i64, input: &ClientInput) -> Result<()> {
         Self::validate_client(input)?;
         self.write(|c| {
-            clients::get(c, id)?.ok_or_else(|| anyhow!("client not found"))?;
-            clients::update(c, id, input)
+            let old = clients::get(c, id)?.ok_or_else(|| anyhow!("client not found"))?;
+            clients::update(c, id, input)?;
+            let diff = Diff::default()
+                .field("full_name", &old.full_name, input.full_name.trim())
+                .field("phone", opt(&old.phone), input.phone.trim())
+                .field("email", opt(&old.email), input.email.trim())
+                .field("notes", &old.notes, input.notes.trim());
+            if !diff.is_empty() {
+                diff.log(c, Entity::Client, id, None, Action::Update, "")?;
+            }
+            Ok(())
         })
     }
 
@@ -218,142 +339,23 @@ impl Store {
         })
     }
 
-    // ----- loans ----------------------------------------------------------
-
-    pub fn create_loan(&mut self, client_id: i64, terms: &LoanTerms, notes: &str, today: NaiveDate) -> Result<i64> {
-        terms.validate().map_err(|e| Invalid(e.message().into()))?;
-        if terms.start_date > today {
-            return invalid(t("The loan date can't be in the future", "La fecha del préstamo no puede ser futura"));
-        }
+    /// Deletes a client who has no loans.
+    pub fn delete_client(&mut self, id: i64, reason: &str) -> Result<()> {
         self.write(|c| {
-            let client = clients::get(c, client_id)?.ok_or_else(|| Invalid(t("Choose a client", "Elige un cliente").into()))?;
-            if client.is_archived() {
+            let old = clients::get(c, id)?.ok_or_else(|| anyhow!("client not found"))?;
+            if loans::list(c)?.iter().any(|l| l.client_id == id) {
                 return invalid(t(
-                    "This client is archived. Restore the client to lend again.",
-                    "Este cliente está archivado. Restáuralo para volver a prestarle.",
+                    "This client has loans. Delete the loans, or move them to another client by editing them, first.",
+                    "Este cliente tiene préstamos. Primero elimínalos o pásalos a otro cliente editándolos.",
                 ));
             }
-            let cash = load_book(c)?.min_cash_from(terms.start_date);
-            if terms.principal > cash {
-                return Err(InsufficientCash { available: cash.max(0) }.into());
-            }
-            let id = loans::insert(c, client_id, terms, notes)?;
-            loans::set_status(c, id, ContractStatus::Active, terms.start_date, "Loan disbursed")?;
-            Ok(id)
-        })
-    }
-
-    pub fn mark_defaulted(&mut self, loan_id: i64, on: NaiveDate, note: &str, today: NaiveDate) -> Result<()> {
-        if on > today {
-            return invalid(t("The date can't be in the future", "La fecha no puede ser futura"));
-        }
-        self.write(|c| {
-            let loan = loans::get(c, loan_id)?.ok_or_else(|| anyhow!("loan not found"))?;
-            if loan.status != ContractStatus::Active {
-                return invalid(t(
-                    "Only active loans can be marked as defaulted",
-                    "Solo los préstamos activos pueden marcarse como incobrables",
-                ));
-            }
-            if on < loan.terms.start_date {
-                return invalid(t("The date is before the loan started", "La fecha es anterior al inicio del préstamo"));
-            }
-            if let Some(last) = payments::for_loan(c, loan_id)?.iter().filter(|p| !p.is_reversed()).map(|p| p.paid_on).max()
-                && on < last
-            {
-                return invalid(t("The date is before the latest payment", "La fecha es anterior al último pago"));
-            }
-            loans::set_status(c, loan_id, ContractStatus::Defaulted, on, note)
-        })
-    }
-
-    pub fn reinstate(&mut self, loan_id: i64, today: NaiveDate) -> Result<()> {
-        self.write(|c| {
-            let loan = loans::get(c, loan_id)?.ok_or_else(|| anyhow!("loan not found"))?;
-            if loan.status != ContractStatus::Defaulted {
-                return invalid(t("Only defaulted loans can be reinstated", "Solo los préstamos incobrables pueden reactivarse"));
-            }
-            loans::set_status(c, loan_id, ContractStatus::Active, today, "Reinstated")
-        })
-    }
-
-    // ----- payments -------------------------------------------------------
-
-    fn loan_and_history(c: &Connection, loan_id: i64) -> Result<(Loan, Vec<Payment>)> {
-        let loan = loans::get(c, loan_id)?.ok_or_else(|| Invalid(t("Choose a loan", "Elige un préstamo").into()))?;
-        let history = payments::for_loan(c, loan_id)?.into_iter().filter(|p| !p.is_reversed()).collect();
-        Ok((loan, history))
-    }
-
-    pub fn record_payment(&mut self, loan_id: i64, amount: Cents, fee: Cents, on: NaiveDate, notes: &str, today: NaiveDate) -> Result<i64> {
-        self.write(|c| {
-            let (loan, history) = Self::loan_and_history(c, loan_id)?;
-            let facts: Vec<_> = history.iter().map(Payment::fact).collect();
-            let alloc = allocate(&loan_facts(&loan), &facts, amount, fee, on, today).map_err(|e| Invalid(e.message().into()))?;
-            let id = payments::insert(c, loan_id, on, amount, &alloc, notes)?;
-            if alloc.pays_off() {
-                loans::set_status(c, loan_id, ContractStatus::PaidOff, on, "Paid in full")?;
-            }
-            Ok(id)
-        })
-    }
-
-    /// Reverses the latest payment on a loan. The row is kept for audit and
-    /// excluded from every calculation. Only the latest payment can be
-    /// reversed, because later allocations depend on earlier ones.
-    pub fn reverse_payment(&mut self, payment_id: i64, reason: &str, today: NaiveDate) -> Result<()> {
-        if reason.trim().is_empty() {
-            return invalid(t("Give a reason for the reversal", "Indica el motivo de la anulación"));
-        }
-        self.write(|c| {
-            let payment = payments::get(c, payment_id)?.ok_or_else(|| anyhow!("payment not found"))?;
-            if payment.is_reversed() {
-                return invalid(t("This payment is already reversed", "Este pago ya está anulado"));
-            }
-            let (loan, history) = Self::loan_and_history(c, payment.loan_id)?;
-            if history.last().map(|p| p.id) != Some(payment_id) {
-                return invalid(t(
-                    "Only the most recent payment on a loan can be reversed. Reverse later payments first.",
-                    "Solo se puede anular el pago más reciente del préstamo. Anula primero los posteriores.",
-                ));
-            }
-            if !matches!(loan.status, ContractStatus::Active | ContractStatus::PaidOff) {
-                return invalid(t("Reinstate the loan before reversing its payments", "Reactiva el préstamo antes de anular sus pagos"));
-            }
-            payments::mark_reversed(c, payment_id, reason)?;
-            if load_book(c)?.min_cash_from(payment.paid_on) < 0 {
-                bail!(Invalid(
-                    t(
-                        "Reversing this payment would make available cash negative, because the money was lent or withdrawn later.",
-                        "Anular este pago dejaría el efectivo disponible en negativo, porque ese dinero ya se prestó o retiró.",
-                    )
-                    .into()
-                ));
-            }
-            if loan.status == ContractStatus::PaidOff {
-                loans::set_status(c, loan.id, ContractStatus::Active, today, "Payment reversed")?;
-            }
-            Ok(())
-        })
-    }
-
-    // ----- capital --------------------------------------------------------
-
-    pub fn add_capital(&mut self, kind: CapitalKind, amount: Cents, on: NaiveDate, notes: &str, today: NaiveDate) -> Result<i64> {
-        if amount <= 0 {
-            return invalid(t("Enter an amount greater than zero", "Escribe un monto mayor que cero"));
-        }
-        if on > today {
-            return invalid(t("The date can't be in the future", "La fecha no puede ser futura"));
-        }
-        self.write(|c| {
-            if kind == CapitalKind::Withdrawal {
-                let cash = load_book(c)?.min_cash_from(on);
-                if amount > cash {
-                    return Err(InsufficientCash { available: cash.max(0) }.into());
-                }
-            }
-            capital::insert(c, kind, amount, on, notes)
+            Diff::default()
+                .removed("full_name", &old.full_name)
+                .removed("phone", opt(&old.phone))
+                .removed("email", opt(&old.email))
+                .removed("notes", &old.notes)
+                .log(c, Entity::Client, id, None, Action::Delete, reason)?;
+            clients::delete(c, id)
         })
     }
 
@@ -386,159 +388,44 @@ impl Store {
         let snap = self.snapshot()?;
         receipt::write(&snap, payment_id, &self.receipts_dir())
     }
+
+    /// Writes the printable receipt for a loan and returns its path.
+    pub fn write_loan_receipt(&self, loan_id: i64) -> Result<PathBuf> {
+        let snap = self.snapshot()?;
+        receipt::write_loan(&snap, loan_id, &self.receipts_dir())
+    }
 }
 
-/// Preview of how a payment would be split, for forms.
-pub fn preview_allocation(book: &LoanBook, amount: Cents, fee: Cents, on: NaiveDate, today: NaiveDate) -> Result<Allocation, PaymentError> {
-    allocate(&book.facts, &book.payments, amount, fee, on, today)
+/// The live payments that come before a new payment dated `on` (or before
+/// payment `editing` moved to `on`), in ledger order.
+pub fn payments_before(snap: &Snapshot, loan_id: i64, editing: Option<i64>, on: NaiveDate) -> Vec<PaymentFact> {
+    let key = (on, editing.unwrap_or(i64::MAX));
+    snap.payments
+        .iter()
+        .filter(|p| p.loan_id == loan_id && !p.is_reversed() && Some(p.id) != editing && (p.paid_on, p.id) < key)
+        .map(Payment::fact)
+        .collect()
+}
+
+/// How a payment would be split if recorded now, or, when `editing`, if
+/// that payment were changed. Later payments are split again on save.
+pub fn preview_payment(
+    snap: &Snapshot,
+    loan_id: i64,
+    editing: Option<i64>,
+    amount: Cents,
+    fee: Cents,
+    on: NaiveDate,
+    today: NaiveDate,
+) -> Option<Result<Allocation, PaymentError>> {
+    let loan = snap.loan(loan_id)?;
+    let mut facts = loan_facts(loan);
+    if editing.is_some() {
+        facts.status = ContractStatus::Active;
+        facts.closed_on = None;
+    }
+    Some(allocate(&facts, &payments_before(snap, loan_id, editing, on), amount, fee, on, today))
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::domain::loans::Frequency;
-    use crate::domain::money::Rate;
-
-    fn d(y: i32, m: u32, day: u32) -> NaiveDate {
-        NaiveDate::from_ymd_opt(y, m, day).unwrap()
-    }
-
-    fn terms(principal: Cents, start: NaiveDate) -> LoanTerms {
-        LoanTerms { principal, rate: Rate(100_000), frequency: Frequency::Monthly, start_date: start }
-    }
-
-    fn client(store: &mut Store) -> i64 {
-        store.create_client(&ClientInput { full_name: "Marta Quiroga".into(), ..Default::default() }).unwrap()
-    }
-
-    #[test]
-    fn full_lifecycle_through_the_database() {
-        let mut s = Store::in_memory();
-        let today = d(2026, 6, 1);
-        let cid = client(&mut s);
-        s.add_capital(CapitalKind::Contribution, 2_000_000, d(2026, 1, 1), "Opening capital", today).unwrap();
-        let lid = s.create_loan(cid, &terms(100_000, d(2026, 1, 1)), "", today).unwrap();
-
-        // 1,000 at 10%: paying 600 is 100 interest and 500 capital.
-        let pid = s.record_payment(lid, 60_000, 0, d(2026, 2, 1), "", today).unwrap();
-        let snap = s.snapshot().unwrap();
-        let p = snap.payments.iter().find(|p| p.id == pid).unwrap();
-        assert_eq!((p.interest, p.principal), (10_000, 50_000));
-        assert_eq!(snap.book.summary(today).interest_collected, 10_000);
-
-        // Reverse it: it stays on record but no longer counts.
-        s.reverse_payment(pid, "Entered twice", today).unwrap();
-        let snap = s.snapshot().unwrap();
-        assert!(snap.payments.iter().find(|p| p.id == pid).unwrap().is_reversed());
-        assert_eq!(snap.book.summary(today).interest_collected, 0);
-        assert!(s.reverse_payment(pid, "again", today).is_err());
-
-        // Pay off in full; the loan closes in the same transaction.
-        let book = snap.book_loan(lid).unwrap();
-        let payoff = crate::domain::ledger::owed_at_payment(&book.facts, &book.payments, today).payoff();
-        s.record_payment(lid, payoff, 0, today, "Payoff", today).unwrap();
-        let snap = s.snapshot().unwrap();
-        assert_eq!(snap.loan(lid).unwrap().status, ContractStatus::PaidOff);
-        assert!(s.record_payment(lid, 100, 0, today, "", today).is_err());
-    }
-
-    #[test]
-    fn cannot_lend_or_withdraw_money_that_is_not_there() {
-        let mut s = Store::in_memory();
-        let today = d(2026, 6, 1);
-        let cid = client(&mut s);
-        let err = s.create_loan(cid, &terms(100_000, d(2026, 1, 1)), "", today).unwrap_err();
-        assert_eq!(err.downcast_ref::<InsufficientCash>().unwrap().available, 0);
-        s.add_capital(CapitalKind::Contribution, 100_000, d(2026, 1, 1), "", today).unwrap();
-        s.create_loan(cid, &terms(100_000, d(2026, 1, 1)), "", today).unwrap();
-        assert!(s.add_capital(CapitalKind::Withdrawal, 1, d(2026, 1, 2), "", today).is_err());
-        s.add_capital(CapitalKind::Contribution, 50_000, d(2026, 3, 1), "", today).unwrap();
-        assert!(s.create_loan(cid, &terms(50_000, d(2026, 2, 1)), "", today).is_err());
-    }
-
-    #[test]
-    fn failed_payment_leaves_no_trace() {
-        let mut s = Store::in_memory();
-        let today = d(2026, 6, 1);
-        let cid = client(&mut s);
-        s.add_capital(CapitalKind::Contribution, 1_000_000, d(2026, 1, 1), "", today).unwrap();
-        let lid = s.create_loan(cid, &terms(1_000_000, d(2026, 1, 1)), "", today).unwrap();
-        assert!(s.record_payment(lid, 99_999_999, 0, d(2026, 2, 1), "", today).is_err());
-        assert!(s.snapshot().unwrap().payments.is_empty());
-        // A rejected allocation at the database level rolls back the payment row.
-        let tx_result: Result<()> = s.write(|c| {
-            payments::insert(
-                c,
-                lid,
-                d(2026, 2, 1),
-                1_000,
-                &Allocation { interest: 1, principal: 1, fee: 0, principal_before: 0, principal_after: 0, interest_after: 0 },
-                "",
-            )?;
-            Ok(())
-        });
-        assert!(tx_result.is_err());
-        let n: i64 = s.conn.query_row("SELECT COUNT(*) FROM payments", [], |r| r.get(0)).unwrap();
-        assert_eq!(n, 0);
-    }
-
-    #[test]
-    fn only_latest_payment_can_be_reversed() {
-        let mut s = Store::in_memory();
-        let today = d(2026, 6, 1);
-        let cid = client(&mut s);
-        s.add_capital(CapitalKind::Contribution, 1_000_000, d(2026, 1, 1), "", today).unwrap();
-        let lid = s.create_loan(cid, &terms(500_000, d(2026, 1, 1)), "", today).unwrap();
-        let first = s.record_payment(lid, 10_000, 0, d(2026, 2, 1), "", today).unwrap();
-        s.record_payment(lid, 10_000, 0, d(2026, 3, 1), "", today).unwrap();
-        assert!(s.reverse_payment(first, "wrong", today).is_err());
-    }
-
-    #[test]
-    fn client_validation_and_archive() {
-        let mut s = Store::in_memory();
-        assert!(s.create_client(&ClientInput { full_name: "  ".into(), ..Default::default() }).is_err());
-        assert!(s.create_client(&ClientInput { full_name: "A".into(), email: "nope".into(), ..Default::default() }).is_err());
-        let id = client(&mut s);
-        s.set_client_archived(id, true).unwrap();
-        s.add_capital(CapitalKind::Contribution, 100_000, d(2026, 1, 1), "", d(2026, 6, 1)).unwrap();
-        assert!(s.create_loan(id, &terms(1_000, d(2026, 1, 1)), "", d(2026, 6, 1)).is_err());
-        assert_eq!(s.snapshot().unwrap().clients.len(), 1);
-    }
-
-    #[test]
-    fn settings_round_trip() {
-        let mut s = Store::in_memory();
-        let mut st = s.snapshot().unwrap().settings;
-        assert_eq!(st, Settings::default());
-        st.currency_code = "USD".into();
-        st.business_name = "Préstamos Valdez".into();
-        st.language = crate::i18n::Lang::Es;
-        st.default_rate = Rate(150_000);
-        st.sidebar_collapsed = true;
-        s.save_settings(&st).unwrap();
-        assert_eq!(s.snapshot().unwrap().settings, st);
-        st.business_name = "   ".into();
-        assert!(s.save_settings(&st).is_err());
-    }
-
-    #[test]
-    fn writes_a_receipt() {
-        let mut s = Store::in_memory();
-        let dir = tempfile::tempdir().unwrap();
-        let today = d(2026, 6, 1);
-        let cid = client(&mut s);
-        s.add_capital(CapitalKind::Contribution, 2_000_000, d(2026, 1, 1), "", today).unwrap();
-        let lid = s.create_loan(cid, &terms(100_000, d(2026, 1, 1)), "", today).unwrap();
-        let pid = s.record_payment(lid, 60_000, 0, d(2026, 2, 1), "Cash", today).unwrap();
-        let snap = s.snapshot().unwrap();
-        let data = receipt::data(&snap, pid).unwrap();
-        assert_eq!((data.interest, data.principal), (10_000, 50_000));
-        assert_eq!((data.principal_before, data.principal_after), (100_000, 50_000));
-        assert_eq!(data.next_due, Some((d(2026, 3, 1), 5_000)));
-        let path = receipt::write(&snap, pid, dir.path()).unwrap();
-        let html = std::fs::read_to_string(path).unwrap();
-        assert!(html.contains("Marta Quiroga"));
-        assert!(html.contains("50.0%"));
-    }
-}
+mod tests;

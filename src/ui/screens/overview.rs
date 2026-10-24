@@ -11,7 +11,7 @@ use crate::app::{Route, VzApp};
 use crate::charts::line::{LineChart, Series};
 use crate::domain::ledger::DisplayStatus;
 use crate::domain::money::{Cents, percent_label};
-use crate::domain::portfolio::{CapitalKind, HistoryPoint, Summary};
+use crate::domain::portfolio::{CapitalKind, EntryKind, HistoryPoint, Summary};
 use crate::i18n::{count, t};
 use crate::services::settings::ChartRange;
 use crate::tr;
@@ -69,6 +69,12 @@ impl VzApp {
         };
 
         let actions = vec![
+            Button::new("ov-expense")
+                .icon(IconName::ReceiptText)
+                .label(t("New expense", "Nuevo gasto"))
+                .tooltip("Ctrl+E")
+                .on_click(cx.listener(|this, _, w, cx| this.open_entry_form(EntryKind::Expense, None, w, cx)))
+                .into_any_element(),
             Button::new("ov-new-loan")
                 .label(t("New loan", "Nuevo préstamo"))
                 .tooltip("Ctrl+L")
@@ -87,15 +93,15 @@ impl VzApp {
             .gap(px(space::XL))
             .child(crate::ui::components::page_header(&p, t("Overview", "Resumen"), Some(finding), actions).pb_0())
             .children(self.render_setup(&p, cx))
-            .child(self.kpi_strip(&p, &s, kpi_compact))
+            .child(self.kpi_strip(&p, &s, kpi_compact, cx))
             .child(if compact {
-                v_flex().gap(px(space::XL)).child(self.growth_card(&p, cx)).child(self.allocation_card(&p, &s, true)).into_any_element()
+                v_flex().gap(px(space::XL)).child(self.growth_card(&p, cx)).child(self.allocation_card(&p, &s, true, cx)).into_any_element()
             } else {
                 h_flex()
                     .items_stretch()
                     .gap(px(space::XL))
                     .child(self.growth_card(&p, cx))
-                    .child(self.allocation_card(&p, &s, false))
+                    .child(self.allocation_card(&p, &s, false, cx))
                     .into_any_element()
             })
             .child(if compact {
@@ -220,9 +226,23 @@ impl VzApp {
         )
     }
 
-    fn kpi_strip(&self, p: &Palette, s: &Summary, compact: bool) -> impl IntoElement {
+    fn kpi_strip(&self, p: &Palette, s: &Summary, compact: bool, cx: &mut Context<Self>) -> impl IntoElement {
         let money = self.settings().money();
-        let cell = |icon_name: IconName, label: &str, value: String, value_color: Hsla, sub: AnyElement, lead: bool| {
+        let adjust = div()
+            .id("kpi-adjust")
+            .flex_none()
+            .size(px(22.))
+            .rounded(px(6.))
+            .flex()
+            .items_center()
+            .justify_center()
+            .cursor_pointer()
+            .hover(|st| st.bg(p.hover))
+            .child(icon(IconName::Pencil, p.faint, 12.))
+            .tooltip(|window, cx| gpui_kit::component::tooltip::Tooltip::new(t("Adjust balances", "Ajustar saldos")).build(window, cx))
+            .on_click(cx.listener(|this, _, w, cx| this.open_adjust_form(w, cx)));
+        let mut adjust = Some(adjust);
+        let mut cell = |icon_name: IconName, label: &str, value: String, value_color: Hsla, sub: AnyElement, lead: bool| {
             v_flex()
                 .flex_1()
                 .flex_basis(px(0.))
@@ -235,7 +255,8 @@ impl VzApp {
                     h_flex()
                         .gap(px(6.))
                         .child(icon(icon_name, p.faint, 14.))
-                        .child(div().text_size(px(size::META + 0.5)).text_color(p.muted).min_w_0().truncate().child(label.to_string())),
+                        .child(div().text_size(px(size::META + 0.5)).text_color(p.muted).min_w_0().truncate().child(label.to_string()))
+                        .when(lead, |d| d.children(adjust.take())),
                 )
                 .child(figure(p, value, if lead { size::LEAD } else { size::FIGURE }).text_color(value_color))
                 .child(div().text_size(px(size::META)).text_color(p.muted).min_w_0().truncate().child(sub))
@@ -274,9 +295,15 @@ impl VzApp {
             t("Received, all time", "Cobrado en total").to_string()
         };
         let pv = s.portfolio_value;
-        let cash_sub = match percent_label(s.available_cash, pv) {
+        let cash_sub = match percent_label(s.available_capital, pv) {
             Some(pct) if pv > 0 => tr!("{pct} of portfolio", "{pct} de la cartera"),
             _ => t("Ready to lend", "Listo para prestar").to_string(),
+        };
+        let interest_sub = if s.expenses() > 0 {
+            let spent = money.format(s.expenses());
+            tr!("{spent} spent in expenses", "{spent} usado en gastos")
+        } else {
+            t("Interest and fees on hand", "Interés y cargos en mano").to_string()
         };
         let overdue_sub = if s.overdue_loans > 0 {
             {
@@ -289,16 +316,6 @@ impl VzApp {
             }
         } else {
             t("Nothing past due", "Nada vencido").to_string()
-        };
-        let active_sub = if s.due_soon_loans > 0 {
-            {
-                let n = s.due_soon_loans;
-                tr!("{n} due soon", "{n} por vencer")
-            }
-        } else if s.active_loans > 0 {
-            t("None due this week", "Nada por vencer esta semana").to_string()
-        } else {
-            t("No loans outstanding", "No hay préstamos pendientes").to_string()
         };
 
         let mut cells = vec![
@@ -326,17 +343,17 @@ impl VzApp {
             cell(
                 IconName::Landmark,
                 t("Available capital", "Capital disponible"),
-                money.format(s.available_cash),
+                money.format(s.available_capital),
                 p.text,
                 cash_sub.into_any_element(),
                 false,
             ),
             cell(
-                IconName::FileText,
-                t("Active loans", "Préstamos activos"),
-                s.active_loans.to_string(),
+                IconName::Coins,
+                t("Available interest", "Interés disponible"),
+                money.format(s.available_interest),
                 p.text,
-                active_sub.into_any_element(),
+                interest_sub.into_any_element(),
                 false,
             ),
             cell(
@@ -527,15 +544,18 @@ impl VzApp {
             .into_any_element()
     }
 
-    fn allocation_card(&self, p: &Palette, s: &Summary, full_width: bool) -> AnyElement {
+    fn allocation_card(&self, p: &Palette, s: &Summary, full_width: bool, cx: &mut Context<Self>) -> AnyElement {
         let money = self.settings().money();
         let total = s.portfolio_value.max(0);
         let mut cash_c = p.accent;
         cash_c.a = 0.35;
-        let parts: [(&str, Cents, Hsla); 3] = [
+        let mut interest_c = p.positive;
+        interest_c.a = 0.6;
+        let parts: [(&str, Cents, Hsla); 4] = [
             (t("Lent out", "Prestado"), s.outstanding_principal, p.accent),
             (t("Interest due", "Interés vencido"), s.interest_receivable, p.chart_secondary),
-            (t("Available cash", "Disponible"), s.available_cash.max(0), cash_c),
+            (t("Available capital", "Capital disponible"), s.available_capital.max(0), cash_c),
+            (t("Available interest", "Interés disponible"), s.available_interest.max(0), interest_c),
         ];
         let bar = h_flex().h(px(10.)).w_full().rounded(px(3.)).overflow_hidden().gap(px(2.)).bg(p.neutral_tint).children(
             parts
@@ -561,7 +581,7 @@ impl VzApp {
                 .child(div().w(px(110.)).text_right().font_features(tabular()).text_color(p.text).child(money.format(*v)))
         });
         card(p)
-            .when(!full_width, |d| d.w(px(360.)).flex_none())
+            .when(!full_width, |d| d.w(px(390.)).flex_none())
             .child(card_header(p, t("Where your money is", "Dónde está tu dinero"), None))
             .child(
                 v_flex()
@@ -581,13 +601,32 @@ impl VzApp {
                         )
                     })
                     .child(
+                        h_flex()
+                            .gap(px(space::S))
+                            .flex_wrap()
+                            .child(
+                                Button::new("alloc-move")
+                                    .small()
+                                    .icon(IconName::ArrowRightLeft)
+                                    .label(t("Move money", "Mover dinero"))
+                                    .on_click(cx.listener(|this, _, w, cx| this.open_entry_form(EntryKind::Transfer, None, w, cx))),
+                            )
+                            .child(
+                                Button::new("alloc-adjust")
+                                    .small()
+                                    .icon(IconName::SlidersHorizontal)
+                                    .label(t("Adjust balances", "Ajustar saldos"))
+                                    .on_click(cx.listener(|this, _, w, cx| this.open_adjust_form(w, cx))),
+                            ),
+                    )
+                    .child(
                         div()
                             .text_size(px(size::META))
                             .line_height(px(17.))
                             .text_color(p.faint)
                             .child(t(
-                                "Portfolio value = available cash + capital lent out + interest already due but not yet collected. Defaulted balances are left out.",
-                                "Valor de la cartera = efectivo disponible + capital prestado + interés ya vencido sin cobrar. Los saldos incobrables no se cuentan.",
+                                "Portfolio value = available capital + available interest + capital lent out + interest already due but not yet collected. Defaulted balances are left out.",
+                                "Valor de la cartera = capital disponible + interés disponible + capital prestado + interés ya vencido sin cobrar. Los saldos incobrables no se cuentan.",
                             )),
                     ),
             )

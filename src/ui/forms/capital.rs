@@ -2,15 +2,16 @@ use std::rc::Rc;
 
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::{WindowExt as _, h_flex, v_flex};
+use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use super::date_field::{DateChanged, DateField};
-use super::{date_field, error_banner, field, footer, invalid_date, picked_date, value};
+use super::{choice_tile, date_field, error_banner, field, footer, invalid_date, picked_date, reason_input, value};
 use crate::app::VzApp;
-use crate::domain::money::parse_money;
-use crate::domain::portfolio::CapitalKind;
+use crate::domain::money::{MoneyFormat, parse_money};
+use crate::domain::portfolio::{Account, CapitalKind};
 use crate::i18n::t;
-use crate::services::Snapshot;
+use crate::services::{Record, Snapshot};
 use crate::tr;
 use crate::ui::theme::{palette, space};
 
@@ -18,33 +19,56 @@ pub struct CapitalForm {
     app: WeakEntity<VzApp>,
     snap: Rc<Snapshot>,
     pub kind: CapitalKind,
+    /// The capital entry being edited, if any.
+    editing: Option<i64>,
     pub amount: Entity<InputState>,
     date: Entity<DateField>,
     notes: Entity<InputState>,
+    reason: Entity<InputState>,
     error: Option<String>,
     show_errors: bool,
     _subs: Vec<Subscription>,
 }
 
 impl CapitalForm {
-    pub fn new(app: WeakEntity<VzApp>, snap: Rc<Snapshot>, kind: CapitalKind, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let amount = cx.new(|cx| InputState::new(window, cx).placeholder("0.00"));
+    pub fn new(
+        app: WeakEntity<VzApp>,
+        snap: Rc<Snapshot>,
+        kind: CapitalKind,
+        editing: Option<i64>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let existing = editing.and_then(|id| snap.capital_tx(id).cloned());
+        let kind = existing.as_ref().map_or(kind, |c| c.kind);
+        let amount = cx.new(|cx| {
+            let s = InputState::new(window, cx).placeholder("0.00");
+            match &existing {
+                Some(c) => s.default_value(MoneyFormat::input_value(c.amount)),
+                None => s,
+            }
+        });
         let notes = cx.new(|cx| {
-            InputState::new(window, cx).placeholder(match kind {
+            let s = InputState::new(window, cx).placeholder(match kind {
                 CapitalKind::Contribution => t("Optional: source, e.g. savings account", "Opcional: origen, ej. cuenta de ahorros"),
                 CapitalKind::Withdrawal => t("Optional: reason", "Opcional: motivo"),
-            })
+            });
+            match &existing {
+                Some(c) => s.default_value(c.notes.clone()),
+                None => s,
+            }
         });
-        let date = date_field(crate::utils::dates::today(), window, cx);
+        let reason = reason_input(window, cx);
+        let date = date_field(existing.as_ref().map_or(crate::utils::dates::today(), |c| c.occurred_on), window, cx);
         let mut subs = vec![cx.subscribe(&date, |_, _, _: &DateChanged, cx| cx.notify())];
-        for input in [&amount, &notes] {
+        for input in [&amount, &notes, &reason] {
             subs.push(cx.subscribe_in(input, window, |_, _, ev: &InputEvent, _, cx| {
                 if let InputEvent::Change = ev {
                     cx.notify()
                 }
             }));
         }
-        Self { app, snap, kind, amount, date, notes, error: None, show_errors: false, _subs: subs }
+        Self { app, snap, kind, editing, amount, date, notes, reason, error: None, show_errors: false, _subs: subs }
     }
 
     /// Validates and saves; closes the dialog only on success. Bound to the
@@ -55,12 +79,17 @@ impl CapitalForm {
             cx.notify();
             return;
         };
-        let kind = self.kind;
+        let (kind, editing) = (self.kind, self.editing);
         let notes = value(&self.notes, cx);
+        let reason = value(&self.reason, cx);
         let result = self.app.update(cx, |app, cx| {
             let today = app.today;
-            match app.store.add_capital(kind, amount, date, &notes, today) {
-                Ok(_) => {
+            let r = match editing {
+                Some(id) => app.store.update_capital(id, kind, amount, date, &notes, &reason, today),
+                None => app.store.add_capital(kind, amount, date, &notes, today).map(|_| ()),
+            };
+            match r {
+                Ok(()) => {
                     app.reload(cx);
                     Ok(())
                 }
@@ -72,9 +101,12 @@ impl CapitalForm {
                 window.close_dialog(cx);
                 let _ = self.app.update(cx, |app, cx| {
                     let m = app.settings().money().format(amount);
-                    let msg = match kind {
-                        CapitalKind::Contribution => tr!("{m} added to your lending capital", "{m} agregado a tu capital de préstamos"),
-                        CapitalKind::Withdrawal => {
+                    let msg = match (editing, kind) {
+                        (Some(_), _) => t("Capital entry updated", "Movimiento de capital actualizado").to_string(),
+                        (None, CapitalKind::Contribution) => {
+                            tr!("{m} added to your lending capital", "{m} agregado a tu capital de préstamos")
+                        }
+                        (None, CapitalKind::Withdrawal) => {
                             tr!("{m} withdrawn from your lending capital", "{m} retirado de tu capital de préstamos")
                         }
                     };
@@ -97,8 +129,12 @@ impl Render for CapitalForm {
         let amount = parse_money(&value(&self.amount, cx));
         let picked = picked_date(&self.date, cx);
         let date = picked.unwrap_or(crate::utils::dates::today());
-        let avail = money.format(self.snap.book.min_cash_from(date).max(0));
-        let available = self.snap.book.min_cash_from(date).max(0);
+        let book = match self.editing {
+            Some(id) => self.snap.book_without(Record::Capital(id)),
+            None => self.snap.book.clone(),
+        };
+        let available = book.available_from(date, Some(Account::Capital)).max(0);
+        let avail = money.format(available);
         let amount_err = match (&amount, self.kind) {
             (Err(e), _) if self.show_errors => Some(e.to_string()),
             (Ok(a), CapitalKind::Withdrawal) if *a > available => {
@@ -121,9 +157,17 @@ impl Render for CapitalForm {
             (date > crate::utils::dates::today()).then(|| t("The date can't be in the future", "La fecha no puede ser futura").to_string())
         };
         let can_submit = matches!(amount, Ok(a) if a > 0) && amount_err.is_none() && date_err.is_none();
+        let kind_tiles = h_flex().gap(px(space::S)).children([CapitalKind::Contribution, CapitalKind::Withdrawal].map(|k| {
+            let selected = self.kind == k;
+            choice_tile(&p, k.key(), k.label(), None, selected).on_click(cx.listener(move |this, _, _, cx| {
+                this.kind = k;
+                cx.notify();
+            }))
+        }));
         v_flex()
             .gap(px(space::L))
             .children(error_banner(&p, &self.error))
+            .when(self.editing.is_some(), |d| d.child(field(&p, t("Type", "Tipo"), kind_tiles, None, None)))
             .child(
                 h_flex()
                     .items_start()
@@ -138,11 +182,15 @@ impl Render for CapitalForm {
                     .child(div().w(px(200.)).child(field(&p, t("Date", "Fecha"), self.date.clone(), None, date_err))),
             )
             .child(field(&p, t("Note", "Nota"), Input::new(&self.notes), None, None))
+            .when(self.editing.is_some(), |d| {
+                d.child(field(&p, t("Reason for the change", "Motivo del cambio"), Input::new(&self.reason), None, None))
+            })
             .child(footer(
                 &p,
-                match self.kind {
-                    CapitalKind::Contribution => t("Add capital", "Agregar capital"),
-                    CapitalKind::Withdrawal => t("Withdraw", "Retirar"),
+                match (self.editing, self.kind) {
+                    (Some(_), _) => t("Save changes", "Guardar cambios"),
+                    (None, CapitalKind::Contribution) => t("Add capital", "Agregar capital"),
+                    (None, CapitalKind::Withdrawal) => t("Withdraw", "Retirar"),
                 },
                 can_submit,
                 false,

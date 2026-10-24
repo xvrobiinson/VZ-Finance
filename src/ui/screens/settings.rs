@@ -4,6 +4,7 @@ use gpui_kit::component::input::Input;
 use gpui_kit::component::select::Select;
 use gpui_kit::component::switch::Switch;
 use gpui_kit::component::{Disableable as _, h_flex, v_flex};
+use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use super::segmented;
@@ -85,6 +86,46 @@ impl VzApp {
             ))
             .child(row(
                 &p,
+                t("Logo", "Logo"),
+                Some(t(
+                    "Shown in the sidebar and on receipts. PNG, JPG, GIF, BMP or WebP.",
+                    "Aparece en el menú y en los recibos. PNG, JPG, GIF, BMP o WebP.",
+                )),
+                h_flex()
+                    .gap(px(space::S))
+                    .child(
+                        h_flex()
+                            .size(px(44.))
+                            .flex_none()
+                            .justify_center()
+                            .rounded(px(8.))
+                            .border_1()
+                            .border_color(p.border)
+                            .bg(p.raised)
+                            .overflow_hidden()
+                            .child(match &self.logo {
+                                Some(logo) => img(logo.clone()).size(px(40.)).object_fit(ObjectFit::Contain).into_any_element(),
+                                None => icon(IconName::ImagePlus, p.faint, 18.).into_any_element(),
+                            }),
+                    )
+                    .child(
+                        Button::new("logo-upload")
+                            .icon(IconName::Upload)
+                            .label(if self.logo.is_some() { t("Change", "Cambiar") } else { t("Upload logo", "Subir logo") })
+                            .on_click(cx.listener(|this, _, w, cx| this.choose_logo(w, cx))),
+                    )
+                    .when(self.logo.is_some(), |d| {
+                        d.child(
+                            Button::new("logo-remove")
+                                .ghost()
+                                .icon(IconName::Trash)
+                                .tooltip(t("Remove logo", "Quitar logo"))
+                                .on_click(cx.listener(|this, _, w, cx| this.remove_logo(w, cx))),
+                        )
+                    }),
+            ))
+            .child(row(
+                &p,
                 t("Language", "Idioma"),
                 None,
                 segmented(&p, "lang", &lang_opts, s.language, cx, |app, v, w, cx| app.update_settings(|s| s.language = v, w, cx)),
@@ -154,6 +195,18 @@ impl VzApp {
                 Switch::new("rcpt-after").checked(s.receipt_after_payment).on_click(cx.listener(|this, checked: &bool, w, cx| {
                     let v = *checked;
                     this.update_settings(|s| s.receipt_after_payment = v, w, cx)
+                })),
+            ))
+            .child(row(
+                &p,
+                t("Open the loan receipt after each new loan", "Abrir el recibo del préstamo al crear cada préstamo"),
+                Some(t(
+                    "Amount, rate, payment dates and signature lines for the client",
+                    "Monto, tasa, fechas de pago y líneas de firma para el cliente",
+                )),
+                Switch::new("rcpt-loan").checked(s.receipt_after_loan).on_click(cx.listener(|this, checked: &bool, w, cx| {
+                    let v = *checked;
+                    this.update_settings(|s| s.receipt_after_loan = v, w, cx)
                 })),
             ))
             .child(row(
@@ -268,6 +321,7 @@ impl VzApp {
             (t("Record payment", "Registrar pago"), "Ctrl P"),
             (t("New loan", "Nuevo préstamo"), "Ctrl L"),
             (t("New client", "Nuevo cliente"), "Ctrl N"),
+            (t("New expense", "Nuevo gasto"), "Ctrl E"),
             (t("Search", "Buscar"), "Ctrl F"),
             (t("Back up", "Copia de seguridad"), "Ctrl S"),
             (t("Toggle sidebar", "Mostrar u ocultar menú"), "Ctrl B"),

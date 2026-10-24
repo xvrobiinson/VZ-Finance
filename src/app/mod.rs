@@ -6,6 +6,7 @@ mod sidebar;
 
 use std::path::PathBuf;
 use std::rc::Rc;
+use std::sync::Arc;
 
 use chrono::NaiveDate;
 use gpui_kit::component::IndexPath;
@@ -15,9 +16,10 @@ use gpui_kit::component::select::{SelectEvent, SelectState};
 use gpui_kit::component::{WindowExt as _, v_flex};
 use gpui_kit::*;
 
+use crate::domain::portfolio::{Account, EntryKind};
 use crate::i18n::{self, t};
 use crate::services::settings::{CURRENCIES, Settings};
-use crate::services::{InsufficientCash, Invalid, Snapshot, Store};
+use crate::services::{CashShortfall, InsufficientCash, Invalid, Snapshot, Store};
 use crate::tr;
 use crate::ui::forms::loan::Choice;
 use crate::ui::theme::{self, FONT, palette, space};
@@ -29,6 +31,7 @@ actions!(
         NewPayment,
         NewLoan,
         NewClient,
+        NewExpense,
         ToggleSidebar,
         GoOverview,
         GoClients,
@@ -49,6 +52,7 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("ctrl-p", NewPayment, Some(CONTEXT)),
         KeyBinding::new("ctrl-l", NewLoan, Some(CONTEXT)),
         KeyBinding::new("ctrl-n", NewClient, Some(CONTEXT)),
+        KeyBinding::new("ctrl-e", NewExpense, Some(CONTEXT)),
         KeyBinding::new("ctrl-b", ToggleSidebar, Some(CONTEXT)),
         KeyBinding::new("ctrl-1", GoOverview, Some(CONTEXT)),
         KeyBinding::new("ctrl-2", GoClients, Some(CONTEXT)),
@@ -110,7 +114,20 @@ pub struct VzApp {
     pub(crate) chart_hover: Option<usize>,
     pub(crate) analytics_hover: Option<usize>,
     pub(crate) load_error: Option<String>,
+    /// The business logo, decoded once per upload.
+    pub(crate) logo: Option<Arc<Image>>,
     _subscriptions: Vec<Subscription>,
+}
+
+/// The logo as an image the UI can draw, reusing `current` when the bytes
+/// are unchanged.
+fn logo_image(snap: &Snapshot, current: Option<Arc<Image>>) -> Option<Arc<Image>> {
+    let bytes = snap.logo.as_ref()?;
+    let fresh = Image::from_bytes(ImageFormat::Png, bytes.to_vec());
+    match current {
+        Some(img) if img.id() == fresh.id() => Some(img),
+        _ => Some(Arc::new(fresh)),
+    }
 }
 
 fn currency_choices() -> Vec<Choice> {
@@ -155,6 +172,7 @@ impl VzApp {
         ];
         let focus = cx.focus_handle();
         focus.focus(window, cx);
+        let logo = logo_image(&snap, None);
         let mut app = Self {
             store,
             snap: Rc::new(snap),
@@ -171,6 +189,7 @@ impl VzApp {
             chart_hover: None,
             analytics_hover: None,
             load_error,
+            logo,
             _subscriptions: subs,
         };
         app.apply_language(window, cx);
@@ -202,6 +221,7 @@ impl VzApp {
         self.today = today();
         match self.store.snapshot() {
             Ok(s) => {
+                self.logo = logo_image(&s, self.logo.take());
                 self.snap = Rc::new(s);
                 self.load_error = None;
             }
@@ -269,10 +289,36 @@ impl VzApp {
     pub fn error_message(&self, e: &anyhow::Error) -> String {
         if let Some(c) = e.downcast_ref::<InsufficientCash>() {
             let amount = self.settings().money().format(c.available);
-            return tr!(
-                "Only {amount} of capital is available on that date. Add capital in Analytics first.",
-                "Solo hay {amount} de capital disponible en esa fecha. Agrega capital en Análisis primero."
-            );
+            return match c.account {
+                None => tr!(
+                    "Only {amount} is available to lend on that date (capital first, then interest). Add capital in Analytics first.",
+                    "Solo hay {amount} disponible para prestar en esa fecha (primero capital, luego interés). Agrega capital en Análisis primero."
+                ),
+                Some(Account::Capital) => {
+                    tr!("Only {amount} of available capital on that date.", "Solo hay {amount} de capital disponible en esa fecha.")
+                }
+                Some(Account::Interest) => {
+                    tr!("Only {amount} of available interest on that date.", "Solo hay {amount} de interés disponible en esa fecha.")
+                }
+            };
+        }
+        if let Some(CashShortfall(s)) = e.downcast_ref::<CashShortfall>() {
+            let when = self.settings().date_style.format(s.date);
+            let balance = self.settings().money().format(s.balance);
+            let short = self.settings().money().format(s.balance.abs());
+            return match s.account {
+                Some(a) => {
+                    let account = a.label().to_lowercase();
+                    tr!(
+                        "This would leave {account} at {balance} on {when}, because that money was already lent, spent or withdrawn. Change or delete that later movement first.",
+                        "Esto dejaría el {account} en {balance} el {when}, porque ese dinero ya se prestó, gastó o retiró. Cambia o elimina primero ese movimiento posterior."
+                    )
+                }
+                None => tr!(
+                    "There wouldn't be enough money for the loan on {when} ({short} short). Change that loan or add capital first.",
+                    "No alcanzaría el dinero para el préstamo del {when} (faltarían {short}). Cambia ese préstamo o agrega capital primero."
+                ),
+            };
         }
         if let Some(v) = e.downcast_ref::<Invalid>() {
             return v.0.clone();
@@ -334,6 +380,18 @@ impl VzApp {
     /// shows the print dialog.
     pub fn open_receipt(&mut self, payment_id: i64, window: &mut Window, cx: &mut Context<Self>) {
         match self.store.write_receipt(payment_id) {
+            Ok(path) => cx.open_with_system(&path),
+            Err(e) => {
+                let msg = tr!("Could not create the receipt: {e:#}", "No se pudo crear el recibo: {e:#}");
+                self.notify_error(msg, window, cx);
+            }
+        }
+    }
+
+    /// Writes a loan's receipt (what the client received and agreed to) and
+    /// opens it for printing.
+    pub fn open_loan_receipt(&mut self, loan_id: i64, window: &mut Window, cx: &mut Context<Self>) {
+        match self.store.write_loan_receipt(loan_id) {
             Ok(path) => cx.open_with_system(&path),
             Err(e) => {
                 let msg = tr!("Could not create the receipt: {e:#}", "No se pudo crear el recibo: {e:#}");
@@ -425,6 +483,7 @@ impl Render for VzApp {
                 this.open_loan_form(client, w, cx)
             }))
             .on_action(cx.listener(|this, _: &NewClient, w, cx| this.open_client_form(None, w, cx)))
+            .on_action(cx.listener(|this, _: &NewExpense, w, cx| this.open_entry_form(EntryKind::Expense, None, w, cx)))
             .on_action(cx.listener(Self::toggle_sidebar))
             .on_action(cx.listener(Self::go_back))
             .on_action(cx.listener(Self::backup_now))

@@ -11,7 +11,7 @@ use vz_finance::database::repositories::clients::ClientInput;
 use vz_finance::domain::ledger::{delinquency, owed_at_payment};
 use vz_finance::domain::loans::{Frequency, LoanTerms};
 use vz_finance::domain::money::{Cents, Rate};
-use vz_finance::domain::portfolio::CapitalKind;
+use vz_finance::domain::portfolio::{Account, CapitalKind};
 use vz_finance::i18n::Lang;
 use vz_finance::services::Store;
 use vz_finance::utils::dates::today;
@@ -110,6 +110,14 @@ fn main() -> Result<()> {
     pay_periods(&mut s, f, |_| Some(250_000))?;
 
     s.add_capital(CapitalKind::Withdrawal, 2_000_000, ago(30), "Gasto personal", t)?;
+
+    // Interest put back to work, an expense paid from interest, and a
+    // corrected note so the change history has something in it.
+    s.add_transfer(Account::Interest, 1_000_000, ago(20), "Reinvertir ganancias", t)?;
+    s.add_expense(Account::Interest, 350_000, ago(6), "Reparación del carro", t)?;
+    let snap = s.snapshot()?;
+    let fl = snap.loan(f).unwrap();
+    s.update_loan(f, fl.client_id, &fl.terms.clone(), "Para inventario de la tienda", "Faltaba el motivo", t)?;
 
     let snap = s.snapshot()?;
     let sum = snap.book.summary(t);

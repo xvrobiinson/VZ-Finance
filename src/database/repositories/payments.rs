@@ -86,10 +86,35 @@ pub fn insert(conn: &Connection, loan_id: i64, paid_on: NaiveDate, amount: Cents
     Ok(id)
 }
 
-pub fn mark_reversed(conn: &Connection, id: i64, reason: &str) -> Result<()> {
+/// Changes what was received. The allocation is set to fee + capital as a
+/// placeholder that adds up; the caller recalculates the loan's splits.
+pub fn update(conn: &Connection, id: i64, paid_on: NaiveDate, amount: Cents, fee: Cents, notes: &str) -> Result<()> {
     conn.execute(
-        "UPDATE payments SET reversed_at = ?1, reversal_reason = ?2 WHERE id = ?3 AND reversed_at IS NULL",
-        params![now_timestamp(), reason.trim(), id],
+        "UPDATE payments SET paid_on = ?1, amount = ?2, notes = ?3 WHERE id = ?4",
+        params![Day(paid_on), amount, notes.trim(), id],
+    )
+    .context("Could not save the payment")?;
+    conn.execute(
+        "UPDATE payment_allocations SET fee = ?1, interest = 0, principal = ?2 WHERE payment_id = ?3",
+        params![fee, amount - fee, id],
     )?;
+    Ok(())
+}
+
+pub fn set_allocation(conn: &Connection, id: i64, alloc: &Allocation) -> Result<()> {
+    conn.execute(
+        "UPDATE payment_allocations SET principal = ?1, interest = ?2, fee = ?3 WHERE payment_id = ?4",
+        params![alloc.principal, alloc.interest, alloc.fee, id],
+    )?;
+    Ok(())
+}
+
+pub fn delete(conn: &Connection, id: i64) -> Result<()> {
+    conn.execute("DELETE FROM payments WHERE id = ?1", [id])?;
+    Ok(())
+}
+
+pub fn delete_for_loan(conn: &Connection, loan_id: i64) -> Result<()> {
+    conn.execute("DELETE FROM payments WHERE loan_id = ?1", [loan_id])?;
     Ok(())
 }
