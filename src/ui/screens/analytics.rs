@@ -1,9 +1,9 @@
 use gpui_kit::assets::IconName;
-use gpui_kit::component::button::{Button, ButtonVariants as _};
-use gpui_kit::component::{Sizable as _, h_flex, v_flex};
+use gpui_kit::component::{h_flex, v_flex};
+use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
-use super::{ncolumn, row_icon_button, segmented};
+use super::{ncolumn, row_icon_button};
 use crate::app::VzApp;
 use crate::charts::bars::column_chart;
 use crate::domain::ledger::DisplayStatus;
@@ -12,15 +12,20 @@ use crate::domain::portfolio::{Account, CapitalKind, EntryKind};
 use crate::i18n::t;
 use crate::services::settings::ChartRange;
 use crate::tr;
-use crate::ui::components::{card, card_header, empty_state, figure, kv, label, page_header, sel, table_header, th, vrule};
+use crate::ui::components::{empty_state, kv, page_header, sel, table_header, th};
 use crate::ui::forms::reason::ReasonKind;
-use crate::ui::theme::{Palette, palette, size, space, tabular};
+use crate::ui::kit::{Button, Card, Dropdown, DropdownItem, Segmented, Stat, StatStrip};
+use crate::ui::theme::{Palette, Typeset as _, Width, palette, space, tabular, text};
 use crate::utils::dates::{month_year, short_month, short_month_year};
 
 impl VzApp {
+    /// Returns, capital, charts, cash flow and the money ledger. Cards sit
+    /// side by side from `Wide` up; tables drop their minor columns below it.
     pub(crate) fn render_analytics(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let p = palette(cx);
-        let narrow = self.content_width(window) < 1000.;
+        let w = Width::of(self.content_width(window));
+        let gap = px(w.gap());
+        let compact = w == Width::Compact;
         let money = self.settings().money();
         let ds = self.settings().date_style;
         let today = self.today;
@@ -39,71 +44,44 @@ impl VzApp {
                 )
                 .into_any_element(),
             ),
-            vec![
-                Button::new("an-expense")
-                    .icon(IconName::ReceiptText)
-                    .label(t("New expense", "Nuevo gasto"))
-                    .on_click(cx.listener(|this, _, w, cx| this.open_entry_form(EntryKind::Expense, None, w, cx)))
-                    .into_any_element(),
-                Button::new("an-withdraw")
-                    .label(t("Withdraw capital", "Retirar capital"))
-                    .on_click(cx.listener(|this, _, w, cx| this.open_capital_form(CapitalKind::Withdrawal, w, cx)))
-                    .into_any_element(),
-                Button::new("an-add")
-                    .primary()
-                    .icon(IconName::Plus)
-                    .label(t("Add capital", "Agregar capital"))
-                    .on_click(cx.listener(|this, _, w, cx| this.open_capital_form(CapitalKind::Contribution, w, cx)))
-                    .into_any_element(),
-            ],
+            self.analytics_actions(w, cx),
         );
 
-        let cell = |l: &str, v: String, sub: String, color: Hsla| {
-            v_flex()
-                .flex_1()
-                .flex_basis(px(0.))
-                .min_w_0()
-                .px(px(space::XL))
-                .py(px(space::L + 2.))
-                .gap(px(6.))
-                .child(label(&p, l.to_string()).truncate())
-                .child(figure(&p, v, size::FIGURE).text_color(color))
-                .child(div().text_size(px(size::META)).text_color(p.muted).truncate().child(sel(sub)))
-        };
+        let cell = |l: &str, v: String, sub: String, color: Hsla| Stat::new(l.to_string(), v).tone(color).caption(sel(sub));
         let gain_color = match gain.signum() {
             1 => p.positive,
             -1 => p.negative,
             _ => p.text,
         };
-        let returns = card(&p)
-            .flex_row()
-            .child(cell(
+        let return_cells = vec![
+            cell(
                 t("Portfolio value", "Valor de la cartera"),
                 money.format(s.portfolio_value),
                 t("Cash + capital lent + interest due", "Efectivo + capital prestado + interés vencido").into(),
                 p.text,
-            ))
-            .child(vrule(&p))
-            .child(cell(
+            ),
+            cell(
                 t("Portfolio gain", "Ganancia de la cartera"),
                 money.format_signed(gain),
                 t("Value minus capital invested", "Valor menos capital invertido").into(),
                 gain_color,
-            ))
-            .child(vrule(&p))
-            .child(cell(
+            ),
+            cell(
                 t("Return on invested capital", "Rendimiento sobre el capital"),
                 roic.clone().map(|r| if gain > 0 { format!("+{r}") } else { r }).unwrap_or_else(|| "—".into()),
                 t("Total, not annualized", "Total, no anualizado").into(),
                 gain_color,
-            ))
-            .child(vrule(&p))
-            .child(cell(
+            ),
+            cell(
                 t("Income received", "Ganancia cobrada"),
                 money.format(s.realized_income()),
                 t("Interest and fees received", "Intereses y cargos cobrados").into(),
                 p.text,
-            ));
+            ),
+        ];
+        // Full money figures are never truncated to fit a row: four need a
+        // wide column, six need an ultra one.
+        let returns = StatStrip::new(if w >= Width::Wide { 4 } else { 2 }).dense(compact).stats(return_cells);
         let capital_cells = vec![
             cell(
                 t("Capital invested", "Capital invertido"),
@@ -150,13 +128,21 @@ impl VzApp {
                 if s.defaulted_principal > 0 { p.negative } else { p.text },
             ),
         ];
-        let capital = strip(&p, capital_cells, if narrow { 3 } else { 6 });
+        let capital = StatStrip::new(match w {
+            Width::Compact => 2,
+            Width::Medium | Width::Wide => 3,
+            Width::Ultra => 6,
+        })
+        .dense(compact)
+        .stats(capital_cells);
 
         // Value chart.
         let range = self.settings().chart_range;
         let points = self.chart_points(range);
         let options: Vec<(ChartRange, &str)> = ChartRange::ALL.iter().map(|r| (*r, r.label())).collect();
-        let control = segmented(&p, "an-range", &options, range, cx, |app, r, w, cx| app.update_settings(|s| s.chart_range = r, w, cx));
+        let control = Segmented::pick("an-range", options.iter().copied(), range, cx, |app, r, w, cx| {
+            app.update_settings(|s| s.chart_range = r, w, cx)
+        });
         let chart_body = if points.is_empty() {
             empty_state(
                 &p,
@@ -173,27 +159,28 @@ impl VzApp {
             div()
                 .px(px(space::XL))
                 .pb(px(space::L))
-                .child(self.growth_chart(&p, &points, super::overview::ChartSlot::Analytics, 300., cx))
+                .child(self.growth_chart(
+                    &p,
+                    &points,
+                    super::overview::ChartSlot::Analytics,
+                    if w >= Width::Wide { 300. } else { 232. },
+                    cx,
+                ))
                 .into_any_element()
         };
-        let value_card = card(&p)
-            .child(card_header(&p, t("Portfolio value", "Valor de la cartera"), Some(control.into_any_element())))
-            .child(chart_body);
+        let value_card = Card::new().title(t("Portfolio value", "Valor de la cartera")).action(control).child(chart_body);
 
         // Monthly interest, last 12 months.
         let flows = self.snap.book.monthly_cash_flow(today);
         let last12: Vec<_> = flows.iter().rev().take(12).rev().collect();
         let labels: Vec<SharedString> = last12.iter().map(|f| short_month(f.month).into()).collect();
         let values: Vec<i64> = last12.iter().map(|f| f.interest_received + f.fees_received).collect();
-        let interest_card = card(&p)
+        let interest_card = Card::new()
             .flex_1()
             .flex_basis(px(0.))
             .min_w_0()
-            .child(card_header(
-                &p,
-                t("Interest received by month", "Interés cobrado por mes"),
-                Some(div().text_size(px(size::META)).text_color(p.muted).child(t("Including fees", "Incluye cargos")).into_any_element()),
-            ))
+            .title(t("Interest received by month", "Interés cobrado por mes"))
+            .action(div().flex_none().typeset(text::CAPTION).text_color(p.muted).child(t("Including fees", "Incluye cargos")))
             .child(if last12.is_empty() {
                 empty_state(
                     &p,
@@ -221,7 +208,11 @@ impl VzApp {
 
         let deploy_card = self.deployment_card(&p);
 
-        // Monthly cash flow table, newest first.
+        // Monthly cash flow table, newest first. Capital moves and expenses
+        // (also in the ledger below) go first as the column narrows, then
+        // lending; interest, net flow and ending cash always stay.
+        let show_moves = w >= Width::Wide;
+        let show_lending = w >= Width::Medium;
         let flow_rows = flows.iter().rev().map(|f| {
             let net = f.net();
             h_flex()
@@ -231,26 +222,30 @@ impl VzApp {
                 .border_b_1()
                 .border_color(p.rule)
                 .font_features(tabular())
-                .child(div().flex_1().flex_basis(px(0.)).min_w(px(96.)).child(sel(if narrow {
-                    short_month_year(f.month)
-                } else {
+                .child(div().flex_1().flex_basis(px(0.)).min_w(px(96.)).child(sel(if show_moves {
                     month_year(f.month)
+                } else {
+                    short_month_year(f.month)
                 })))
-                .child(fcol().text_color(p.muted).child(sel(dash(&money, f.contributions))))
-                .child(fcol().text_color(p.muted).child(sel(dash_neg(&money, f.withdrawals))))
-                .child(fcol().text_color(p.muted).child(sel(dash_neg(&money, f.disbursed))))
-                .child(fcol().text_color(p.muted).child(sel(dash(&money, f.principal_returned))))
+                .when(show_moves, |d| {
+                    d.child(fcol().text_color(p.muted).child(sel(dash(&money, f.contributions))))
+                        .child(fcol().text_color(p.muted).child(sel(dash_neg(&money, f.withdrawals))))
+                })
+                .when(show_lending, |d| {
+                    d.child(fcol().text_color(p.muted).child(sel(dash_neg(&money, f.disbursed))))
+                        .child(fcol().text_color(p.muted).child(sel(dash(&money, f.principal_returned))))
+                })
                 .child(
                     fcol()
                         .text_color(if f.interest_received + f.fees_received > 0 { p.positive } else { p.muted })
                         .child(sel(dash(&money, f.interest_received + f.fees_received))),
                 )
-                .child(fcol().text_color(p.muted).child(sel(dash_neg(&money, f.expenses))))
+                .when(show_moves, |d| d.child(fcol().text_color(p.muted).child(sel(dash_neg(&money, f.expenses)))))
                 .child(fcol().child(sel(money.format_signed(net))))
                 .child(fcol().child(sel(money.format(f.ending_cash))))
         });
-        let flow_card = card(&p).overflow_hidden().child(card_header(&p, t("Monthly cash flow", "Flujo de efectivo mensual"), None)).child(
-            if flows.is_empty() {
+        let flow_card =
+            Card::new().overflow_hidden().title(t("Monthly cash flow", "Flujo de efectivo mensual")).child(if flows.is_empty() {
                 empty_state(
                     &p,
                     IconName::Table,
@@ -267,19 +262,22 @@ impl VzApp {
                     .child(
                         table_header(&p)
                             .child(div().flex_1().flex_basis(px(0.)).min_w(px(96.)).child(th(&p, t("Month", "Mes"))))
-                            .child(fcol().child(th(&p, t("Capital in", "Capital entró"))))
-                            .child(fcol().child(th(&p, t("Capital out", "Capital salió"))))
-                            .child(fcol().child(th(&p, t("Lent", "Prestado"))))
-                            .child(fcol().child(th(&p, t("Capital back", "Capital cobrado"))))
+                            .when(show_moves, |d| {
+                                d.child(fcol().child(th(&p, t("Capital in", "Capital entró"))))
+                                    .child(fcol().child(th(&p, t("Capital out", "Capital salió"))))
+                            })
+                            .when(show_lending, |d| {
+                                d.child(fcol().child(th(&p, t("Lent", "Prestado"))))
+                                    .child(fcol().child(th(&p, t("Capital back", "Capital cobrado"))))
+                            })
                             .child(fcol().child(th(&p, t("Interest", "Interés"))))
-                            .child(fcol().child(th(&p, t("Expenses", "Gastos"))))
+                            .when(show_moves, |d| d.child(fcol().child(th(&p, t("Expenses", "Gastos")))))
                             .child(fcol().child(th(&p, t("Net cash flow", "Flujo neto"))))
                             .child(fcol().child(th(&p, t("Ending cash", "Efectivo final")))),
                     )
                     .children(flow_rows)
                     .into_any_element()
-            },
-        );
+            });
 
         // Every movement of cash outside loans and payments, newest first.
         enum Mv {
@@ -347,6 +345,8 @@ impl VzApp {
                     Mv::Capital(id) => (true, *id),
                     Mv::Entry(id) => (false, *id),
                 };
+                // Compact: the date leads the detail line and the note column goes.
+                let detail = if compact { format!("{} · {detail}", ds.format(*date)) } else { detail };
                 Some(
                     h_flex()
                         .min_h(px(48.))
@@ -354,16 +354,18 @@ impl VzApp {
                         .gap(px(space::L))
                         .border_b_1()
                         .border_color(p.rule)
-                        .child(div().w(px(120.)).flex_none().font_features(tabular()).child(sel(ds.format(*date))))
+                        .when(!compact, |d| d.child(div().w(px(120.)).flex_none().font_features(tabular()).child(sel(ds.format(*date)))))
                         .child(
                             v_flex()
-                                .w(px(220.))
-                                .flex_none()
+                                .when(compact, |d| d.flex_1().min_w_0())
+                                .when(!compact, |d| d.w(px(220.)).flex_none())
                                 .child(div().truncate().child(sel(kind)))
-                                .child(div().text_size(px(size::META)).text_color(p.muted).truncate().child(sel(detail))),
+                                .child(
+                                    div().typeset(text::CAPTION).font_features(tabular()).text_color(p.muted).truncate().child(sel(detail)),
+                                ),
                         )
-                        .child(div().flex_1().min_w_0().truncate().text_color(p.muted).child(sel(note)))
-                        .child(ncolumn(140.).font_features(tabular()).text_color(color).child(sel(amount_text)))
+                        .when(!compact, |d| d.child(div().flex_1().min_w_0().truncate().text_color(p.muted).child(sel(note))))
+                        .child(ncolumn(140.).whitespace_nowrap().font_features(tabular()).text_color(color).child(sel(amount_text)))
                         .child(
                             h_flex()
                                 .w(px(64.))
@@ -392,6 +394,7 @@ impl VzApp {
             })
             .collect();
         let ledger_actions = h_flex()
+            .flex_none()
             .gap(px(space::S))
             .child(
                 Button::new("ledger-move")
@@ -407,10 +410,8 @@ impl VzApp {
                     .label(t("Adjust balances", "Ajustar saldos"))
                     .on_click(cx.listener(|this, _, w, cx| this.open_adjust_form(w, cx))),
             );
-        let ledger_card = card(&p)
-            .overflow_hidden()
-            .child(card_header(&p, t("Money movements", "Movimientos de dinero"), Some(ledger_actions.into_any_element())))
-            .child(if movements.is_empty() {
+        let ledger_card = Card::new().overflow_hidden().title(t("Money movements", "Movimientos de dinero")).action(ledger_actions).child(
+            if movements.is_empty() {
                 empty_state(
                     &p,
                     IconName::Landmark,
@@ -430,24 +431,30 @@ impl VzApp {
                 .into_any_element()
             } else {
                 v_flex().children(move_rows).into_any_element()
-            });
+            },
+        );
 
         let changes: Vec<_> = self.snap.changes.iter().collect();
         let history = (!changes.is_empty()).then(|| self.history_card(&p, &changes, 40));
 
+        let side_by_side = w >= Width::Wide;
         v_flex()
             .child(header)
             .child(
                 v_flex()
-                    .gap(px(space::XL))
+                    .gap(gap)
                     .child(returns)
                     .child(capital)
                     .child(value_card)
-                    .child(if narrow {
-                        v_flex().gap(px(space::XL)).child(interest_card).child(deploy_card).into_any_element()
-                    } else {
-                        h_flex().items_stretch().gap(px(space::XL)).child(interest_card).child(deploy_card).into_any_element()
-                    })
+                    .child(
+                        div()
+                            .flex()
+                            .gap(gap)
+                            .when(side_by_side, |d| d.flex_row().items_stretch())
+                            .when(!side_by_side, |d| d.flex_col())
+                            .child(interest_card)
+                            .child(deploy_card),
+                    )
                     .child(flow_card)
                     .child(ledger_card)
                     .children(history),
@@ -455,7 +462,38 @@ impl VzApp {
             .into_any_element()
     }
 
-    fn deployment_card(&self, p: &Palette) -> Div {
+    /// Page actions. Wide windows show all three; narrower ones fold the
+    /// secondary ones into a "More" menu so the primary never wraps.
+    fn analytics_actions(&self, w: Width, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        let add = Button::new("an-add")
+            .primary()
+            .icon(IconName::Plus)
+            .label(t("Add capital", "Agregar capital"))
+            .on_click(cx.listener(|this, _, w, cx| this.open_capital_form(CapitalKind::Contribution, w, cx)))
+            .into_any_element();
+        let expense = cx.listener(|this, _, w, cx| this.open_entry_form(EntryKind::Expense, None, w, cx));
+        let withdraw = cx.listener(|this, _, w, cx| this.open_capital_form(CapitalKind::Withdrawal, w, cx));
+        if w >= Width::Wide {
+            return vec![
+                Button::new("an-expense")
+                    .icon(IconName::ReceiptText)
+                    .label(t("New expense", "Nuevo gasto"))
+                    .on_click(expense)
+                    .into_any_element(),
+                Button::new("an-withdraw").label(t("Withdraw capital", "Retirar capital")).on_click(withdraw).into_any_element(),
+                add,
+            ];
+        }
+        let more = Dropdown::new("an-more")
+            .icon(IconName::Ellipsis)
+            .tooltip(t("More actions", "Más acciones"))
+            .align_end()
+            .item(DropdownItem::new(t("New expense", "Nuevo gasto"), expense).icon(IconName::ReceiptText))
+            .item(DropdownItem::new(t("Withdraw capital", "Retirar capital"), withdraw).icon(IconName::Landmark));
+        vec![more.into_any_element(), add]
+    }
+
+    fn deployment_card(&self, p: &Palette) -> Card {
         let money = self.settings().money();
         let s = self.snap.book.summary(self.today);
         let deployed = s.outstanding_principal;
@@ -493,23 +531,22 @@ impl VzApp {
                 .child(div().flex_1().text_color(p.muted).child(sel(st.label())))
                 .child(div().font_features(tabular()).child(sel(n.to_string())))
         });
-        card(p).flex_1().flex_basis(px(0.)).min_w_0().child(card_header(p, t("Capital lent out", "Capital en la calle"), None)).child(
+        Card::new().flex_1().flex_basis(px(0.)).min_w_0().title(t("Capital lent out", "Capital en la calle")).child(
             v_flex()
                 .px(px(space::XL))
                 .pb(px(space::XL))
                 .gap(px(space::M))
                 .child(
                     h_flex()
+                        .flex_wrap()
                         .justify_between()
                         .items_end()
-                        .child(
-                            v_flex().gap(px(2.)).child(label(p, t("Share of capital lent", "Porción del capital prestada"))).child(figure(
-                                p,
-                                percent_label(deployed, pool).unwrap_or_else(|| "—".into()),
-                                size::FIGURE,
-                            )),
-                        )
-                        .child(div().text_color(p.muted).font_features(tabular()).child(sel({
+                        .gap(px(space::S))
+                        .child(Stat::new(
+                            t("Share of capital lent", "Porción del capital prestada"),
+                            percent_label(deployed, pool).unwrap_or_else(|| "—".into()),
+                        ))
+                        .child(div().text_color(p.muted).font_features(tabular()).whitespace_nowrap().child(sel({
                             let (a, b) = (money.format(deployed), money.format(pool));
                             tr!("{a} of {b}", "{a} de {b}")
                         }))),
@@ -520,36 +557,14 @@ impl VzApp {
                 .child(
                     div()
                         .pt(px(4.))
-                        .font_weight(FontWeight::MEDIUM)
+                        .typeset(text::BODY_STRONG)
+                        .font_features(tabular())
                         .child(tr!("Loans by status · {total}", "Préstamos por estado · {total}")),
                 )
                 .child(bar)
                 .child(v_flex().children(legend)),
         )
     }
-}
-
-/// Figures in a card, `per_row` to a row, with dividers between them.
-fn strip(p: &Palette, mut cells: Vec<Div>, per_row: usize) -> Div {
-    let mut out = card(p);
-    let mut first = true;
-    while !cells.is_empty() {
-        let rest = cells.split_off(per_row.min(cells.len()));
-        let mut row = h_flex().items_stretch();
-        for (i, c) in cells.into_iter().enumerate() {
-            if i > 0 {
-                row = row.child(vrule(p));
-            }
-            row = row.child(c);
-        }
-        if !first {
-            out = out.child(div().h(px(1.)).mx(px(space::XL)).bg(p.border));
-        }
-        out = out.child(row);
-        first = false;
-        cells = rest;
-    }
-    out
 }
 
 /// An equal-width, right-aligned cash-flow column.

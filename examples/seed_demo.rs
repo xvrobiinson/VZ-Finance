@@ -18,7 +18,7 @@ use vz_finance::services::Store;
 use vz_finance::utils::dates::today;
 
 fn client(s: &mut Store, name: &str, phone: &str, notes: &str) -> Result<i64> {
-    s.create_client(&ClientInput { full_name: name.into(), phone: phone.into(), email: String::new(), notes: notes.into() })
+    s.create_client(&ClientInput { full_name: name.into(), phone: phone.into(), notes: notes.into(), ..Default::default() })
 }
 
 fn loan(s: &mut Store, client: i64, principal: Cents, pct: i64, frequency: Frequency, start: NaiveDate) -> Result<i64> {

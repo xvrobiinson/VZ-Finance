@@ -1,16 +1,15 @@
 //! Deleting all clients, loans and payments, after a typed confirmation and
 //! with a copy saved first.
 
-use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
-use gpui_kit::component::{Disableable as _, WindowExt as _, h_flex, v_flex};
+use gpui_kit::component::{WindowExt as _, v_flex};
 use gpui_kit::*;
 
-use super::{error_banner, field, value};
+use super::{danger_footer, error_banner, field, value};
 use crate::app::{Route, VzApp};
 use crate::i18n::t;
 use crate::tr;
-use crate::ui::theme::{palette, space};
+use crate::ui::theme::{Typeset as _, palette, space, text};
 
 /// The word to type: RESET in English, BORRAR in Spanish.
 fn word() -> &'static str {
@@ -85,24 +84,16 @@ impl Render for ResetForm {
         v_flex()
             .gap(px(space::L))
             .children(error_banner(&p, &self.error))
-            .child(div().text_color(p.muted).child(t(
+            .child(div().typeset(text::BODY).text_color(p.muted).child(t(
                 "Every client, loan, payment, capital entry, expense and the change history will be deleted. Settings, the receipt name and the logo are kept. A complete copy is saved in the backups folder first, so it can be restored.",
                 "Se borrarán todos los clientes, préstamos, pagos, movimientos de capital, gastos y el historial de cambios. La configuración, el nombre de los recibos y el logo se conservan. Antes se guarda una copia completa en la carpeta de copias, para poder restaurarla.",
             )))
             .child(field(&p, &tr!("Type {w} to confirm", "Escribe {w} para confirmar"), Input::new(&self.confirm), None, None))
-            .child(
-                h_flex()
-                    .justify_end()
-                    .gap(px(space::S))
-                    .pt(px(space::S))
-                    .child(Button::new("cancel").label(t("Cancel", "Cancelar")).on_click(|_, window, cx| window.close_dialog(cx)))
-                    .child(
-                        Button::new("reset")
-                            .danger()
-                            .label(t("Delete all data", "Borrar todo"))
-                            .disabled(!self.confirmed(cx))
-                            .on_click(cx.listener(|this, _, w, cx| this.submit(w, cx))),
-                    ),
-            )
+            .child(danger_footer(
+                "reset",
+                t("Delete all data", "Borrar todo"),
+                self.confirmed(cx),
+                cx.listener(|this, _, w, cx| this.submit(w, cx)),
+            ))
     }
 }

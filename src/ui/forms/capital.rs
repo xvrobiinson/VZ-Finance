@@ -1,18 +1,19 @@
 use std::rc::Rc;
 
 use gpui_kit::component::input::{Input, InputEvent, InputState};
-use gpui_kit::component::{WindowExt as _, h_flex, v_flex};
+use gpui_kit::component::{WindowExt as _, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use super::date_field::{DateChanged, DateField};
-use super::{choice_tile, date_field, error_banner, field, footer, invalid_date, picked_date, reason_input, value};
+use super::{DATE_WIDTH, date_field, error_banner, field, field_row, footer, grow_field, invalid_date, picked_date, reason_input, value};
 use crate::app::VzApp;
 use crate::domain::money::{MoneyFormat, parse_money};
 use crate::domain::portfolio::{Account, CapitalKind};
 use crate::i18n::t;
 use crate::services::{Record, Snapshot};
 use crate::tr;
+use crate::ui::kit::Segmented;
 use crate::ui::theme::{palette, space};
 
 pub struct CapitalForm {
@@ -157,29 +158,25 @@ impl Render for CapitalForm {
             (date > crate::utils::dates::today()).then(|| t("The date can't be in the future", "La fecha no puede ser futura").to_string())
         };
         let can_submit = matches!(amount, Ok(a) if a > 0) && amount_err.is_none() && date_err.is_none();
-        let kind_tiles = h_flex().gap(px(space::S)).children([CapitalKind::Contribution, CapitalKind::Withdrawal].map(|k| {
-            let selected = self.kind == k;
-            choice_tile(&p, k.key(), k.label(), None, selected).on_click(cx.listener(move |this, _, _, cx| {
-                this.kind = k;
-                cx.notify();
-            }))
-        }));
+        let kinds = [CapitalKind::Contribution, CapitalKind::Withdrawal].map(|k| (k, SharedString::from(k.label()))).to_vec();
+        let kind_control = Segmented::pick("capital-kind", kinds, self.kind, cx, |this: &mut Self, k, _, cx| {
+            this.kind = k;
+            cx.notify();
+        });
         v_flex()
             .gap(px(space::L))
             .children(error_banner(&p, &self.error))
-            .when(self.editing.is_some(), |d| d.child(field(&p, t("Type", "Tipo"), kind_tiles, None, None)))
+            .when(self.editing.is_some(), |d| d.child(field(&p, t("Type", "Tipo"), kind_control, None, None)))
             .child(
-                h_flex()
-                    .items_start()
-                    .gap(px(space::M))
-                    .child(div().flex_1().child(field(
+                field_row()
+                    .child(grow_field(field(
                         &p,
                         t("Amount", "Monto"),
                         Input::new(&self.amount).prefix(div().text_color(p.muted).child(money.symbol.clone())),
                         Some(hint),
                         amount_err,
                     )))
-                    .child(div().w(px(200.)).child(field(&p, t("Date", "Fecha"), self.date.clone(), None, date_err))),
+                    .child(div().w(px(DATE_WIDTH)).flex_none().child(field(&p, t("Date", "Fecha"), self.date.clone(), None, date_err))),
             )
             .child(field(&p, t("Note", "Nota"), Input::new(&self.notes), None, None))
             .when(self.editing.is_some(), |d| {

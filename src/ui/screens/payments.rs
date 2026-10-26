@@ -1,7 +1,6 @@
 use gpui_kit::assets::IconName;
-use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::Input;
-use gpui_kit::component::{Sizable as _, h_flex, v_flex};
+use gpui_kit::component::{h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
@@ -9,14 +8,19 @@ use super::{ncolumn, row_icon_button};
 use crate::app::{Route, VzApp};
 use crate::i18n::{count, t};
 use crate::tr;
-use crate::ui::components::{Tone, avatar, card, empty_state, icon, page_header, pill, sel, table_header, table_row, th};
+use crate::ui::components::{Tone, avatar, empty_state, icon, page_header, pill, sel, table_header, table_row, th};
 use crate::ui::forms::reason::ReasonKind;
-use crate::ui::theme::{palette, size, space, tabular};
+use crate::ui::kit::{Button, Card};
+use crate::ui::theme::{Typeset as _, Width, palette, space, tabular, text};
 
 impl VzApp {
+    /// Every payment, newest first. Wide windows show the full split; Medium
+    /// drops capital and fee, Compact also folds the date into the subtitle.
     pub(crate) fn render_payments(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let p = palette(cx);
-        let narrow = self.content_width(window) < 1000.;
+        let w = Width::of(self.content_width(window));
+        let wide = w >= Width::Wide;
+        let compact = w == Width::Compact;
         let money = self.settings().money();
         let ds = self.settings().date_style;
         let q = self.payment_search.read(cx).value().to_lowercase();
@@ -45,6 +49,7 @@ impl VzApp {
             t("Payments", "Pagos"),
             Some(
                 h_flex()
+                    .flex_wrap()
                     .gap(px(4.))
                     .font_features(tabular())
                     .child(sel(tr!("{n} · {received} received, of which", "{n} · {received} recibido, de los cuales")))
@@ -63,6 +68,9 @@ impl VzApp {
             ],
         );
 
+        // Wide rows label the receipt button and show the reversed pill;
+        // narrower ones keep three icon buttons.
+        let actions_w = if wide { 240. } else { 96. };
         let body = if self.snap.payments.is_empty() {
             empty_state(
                 &p,
@@ -108,39 +116,46 @@ impl VzApp {
                     let note = &x.notes;
                     tr!("Loan #{lid} · {note}", "Préstamo #{lid} · {note}")
                 };
+                let sub = if compact { format!("{} · {sub}", ds.format(x.paid_on)) } else { sub };
                 table_row(&p, ("payrow", pid as u64), true)
                     .font_features(tabular())
-                    .child(div().w(px(120.)).text_color(if rev { p.muted } else { p.text }).child(sel(ds.format(x.paid_on))))
+                    .when(!compact, |d| {
+                        d.child(
+                            div().w(px(120.)).flex_none().text_color(if rev { p.muted } else { p.text }).child(sel(ds.format(x.paid_on))),
+                        )
+                    })
                     .child(
-                        h_flex().flex_1().min_w(px(180.)).gap(px(space::M)).child(avatar(&p, &name, cid, 28.)).child(
+                        h_flex().flex_1().min_w_0().gap(px(space::M)).child(avatar(&p, &name, cid, 28.)).child(
                             v_flex()
                                 .min_w_0()
                                 .child(div().truncate().child(sel(name)))
-                                .child(div().text_size(px(size::META)).text_color(p.muted).truncate().child(sel(sub))),
+                                .child(div().typeset(text::CAPTION).text_color(p.muted).truncate().child(sel(sub))),
                         ),
                     )
-                    .child(dim(ncolumn(110.).text_color(p.muted)).child(sel(money.format(x.interest))))
-                    .child(dim(ncolumn(120.).text_color(p.muted)).child(sel(money.format(x.principal))))
-                    .when(!narrow, |d| {
-                        d.child(dim(ncolumn(90.).text_color(p.muted)).child(sel(if x.fee > 0 {
-                            money.format(x.fee)
-                        } else {
-                            "—".into()
-                        })))
+                    .child(dim(ncolumn(110.).whitespace_nowrap().text_color(p.muted)).child(sel(money.format(x.interest))))
+                    .when(wide, |d| {
+                        d.child(dim(ncolumn(120.).whitespace_nowrap().text_color(p.muted)).child(sel(money.format(x.principal)))).child(
+                            dim(ncolumn(90.).whitespace_nowrap().text_color(p.muted)).child(sel(if x.fee > 0 {
+                                money.format(x.fee)
+                            } else {
+                                "—".into()
+                            })),
+                        )
                     })
-                    .child(dim(ncolumn(130.)).child(sel(money.format(x.amount))))
+                    .child(dim(ncolumn(130.).whitespace_nowrap()).child(sel(money.format(x.amount))))
                     .child(
                         h_flex()
-                            .w(px(if narrow { 150. } else { 240. }))
+                            .w(px(actions_w))
+                            .flex_none()
                             .justify_end()
                             .gap(px(2.))
-                            .when(rev && !narrow, |d| d.child(pill(&p, t("Reversed", "Anulado"), Tone::Neutral)))
+                            .when(rev && wide, |d| d.child(pill(&p, t("Reversed", "Anulado"), Tone::Neutral)))
                             .child(
                                 Button::new(("pay-receipt", pid as u64))
                                     .ghost()
                                     .small()
                                     .icon(IconName::Printer)
-                                    .when(!narrow, |b| b.label(t("Receipt", "Recibo")))
+                                    .when(wide, |b| b.label(t("Receipt", "Recibo")))
                                     .tooltip(t("Print receipt", "Imprimir recibo"))
                                     .on_click(cx.listener(move |this, _, w, cx| {
                                         cx.stop_propagation();
@@ -169,13 +184,15 @@ impl VzApp {
             v_flex()
                 .child(
                     table_header(&p)
-                        .child(div().w(px(120.)).child(th(&p, t("Date", "Fecha"))))
-                        .child(div().flex_1().min_w(px(180.)).child(th(&p, t("Client", "Cliente"))))
+                        .when(!compact, |d| d.child(div().w(px(120.)).flex_none().child(th(&p, t("Date", "Fecha")))))
+                        .child(div().flex_1().min_w_0().child(th(&p, t("Client", "Cliente"))))
                         .child(ncolumn(110.).child(th(&p, t("Interest", "Interés"))))
-                        .child(ncolumn(120.).child(th(&p, t("Capital", "Capital"))))
-                        .when(!narrow, |d| d.child(ncolumn(90.).child(th(&p, t("Fee", "Cargo")))))
+                        .when(wide, |d| {
+                            d.child(ncolumn(120.).child(th(&p, t("Capital", "Capital"))))
+                                .child(ncolumn(90.).child(th(&p, t("Fee", "Cargo"))))
+                        })
                         .child(ncolumn(130.).child(th(&p, t("Amount", "Monto"))))
-                        .child(div().w(px(if narrow { 150. } else { 240. }))),
+                        .child(div().w(px(actions_w)).flex_none()),
                 )
                 .children(items)
                 .into_any_element()
@@ -183,10 +200,15 @@ impl VzApp {
 
         v_flex()
             .child(header)
-            .child(div().pb(px(space::L)).child(
-                div().w(px(380.)).child(Input::new(&self.payment_search).prefix(icon(IconName::Search, p.faint, 14.)).cleanable(true)),
-            ))
-            .child(card(&p).overflow_hidden().child(body))
+            .child(
+                div().pb(px(space::L)).child(
+                    div()
+                        .w_full()
+                        .max_w(px(380.))
+                        .child(Input::new(&self.payment_search).prefix(icon(IconName::Search, p.faint, 14.)).cleanable(true)),
+                ),
+            )
+            .child(Card::new().overflow_hidden().child(body))
             .into_any_element()
     }
 }

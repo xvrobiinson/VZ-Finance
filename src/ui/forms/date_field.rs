@@ -10,7 +10,8 @@ use gpui_kit::*;
 
 use crate::i18n::{self, t};
 use crate::ui::components::icon;
-use crate::ui::theme::{palette, size};
+use crate::ui::kit::Button;
+use crate::ui::theme::{Elevation, RADIUS_CHIP, RADIUS_CONTROL, Typeset as _, elevation, palette, space, tabular, text};
 use crate::utils::dates::{add_months, input_format, input_placeholder, month_start, month_year, parse_input, today};
 
 pub struct DateChanged;
@@ -80,8 +81,9 @@ impl DateField {
                     .flex()
                     .items_center()
                     .justify_center()
-                    .rounded(px(6.))
-                    .text_size(px(size::META + 0.5))
+                    .rounded(px(RADIUS_CHIP))
+                    .typeset(text::CAPTION)
+                    .font_features(tabular())
                     .cursor_pointer()
                     .text_color(if is_sel {
                         p.on_accent
@@ -98,24 +100,14 @@ impl DateField {
             }))
         });
         let nav_button = |id: &'static str, name: IconName, delta: i32| {
-            div()
-                .id(id)
-                .size(px(28.))
-                .flex()
-                .items_center()
-                .justify_center()
-                .rounded(px(6.))
-                .cursor_pointer()
-                .hover(|s| s.bg(p.hover))
-                .child(icon(name, p.muted, 14.))
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    this.month = if delta < 0 {
-                        this.month.checked_sub_months(chrono::Months::new(1)).unwrap_or(this.month)
-                    } else {
-                        add_months(this.month, 1)
-                    };
-                    cx.notify();
-                }))
+            Button::new(id).ghost().small().icon(name).on_click(cx.listener(move |this, _, _, cx| {
+                this.month = if delta < 0 {
+                    this.month.checked_sub_months(chrono::Months::new(1)).unwrap_or(this.month)
+                } else {
+                    add_months(this.month, 1)
+                };
+                cx.notify();
+            }))
         };
         let title = month_year(first);
         let title = {
@@ -128,26 +120,28 @@ impl DateField {
             .gap(px(6.))
             .w(px(244.))
             .bg(p.surface)
-            .rounded(px(10.))
+            .rounded(px(RADIUS_CONTROL + 2.))
             .border_1()
             .border_color(p.border)
-            .shadow(vec![BoxShadow::new(px(0.), px(8.), p.shadow).blur_radius(px(24.))])
+            .shadow(elevation(&p, Elevation::Floating))
             .child(
                 h_flex()
                     .justify_between()
                     .child(nav_button("prev", IconName::ChevronLeft, -1))
-                    .child(div().font_weight(FontWeight::MEDIUM).child(title))
+                    .child(div().typeset(text::LABEL).child(title))
                     .child(nav_button("next", IconName::ChevronRight, 1)),
             )
-            .child(h_flex().children(i18n::weekdays().map(|w| {
-                div().size(px(32.)).flex().items_center().justify_center().text_size(px(size::META)).text_color(p.faint).child(w)
-            })))
+            .child(h_flex().children(
+                i18n::weekdays().map(|w| {
+                    div().size(px(32.)).flex().items_center().justify_center().typeset(text::CAPTION).text_color(p.faint).child(w)
+                }),
+            ))
             .children(weeks)
             .child(
                 div()
                     .id("today")
-                    .pt(px(4.))
-                    .text_size(px(size::META + 0.5))
+                    .pt(px(space::XS))
+                    .typeset(text::LABEL)
                     .text_color(p.accent_text)
                     .cursor_pointer()
                     .child(t("Today", "Hoy"))
@@ -167,7 +161,7 @@ impl Render for DateField {
             .flex()
             .items_center()
             .justify_center()
-            .rounded(px(8.))
+            .rounded(px(RADIUS_CONTROL))
             .border_1()
             .border_color(p.control)
             .cursor_pointer()

@@ -1,7 +1,6 @@
 use std::rc::Rc;
 
 use gpui_kit::component::IndexPath;
-use gpui_kit::component::button::Button;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::select::{Select, SelectEvent, SelectState};
 use gpui_kit::component::switch::Switch;
@@ -11,7 +10,10 @@ use gpui_kit::*;
 
 use super::date_field::{DateChanged, DateField};
 use super::loan::Choice;
-use super::{choice_tile, date_field, error_banner, field, footer, invalid_date, picked_date, reason_input, value};
+use super::{
+    DATE_WIDTH, choice_tile, date_field, error_banner, field, field_row, footer, grow_field, invalid_date, panel, picked_date,
+    reason_input, value,
+};
 use crate::app::VzApp;
 use crate::database::repositories::payments::AllocationMode;
 use crate::domain::installments::{Applied, Instruction, PlanState};
@@ -21,7 +23,8 @@ use crate::i18n::t;
 use crate::services::{Snapshot, installment_state_before, loan_facts, payments_before, preview_installment_payment, preview_payment};
 use crate::tr;
 use crate::ui::components::{Tone, kv, pill, th};
-use crate::ui::theme::{Palette, palette, size, space, tabular};
+use crate::ui::kit::{Button, Segmented};
+use crate::ui::theme::{Palette, RADIUS_CONTROL, Typeset as _, palette, space, tabular, text};
 
 /// The three ways to apply a payment on an installment loan.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -62,6 +65,17 @@ pub struct PaymentForm {
     show_errors: bool,
     _subs: Vec<Subscription>,
     _per_loan: Vec<Subscription>,
+}
+
+/// Widths of the split preview's installment and status columns; the
+/// amounts share what is left.
+const SPLIT_LABEL: f32 = 104.0;
+const SPLIT_STATUS: f32 = 104.0;
+
+/// A right-aligned amount column in the split preview. It never shrinks
+/// below its figure.
+fn amount_cell(content: impl IntoElement) -> Div {
+    div().flex_1().whitespace_nowrap().text_right().child(content)
 }
 
 fn notify_on_change<T: 'static>(input: &Entity<InputState>, window: &mut Window, cx: &mut Context<T>) -> Subscription {
@@ -421,8 +435,9 @@ impl PaymentForm {
                 .px(px(space::M))
                 .flex()
                 .items_center()
-                .rounded(px(8.))
+                .rounded(px(RADIUS_CONTROL))
                 .bg(p.raised)
+                .typeset(text::BODY)
                 .text_color(p.muted)
                 .child(tr!("{name} — Loan #{lid}", "{name} — Préstamo #{lid}"))
                 .into_any_element()
@@ -441,7 +456,7 @@ impl PaymentForm {
                 this.print_receipt = *checked;
                 cx.notify();
             })))
-            .child(div().child(t("Open the receipt to print after saving", "Abrir el recibo para imprimir al guardar")))
+            .child(div().typeset(text::BODY).child(t("Open the receipt to print after saving", "Abrir el recibo para imprimir al guardar")))
     }
 
     fn render_installments(&mut self, p: &Palette, cx: &mut Context<Self>) -> AnyElement {
@@ -461,7 +476,8 @@ impl PaymentForm {
             h_flex()
                 .gap(px(space::L))
                 .flex_wrap()
-                .text_size(px(size::META + 0.5))
+                .typeset(text::CAPTION)
+                .font_features(tabular())
                 .text_color(p.muted)
                 .when(due_now > 0, |d| {
                     let a = money.format(due_now);
@@ -537,23 +553,19 @@ impl PaymentForm {
                             let a = money.format(owes);
                             tr!("All of it {a}", "Todo {a}")
                         };
-                        h_flex().gap(px(space::S)).when(owes > 0, |d| d.child(quick("fill-installment", label, owes, cx)))
+                        h_flex().flex_wrap().gap(px(space::S)).when(owes > 0, |d| d.child(quick("fill-installment", label, owes, cx)))
                     })))
                     .into_any_element()
             }
             PayOption::Spread => {
-                let mode = h_flex().gap(px(space::S)).children(
-                    [
-                        (false, "spread-auto", t("Oldest first", "Lo más antiguo primero")),
-                        (true, "spread-manual", t("Choose amounts", "Elegir montos")),
-                    ]
-                    .map(|(manual, id, label)| {
-                        choice_tile(p, id, label, None, self.manual == manual).on_click(cx.listener(move |this, _, _, cx| {
-                            this.manual = manual;
-                            cx.notify();
-                        }))
-                    }),
-                );
+                let modes = vec![
+                    (false, SharedString::from(t("Oldest first", "Lo más antiguo primero"))),
+                    (true, SharedString::from(t("Choose amounts", "Elegir montos"))),
+                ];
+                let mode = Segmented::pick("spread-mode", modes, self.manual, cx, |this: &mut Self, manual, _, cx| {
+                    this.manual = manual;
+                    cx.notify();
+                });
                 let body: AnyElement = if self.manual {
                     let rows = self.spread.iter().filter_map(|(seq, input)| {
                         let x = open.iter().find(|x| x.seq == *seq)?;
@@ -561,10 +573,11 @@ impl PaymentForm {
                             h_flex()
                                 .gap(px(space::M))
                                 .min_h(px(36.))
+                                .typeset(text::BODY)
                                 .font_features(tabular())
                                 .child(div().w(px(28.)).text_color(p.faint).child(seq.to_string()))
                                 .child(div().w(px(110.)).child(ds.format(x.due)))
-                                .child(div().flex_1().text_right().text_color(p.muted).child({
+                                .child(div().flex_1().whitespace_nowrap().text_right().text_color(p.muted).child({
                                     let owes = money.format(x.owed());
                                     tr!("owes {owes} now", "debe {owes} ahora")
                                 }))
@@ -587,6 +600,7 @@ impl PaymentForm {
                     amount_input(self, t("Amount received", "Monto recibido"))
                         .child(
                             h_flex()
+                                .flex_wrap()
                                 .gap(px(space::S))
                                 .when(due_now > 0, |d| {
                                     let a = money.format(due_now);
@@ -606,7 +620,7 @@ impl PaymentForm {
                 let (fees, interest, capital) = (owed(|x| x.unpaid_fee()), owed(|x| x.unpaid_interest()), owed(|x| x.unpaid_principal()));
                 let part = |label: &str, input: &Entity<InputState>, max: Cents| {
                     let m = money.format(max);
-                    div().flex_1().child(field(
+                    grow_field(field(
                         p,
                         label,
                         Input::new(input).prefix(div().text_color(p.muted).child(money.symbol.clone())),
@@ -618,15 +632,13 @@ impl PaymentForm {
                 v_flex()
                     .gap(px(space::S))
                     .child(
-                        h_flex()
-                            .gap(px(space::M))
-                            .items_start()
+                        field_row()
                             .child(part(t("To late fees", "A cargos por mora"), &self.custom_fee, fees))
                             .child(part(t("To interest", "A interés"), &self.custom_interest, interest))
                             .child(part(t("To capital", "A capital"), &self.custom_principal, capital)),
                     )
                     .child(kv(p, t("Total received", "Total recibido"), money.format(total)))
-                    .child(div().text_size(px(size::META + 0.5)).text_color(p.warning).child(t(
+                    .child(div().typeset(text::CAPTION).text_color(p.warning).child(t(
                         "Each part is applied to the oldest installments first. Capital paid ahead of the schedule lowers the capital of later installments, so the regular schedule changes.",
                         "Cada parte se aplica primero a las cuotas más antiguas. El capital pagado antes del calendario baja el capital de las cuotas siguientes, así que el calendario normal cambia.",
                     )))
@@ -641,16 +653,16 @@ impl PaymentForm {
                     h_flex()
                         .h(px(26.))
                         .gap(px(space::M))
+                        .typeset(text::BODY)
                         .font_features(tabular())
-                        .text_size(px(size::META + 0.5))
-                        .child(div().w(px(90.)).child({
+                        .child(div().w(px(SPLIT_LABEL)).flex_none().whitespace_nowrap().child({
                             let k = a.seq;
                             tr!("Installment {k}", "Cuota {k}")
                         }))
-                        .child(div().flex_1().text_right().child(money.format(a.fee)))
-                        .child(div().flex_1().text_right().child(money.format(a.interest)))
-                        .child(div().flex_1().text_right().child(money.format(a.principal)))
-                        .child(div().w(px(104.)).flex().justify_end().children(x.map(|x| {
+                        .child(amount_cell(money.format(a.fee)))
+                        .child(amount_cell(money.format(a.interest)))
+                        .child(amount_cell(money.format(a.principal)))
+                        .child(div().w(px(SPLIT_STATUS)).flex_none().flex().justify_end().children(x.map(|x| {
                             let st = x.status(on);
                             pill(
                                 p,
@@ -669,22 +681,18 @@ impl PaymentForm {
                             h_flex()
                                 .justify_between()
                                 .pb(px(6.))
-                                .child(
-                                    div()
-                                        .font_weight(FontWeight::MEDIUM)
-                                        .child(t("How this payment is applied", "Cómo se aplica este pago")),
-                                )
+                                .child(div().typeset(text::BODY_STRONG).child(t("How this payment is applied", "Cómo se aplica este pago")))
                                 .when(after.paid_off(), |d| d.child(pill(p, t("Pays off the loan", "Salda el préstamo"), Tone::Positive))),
                         )
                         .child(
                             h_flex()
                                 .gap(px(space::M))
                                 .pb(px(2.))
-                                .child(div().w(px(90.)).child(th(p, "")))
-                                .child(div().flex_1().text_right().child(th(p, t("Late fee", "Mora"))))
-                                .child(div().flex_1().text_right().child(th(p, t("Interest", "Interés"))))
-                                .child(div().flex_1().text_right().child(th(p, t("Capital", "Capital"))))
-                                .child(div().w(px(104.))),
+                                .child(div().w(px(SPLIT_LABEL)).flex_none().child(th(p, "")))
+                                .child(amount_cell(th(p, t("Late fee", "Mora"))))
+                                .child(amount_cell(th(p, t("Interest", "Interés"))))
+                                .child(amount_cell(th(p, t("Capital", "Capital"))))
+                                .child(div().w(px(SPLIT_STATUS)).flex_none()),
                         )
                         .children(rows)
                         .child(div().h(px(1.)).my(px(6.)).bg(p.border))
@@ -705,9 +713,10 @@ impl PaymentForm {
                     true,
                 )
             }
-            Some(Err(e)) => (div().text_color(p.negative).child(e.clone()).into_any_element(), false),
+            Some(Err(e)) => (div().typeset(text::BODY).text_color(p.negative).child(e.clone()).into_any_element(), false),
             None => (
                 div()
+                    .typeset(text::BODY)
                     .text_color(p.muted)
                     .child(t("Enter the amount received to see where it goes.", "Escribe el monto recibido para ver a dónde va."))
                     .into_any_element(),
@@ -727,7 +736,7 @@ impl PaymentForm {
             .child(field(p, t("Loan", "Préstamo"), self.loan_control(p), None, None).children(summary))
             .child(field(p, t("How to apply it", "Cómo aplicarlo"), options, None, None))
             .child({
-                let date = div().w(px(200.)).flex_none().child(field(
+                let date = div().w(px(DATE_WIDTH)).flex_none().child(field(
                     p,
                     t("Date received", "Fecha del pago"),
                     self.date.clone(),
@@ -738,11 +747,11 @@ impl PaymentForm {
                 if self.option == PayOption::Custom || (self.option == PayOption::Spread && self.manual) {
                     v_flex().gap(px(space::L)).child(date).child(controls).into_any_element()
                 } else {
-                    h_flex().items_start().gap(px(space::M)).child(div().flex_1().min_w_0().child(controls)).child(date).into_any_element()
+                    field_row().child(grow_field(controls)).child(date).into_any_element()
                 }
             })
             .child(field(p, t("Note", "Nota"), Input::new(&self.notes), None, None))
-            .child(div().p(px(space::L)).rounded(px(10.)).bg(p.raised).border_1().border_color(p.rule).child(preview_el))
+            .child(panel(p).child(preview_el))
             .when(editing, |d| d.child(field(p, t("Reason for the change", "Motivo del cambio"), Input::new(&self.reason), None, None)))
             .when(!editing, |d| d.child(self.receipt_switch(cx)))
             .child(footer(
@@ -804,8 +813,10 @@ impl Render for PaymentForm {
             let cap = money.format(o.principal_outstanding);
             let int = money.format(o.interest_outstanding);
             h_flex()
+                .flex_wrap()
                 .gap(px(space::L))
-                .text_size(px(size::META + 0.5))
+                .typeset(text::CAPTION)
+                .font_features(tabular())
                 .text_color(p.muted)
                 .child(tr!("Capital owed: {cap}", "Capital adeudado: {cap}"))
                 .child(tr!("Interest due: {int}", "Interés por pagar: {int}"))
@@ -821,9 +832,7 @@ impl Render for PaymentForm {
                         h_flex()
                             .justify_between()
                             .pb(px(6.))
-                            .child(
-                                div().font_weight(FontWeight::MEDIUM).child(t("How this payment is applied", "Cómo se aplica este pago")),
-                            )
+                            .child(div().typeset(text::BODY_STRONG).child(t("How this payment is applied", "Cómo se aplica este pago")))
                             .when(a.pays_off(), |d| d.child(pill(&p, t("Pays off the loan", "Salda el préstamo"), Tone::Positive))),
                     )
                     .when(a.fee > 0, |d| d.child(kv(&p, t("Fee", "Cargo"), money.format(a.fee))))
@@ -840,6 +849,7 @@ impl Render for PaymentForm {
                     .into_any_element()
             }
             _ => div()
+                .typeset(text::BODY)
                 .text_color(p.muted)
                 .child(match (book, &amount) {
                     (None, _) => {
@@ -887,22 +897,18 @@ impl Render for PaymentForm {
             .children(error_banner(&p, &self.error))
             .child(field(&p, t("Loan", "Préstamo"), self.loan_control(&p), None, loan_err).children(summary))
             .child(
-                h_flex()
-                    .items_start()
-                    .gap(px(space::M))
-                    .child(
-                        div().flex_1().child(
-                            field(
-                                &p,
-                                t("Amount received", "Monto recibido"),
-                                Input::new(&self.amount).prefix(div().text_color(p.muted).child(money.symbol.clone())),
-                                None,
-                                amount_err,
-                            )
-                            .children(quick_el),
-                        ),
-                    )
-                    .child(div().w(px(200.)).child(field(
+                field_row()
+                    .child(grow_field(
+                        field(
+                            &p,
+                            t("Amount received", "Monto recibido"),
+                            Input::new(&self.amount).prefix(div().text_color(p.muted).child(money.symbol.clone())),
+                            None,
+                            amount_err,
+                        )
+                        .children(quick_el),
+                    ))
+                    .child(div().w(px(DATE_WIDTH)).flex_none().child(field(
                         &p,
                         t("Date received", "Fecha del pago"),
                         self.date.clone(),
@@ -924,7 +930,7 @@ impl Render for PaymentForm {
             } else {
                 div()
                     .id("add-fee")
-                    .text_size(px(size::META + 0.5))
+                    .typeset(text::LABEL)
                     .text_color(p.accent_text)
                     .cursor_pointer()
                     .child(t("+ Include a fee", "+ Incluir un cargo"))
@@ -935,7 +941,7 @@ impl Render for PaymentForm {
                     .into_any_element()
             })
             .child(field(&p, t("Note", "Nota"), Input::new(&self.notes), None, None))
-            .child(div().p(px(space::L)).rounded(px(10.)).bg(p.raised).border_1().border_color(p.rule).child(allocation))
+            .child(panel(&p).child(allocation))
             .when(editing, |d| d.child(field(&p, t("Reason for the change", "Motivo del cambio"), Input::new(&self.reason), None, None)))
             .when(!editing, |d| d.child(self.receipt_switch(cx)))
             .child(footer(

@@ -23,13 +23,15 @@ pub fn export_all(snap: &Snapshot, dir: &Path) -> Result<Vec<PathBuf>> {
     };
 
     let (mut w, path) = file("clients")?;
-    w.write_record(["id", "full_name", "phone", "email", "notes", "created_at", "archived_at"])?;
+    w.write_record(["id", "full_name", "id_number", "phone", "email", "address", "notes", "created_at", "archived_at"])?;
     for c in &snap.clients {
         w.write_record([
             c.id.to_string(),
             c.full_name.clone(),
+            c.id_number.clone().unwrap_or_default(),
             c.phone.clone().unwrap_or_default(),
             c.email.clone().unwrap_or_default(),
+            c.address.clone().unwrap_or_default(),
             c.notes.clone(),
             c.created_at.clone(),
             c.archived_at.clone().unwrap_or_default(),

@@ -3,7 +3,7 @@
 
 pub mod export;
 mod lending;
-pub mod logo;
+pub mod picture;
 pub mod receipt;
 mod records;
 pub mod settings;
@@ -32,6 +32,7 @@ use crate::domain::ledger::{Allocation, ContractStatus, LoanFacts, PaymentError,
 use crate::domain::money::Cents;
 use crate::domain::portfolio::{Account, Book, LoanBook, Shortfall};
 use crate::i18n::t;
+use picture::PhotoChange;
 use settings::Settings;
 
 /// A user-facing validation failure. Its message is shown as-is.
@@ -324,6 +325,7 @@ impl Store {
                  DELETE FROM loan_installments;
                  DELETE FROM loan_status_events;
                  DELETE FROM loans;
+                 DELETE FROM client_photos;
                  DELETE FROM clients;
                  DELETE FROM capital_transactions;
                  DELETE FROM cash_entries;
@@ -365,18 +367,7 @@ impl Store {
     /// Saves an uploaded picture as the business logo, shrunk to a size
     /// that fits receipts and the sidebar.
     pub fn set_logo(&mut self, bytes: &[u8]) -> Result<()> {
-        let png = logo::prepare(bytes).map_err(|e| {
-            Invalid(match e {
-                logo::LogoError::TooLarge => {
-                    t("The picture is too large (20 MB at most)", "La imagen es demasiado grande (máximo 20 MB)").into()
-                }
-                logo::LogoError::Unreadable => t(
-                    "This file isn't a picture the app can read. Use a PNG, JPG, GIF, BMP or WebP image.",
-                    "La app no puede leer este archivo. Usa una imagen PNG, JPG, GIF, BMP o WebP.",
-                )
-                .into(),
-            })
-        })?;
+        let png = picture::logo_png(bytes).map_err(|e| Invalid(e.message().into()))?;
         self.write(|c| assets::set(c, assets::LOGO, "image/png", &png))
     }
 
@@ -405,29 +396,76 @@ impl Store {
                 "El teléfono solo puede tener números, espacios y + - ( )",
             ));
         }
+        let id_number = input.id_number.trim();
+        if id_number.chars().count() > 40 || id_number.chars().any(char::is_control) {
+            return invalid(t(
+                "The ID number is too long (40 characters at most)",
+                "El número de identificación es muy largo (máximo 40 caracteres)",
+            ));
+        }
+        let address = input.address.trim();
+        if address.chars().count() > 300 || address.chars().any(char::is_control) {
+            return invalid(t(
+                "The address is too long (300 characters, one line)",
+                "La dirección es muy larga (300 caracteres, una línea)",
+            ));
+        }
         Ok(())
     }
 
     pub fn create_client(&mut self, input: &ClientInput) -> Result<i64> {
-        Self::validate_client(input)?;
-        self.write(|c| clients::insert(c, input))
+        self.save_client(None, input, &PhotoChange::Keep)
     }
 
     pub fn update_client(&mut self, id: i64, input: &ClientInput) -> Result<()> {
+        self.save_client(Some(id), input, &PhotoChange::Keep).map(|_| ())
+    }
+
+    /// Adds a client (`editing` is `None`) or updates one, with their photo,
+    /// in one transaction. Edits are logged field by field; the photo is
+    /// logged as added, replaced or removed, never its contents. Loans and
+    /// payments are not touched.
+    pub fn save_client(&mut self, editing: Option<i64>, input: &ClientInput, photo: &PhotoChange) -> Result<i64> {
         Self::validate_client(input)?;
         self.write(|c| {
-            let old = clients::get(c, id)?.ok_or_else(|| anyhow!("client not found"))?;
-            clients::update(c, id, input)?;
-            let diff = Diff::default()
-                .field("full_name", &old.full_name, input.full_name.trim())
-                .field("phone", opt(&old.phone), input.phone.trim())
-                .field("email", opt(&old.email), input.email.trim())
-                .field("notes", &old.notes, input.notes.trim());
-            if !diff.is_empty() {
-                diff.log(c, Entity::Client, id, None, Action::Update, "")?;
+            let id = match editing {
+                None => clients::insert(c, input)?,
+                Some(id) => {
+                    let old = clients::get(c, id)?.ok_or_else(|| anyhow!("client not found"))?;
+                    clients::update(c, id, input)?;
+                    let had = if old.has_photo { "on_file" } else { "" };
+                    let photo_now = match photo {
+                        PhotoChange::Keep => had,
+                        PhotoChange::Set(_) if old.has_photo => "replaced",
+                        PhotoChange::Set(_) => "on_file",
+                        PhotoChange::Remove => "",
+                    };
+                    let diff = Diff::default()
+                        .field("full_name", &old.full_name, input.full_name.trim())
+                        .field("phone", opt(&old.phone), input.phone.trim())
+                        .field("email", opt(&old.email), input.email.trim())
+                        .field("id_number", opt(&old.id_number), input.id_number.trim())
+                        .field("address", opt(&old.address), input.address.trim())
+                        .field("notes", &old.notes, input.notes.trim())
+                        .field("photo", had, photo_now);
+                    if !diff.is_empty() {
+                        diff.log(c, Entity::Client, id, None, Action::Update, "")?;
+                    }
+                    id
+                }
+            };
+            match photo {
+                PhotoChange::Keep => {}
+                PhotoChange::Set(p) => clients::set_photo(c, id, p.jpeg())?,
+                PhotoChange::Remove => clients::remove_photo(c, id)?,
             }
-            Ok(())
+            Ok(id)
         })
+    }
+
+    /// The client's photo (JPEG), loaded only when someone asks to see it.
+    pub fn client_photo(&self, id: i64) -> Result<Option<Vec<u8>>> {
+        clients::photo(&self.conn, id)
     }
 
     pub fn set_client_archived(&mut self, id: i64, archived: bool) -> Result<()> {
@@ -451,7 +489,10 @@ impl Store {
                 .removed("full_name", &old.full_name)
                 .removed("phone", opt(&old.phone))
                 .removed("email", opt(&old.email))
+                .removed("id_number", opt(&old.id_number))
+                .removed("address", opt(&old.address))
                 .removed("notes", &old.notes)
+                .removed("photo", if old.has_photo { "on_file" } else { "" })
                 .log(c, Entity::Client, id, None, Action::Delete, reason)?;
             clients::delete(c, id)
         })
@@ -582,4 +623,8 @@ pub fn preview_installment_payment(
 #[cfg(test)]
 mod tests;
 #[cfg(test)]
+mod tests_clients;
+#[cfg(test)]
 mod tests_installments;
+#[cfg(test)]
+mod tests_receipts;

@@ -38,7 +38,10 @@ Built in Rust with [GPUI](https://gpui.rs) and SQLite.
   capital, active loans and overdue amount, with a growth chart, where your
   money is, recent payments and loans needing attention.
 - **Clients**: searchable directory; each client has a profile with loans,
-  payment history, totals and notes. Clients are archived, never deleted.
+  payment history, totals and notes, and optionally an ID number, an address
+  and a photo of the client or their ID (kept private in the database, shown
+  only on request, never printed). A new client can also be added from inside
+  the New loan form. Clients are archived, never deleted.
 - **Payments**: record a payment in a few keystrokes with a live split between
   interest and capital.
 - **Two accounts**: available capital and available interest. Loans use
@@ -48,10 +51,18 @@ Built in Rust with [GPUI](https://gpui.rs) and SQLite.
 - **Everything is editable**: loans, payments, capital, expenses and clients
   can be edited or deleted. Payment splits are recalculated automatically and
   every change is kept in a change history with the old and new values.
-- **Printable receipts**: a payment receipt (what was paid, what is still
-  owed, the percentage of capital paid, the next payment) and a loan receipt
-  (amount, rate, payment dates, how payments work, signature lines), both with
-  your logo.
+- **Printable receipts** on US Letter paper, both with your logo and the
+  client details you choose in Settings:
+  - a payment receipt: what was paid and where it went, what is still owed,
+    every earlier payment on the loan oldest first, and for installment loans
+    each installment's status (paid, partly paid, overdue or pending). Open
+    (interest-only) loans have no schedule, so their receipts show no due
+    dates;
+  - a loan receipt: amount, rate, the schedule of an installment loan, how
+    payments work and signature lines.
+
+  A long history continues on a second page with numbered pages; nothing is
+  left out.
 - **Portfolio Analytics**: returns, capital ledger, monthly interest, capital
   lent out, loans by status and a monthly cash-flow table.
 - **Settings**: the name printed on receipts (left empty, receipts say

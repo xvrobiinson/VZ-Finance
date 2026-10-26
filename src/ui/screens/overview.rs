@@ -1,12 +1,15 @@
+//! Overview: the state of the book at a glance. The first screen built
+//! entirely from `ui::kit`; it reflows on `Width` from one column up to a
+//! full-width dashboard.
+
 use std::rc::Rc;
 
 use gpui_kit::assets::IconName;
-use gpui_kit::component::button::{Button, ButtonVariants as _};
-use gpui_kit::component::{Sizable as _, h_flex, v_flex};
+use gpui_kit::component::{h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
-use super::{header_link, segmented, status_detail_pill};
+use super::{header_link, status_detail_pill};
 use crate::app::{Route, VzApp};
 use crate::charts::line::{LineChart, Series};
 use crate::domain::ledger::DisplayStatus;
@@ -15,8 +18,9 @@ use crate::domain::portfolio::{CapitalKind, EntryKind, HistoryPoint, Summary};
 use crate::i18n::{count, t};
 use crate::services::settings::ChartRange;
 use crate::tr;
-use crate::ui::components::{avatar, card, card_header, empty_state, figure, icon, kbd, sel, vrule};
-use crate::ui::theme::{Palette, palette, size, space, tabular};
+use crate::ui::components::{avatar, empty_state, icon, kbd, kv, page_header, sel};
+use crate::ui::kit::{Button, ButtonSize, Card, Dropdown, DropdownItem, ListRow, Segmented, Stat, StatStrip};
+use crate::ui::theme::{Palette, Typeset as _, Width, palette, space, tabular, text};
 use crate::utils::dates::short_month_year;
 
 /// Which screen's portfolio chart is being drawn; each keeps its own hover.
@@ -29,15 +33,44 @@ pub(crate) enum ChartSlot {
 impl VzApp {
     pub(crate) fn render_overview(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let p = palette(cx);
-        let width = self.content_width(window);
-        // Six figures in one row need about 1,250px; below that use 3 + 3.
-        let kpi_compact = width < 1250.;
-        let compact = width < 1150.;
+        let w = Width::of(self.content_width(window));
+        let gap = px(w.gap());
         let s = self.snap.book.summary(self.today);
-        let money = self.settings().money();
+        let side_by_side = w >= Width::Wide;
 
-        let finding: AnyElement = if s.overdue_loans > 0 {
+        v_flex()
+            .gap(gap)
+            .child(page_header(&p, t("Overview", "Resumen"), Some(self.finding(&p, &s)), self.header_actions(w, cx)).pb_0())
+            .children(self.render_setup(&p, w, cx))
+            .child(self.kpi_strip(&p, &s, w, cx))
+            .child(
+                div()
+                    .flex()
+                    .gap(gap)
+                    .when(side_by_side, |d| d.flex_row().items_stretch())
+                    .when(!side_by_side, |d| d.flex_col())
+                    .child(self.growth_card(&p, w, cx))
+                    .child(self.allocation_card(&p, &s, side_by_side, cx)),
+            )
+            .child(
+                div()
+                    .flex()
+                    .gap(gap)
+                    .when(side_by_side, |d| {
+                        d.flex_row().items_stretch().child(self.recent_payments_card(&p, cx)).child(self.attention_card(&p, cx))
+                    })
+                    // Time-sensitive block first when stacked.
+                    .when(!side_by_side, |d| d.flex_col().child(self.attention_card(&p, cx)).child(self.recent_payments_card(&p, cx))),
+            )
+            .into_any_element()
+    }
+
+    /// The one-line finding under the title.
+    fn finding(&self, p: &Palette, s: &Summary) -> AnyElement {
+        let money = self.settings().money();
+        if s.overdue_loans > 0 {
             h_flex()
+                .flex_wrap()
                 .gap(px(4.))
                 .child(sel({
                     let n = s.overdue_loans;
@@ -66,60 +99,51 @@ impl VzApp {
             .into_any_element()
         } else {
             t("Your lending portfolio at a glance", "Tu cartera de préstamos de un vistazo").into_any_element()
-        };
+        }
+    }
 
-        let actions = vec![
-            Button::new("ov-expense")
-                .icon(IconName::ReceiptText)
-                .label(t("New expense", "Nuevo gasto"))
-                .tooltip("Ctrl+E")
-                .on_click(cx.listener(|this, _, w, cx| this.open_entry_form(EntryKind::Expense, None, w, cx)))
-                .into_any_element(),
-            Button::new("ov-new-loan")
-                .label(t("New loan", "Nuevo préstamo"))
-                .tooltip("Ctrl+L")
-                .on_click(cx.listener(|this, _, w, cx| this.open_loan_form(None, w, cx)))
-                .into_any_element(),
-            Button::new("ov-pay")
-                .primary()
-                .icon(IconName::Plus)
-                .label(t("Record payment", "Registrar pago"))
-                .tooltip("Ctrl+P")
-                .on_click(cx.listener(|this, _, w, cx| this.open_payment_form(None, w, cx)))
-                .into_any_element(),
-        ];
-
-        v_flex()
-            .gap(px(space::XL))
-            .child(crate::ui::components::page_header(&p, t("Overview", "Resumen"), Some(finding), actions).pb_0())
-            .children(self.render_setup(&p, cx))
-            .child(self.kpi_strip(&p, &s, kpi_compact, cx))
-            .child(if compact {
-                v_flex().gap(px(space::XL)).child(self.growth_card(&p, cx)).child(self.allocation_card(&p, &s, true, cx)).into_any_element()
-            } else {
-                h_flex()
-                    .items_stretch()
-                    .gap(px(space::XL))
-                    .child(self.growth_card(&p, cx))
-                    .child(self.allocation_card(&p, &s, false, cx))
-                    .into_any_element()
-            })
-            .child(if compact {
-                // Time-sensitive block first when stacked.
-                v_flex().gap(px(space::XL)).child(self.attention_card(&p, cx)).child(self.recent_payments_card(&p, cx)).into_any_element()
-            } else {
-                h_flex()
-                    .items_stretch()
-                    .gap(px(space::XL))
-                    .child(self.recent_payments_card(&p, cx))
-                    .child(self.attention_card(&p, cx))
-                    .into_any_element()
-            })
-            .into_any_element()
+    /// Page actions. Wide windows show all three; narrower ones fold the
+    /// secondary actions into a "More" menu so the primary never wraps.
+    fn header_actions(&self, w: Width, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        let pay = Button::new("ov-pay")
+            .primary()
+            .icon(IconName::Plus)
+            .label(t("Record payment", "Registrar pago"))
+            .tooltip("Ctrl+P")
+            .on_click(cx.listener(|this, _, w, cx| this.open_payment_form(None, w, cx)))
+            .into_any_element();
+        let expense = cx.listener(|this, _, w, cx| this.open_entry_form(EntryKind::Expense, None, w, cx));
+        let loan = cx.listener(|this, _, w, cx| this.open_loan_form(None, w, cx));
+        if w >= Width::Wide {
+            return vec![
+                Button::new("ov-expense")
+                    .icon(IconName::ReceiptText)
+                    .label(t("New expense", "Nuevo gasto"))
+                    .tooltip("Ctrl+E")
+                    .on_click(expense)
+                    .into_any_element(),
+                Button::new("ov-new-loan").label(t("New loan", "Nuevo préstamo")).tooltip("Ctrl+L").on_click(loan).into_any_element(),
+                pay,
+            ];
+        }
+        let more = Dropdown::new("ov-more")
+            .icon(IconName::Ellipsis)
+            .tooltip(t("More actions", "Más acciones"))
+            .align_end()
+            .item(DropdownItem::new(t("New loan", "Nuevo préstamo"), loan).icon(IconName::HandCoins).hint("Ctrl+L"))
+            .item(DropdownItem::new(t("New expense", "Nuevo gasto"), expense).icon(IconName::ReceiptText).hint("Ctrl+E"))
+            .item(
+                DropdownItem::new(
+                    t("Add capital", "Agregar capital"),
+                    cx.listener(|this, _, w, cx| this.open_capital_form(CapitalKind::Contribution, w, cx)),
+                )
+                .icon(IconName::Landmark),
+            );
+        vec![more.into_any_element(), pay]
     }
 
     /// First-run checklist, shown until the first loan exists.
-    fn render_setup(&self, p: &Palette, cx: &mut Context<Self>) -> Option<AnyElement> {
+    fn render_setup(&self, p: &Palette, w: Width, cx: &mut Context<Self>) -> Option<AnyElement> {
         if !self.snap.loans.is_empty() {
             return None;
         }
@@ -145,7 +169,8 @@ impl VzApp {
                         .bg(if done { p.positive_tint } else { p.surface })
                         .border_1()
                         .border_color(if done { p.positive_tint } else { p.border })
-                        .text_size(px(size::META))
+                        .typeset(text::CAPTION)
+                        .font_features(tabular())
                         .text_color(if done { p.positive } else { p.muted })
                         .child(if done {
                             icon(IconName::Check, p.positive, 14.).into_any_element()
@@ -158,109 +183,89 @@ impl VzApp {
                         .gap(px(4.))
                         .flex_1()
                         .min_w_0()
-                        .child(div().font_weight(FontWeight::MEDIUM).text_color(p.text).child(title.to_string()))
-                        .child(div().text_color(p.muted).text_size(px(size::META + 0.5)).child(body.to_string()))
+                        .child(div().typeset(text::BODY_STRONG).text_color(p.text).child(title.to_string()))
+                        .child(div().typeset(text::CAPTION).text_color(p.muted).child(body.to_string()))
                         .child(h_flex().pt(px(6.)).child(action)),
                 )
         };
+        let steps = [
+            step(
+                1,
+                has_capital,
+                t("Record your starting capital", "Registra tu capital inicial"),
+                t("The money you have set aside to lend.", "El dinero que apartaste para prestar."),
+                Button::new("setup-capital")
+                    .small()
+                    .label(t("Add capital", "Agregar capital"))
+                    .on_click(cx.listener(|this, _, w, cx| this.open_capital_form(CapitalKind::Contribution, w, cx)))
+                    .into_any_element(),
+            ),
+            step(
+                2,
+                has_client,
+                t("Add a client", "Agrega un cliente"),
+                t("Name and optional contact details.", "Nombre y datos de contacto opcionales."),
+                Button::new("setup-client")
+                    .small()
+                    .label(t("New client", "Nuevo cliente"))
+                    .on_click(cx.listener(|this, _, w, cx| this.open_client_form(None, w, cx)))
+                    .into_any_element(),
+            ),
+            step(
+                3,
+                false,
+                t("Create the first loan", "Crea el primer préstamo"),
+                t("See the interest per period before you confirm.", "Mira el interés por período antes de confirmar."),
+                Button::new("setup-loan")
+                    .small()
+                    .primary()
+                    .label(t("New loan", "Nuevo préstamo"))
+                    .on_click(cx.listener(|this, _, w, cx| this.open_loan_form(None, w, cx)))
+                    .into_any_element(),
+            ),
+        ];
         Some(
-            card(p)
-                .p(px(space::XL))
-                .gap(px(space::L))
-                .child(
-                    h_flex()
-                        .justify_between()
-                        .child(
-                            v_flex()
-                                .gap(px(4.))
-                                .child(
-                                    div()
-                                        .text_size(px(size::SECTION))
-                                        .font_weight(FontWeight::SEMIBOLD)
-                                        .child(t("Set up your lending book", "Configura tu cartera")),
-                                )
-                                .child(div().text_color(p.muted).child(t(
-                                    "Three steps, and every figure on this screen comes from what you record.",
-                                    "Tres pasos, y cada cifra de esta pantalla sale de lo que registres.",
-                                ))),
-                        )
-                        .child(div().text_color(p.muted).font_features(tabular()).child(tr!("{done} of 3 done", "{done} de 3 listos"))),
+            Card::new()
+                .title(t("Set up your lending book", "Configura tu cartera"))
+                .action(
+                    div()
+                        .typeset(text::CAPTION)
+                        .text_color(p.muted)
+                        .font_features(tabular())
+                        .child(tr!("{done} of 3 done", "{done} de 3 listos")),
                 )
                 .child(
-                    h_flex()
-                        .items_stretch()
-                        .gap(px(space::M))
-                        .child(step(
-                            1,
-                            has_capital,
-                            t("Record your starting capital", "Registra tu capital inicial"),
-                            t("The money you have set aside to lend.", "El dinero que apartaste para prestar."),
-                            Button::new("setup-capital")
-                                .label(t("Add capital", "Agregar capital"))
-                                .on_click(cx.listener(|this, _, w, cx| this.open_capital_form(CapitalKind::Contribution, w, cx)))
-                                .into_any_element(),
-                        ))
-                        .child(step(
-                            2,
-                            has_client,
-                            t("Add a client", "Agrega un cliente"),
-                            t("Name and optional contact details.", "Nombre y datos de contacto opcionales."),
-                            Button::new("setup-client")
-                                .label(t("New client", "Nuevo cliente"))
-                                .on_click(cx.listener(|this, _, w, cx| this.open_client_form(None, w, cx)))
-                                .into_any_element(),
-                        ))
-                        .child(step(
-                            3,
-                            false,
-                            t("Create the first loan", "Crea el primer préstamo"),
-                            t("See the interest per period before you confirm.", "Mira el interés por período antes de confirmar."),
-                            Button::new("setup-loan")
-                                .primary()
-                                .label(t("New loan", "Nuevo préstamo"))
-                                .on_click(cx.listener(|this, _, w, cx| this.open_loan_form(None, w, cx)))
-                                .into_any_element(),
-                        )),
+                    v_flex()
+                        .px(px(space::XL))
+                        .pb(px(space::XL))
+                        .gap(px(space::L))
+                        .child(div().text_color(p.muted).child(t(
+                            "Three steps, and every figure on this screen comes from what you record.",
+                            "Tres pasos, y cada cifra de esta pantalla sale de lo que registres.",
+                        )))
+                        .child(
+                            div()
+                                .flex()
+                                .gap(px(space::M))
+                                .when(w >= Width::Medium, |d| d.flex_row().items_stretch())
+                                .when(w < Width::Medium, |d| d.flex_col())
+                                .children(steps),
+                        ),
                 )
                 .into_any_element(),
         )
     }
 
-    fn kpi_strip(&self, p: &Palette, s: &Summary, compact: bool, cx: &mut Context<Self>) -> impl IntoElement {
+    fn kpi_strip(&self, p: &Palette, s: &Summary, w: Width, cx: &mut Context<Self>) -> impl IntoElement {
         let money = self.settings().money();
-        let adjust = div()
-            .id("kpi-adjust")
-            .flex_none()
-            .size(px(22.))
-            .rounded(px(6.))
-            .flex()
-            .items_center()
-            .justify_center()
-            .cursor_pointer()
-            .hover(|st| st.bg(p.hover))
-            .child(icon(IconName::Pencil, p.faint, 12.))
-            .tooltip(|window, cx| gpui_kit::component::tooltip::Tooltip::new(t("Adjust balances", "Ajustar saldos")).build(window, cx))
-            .on_click(cx.listener(|this, _, w, cx| this.open_adjust_form(w, cx)));
-        let mut adjust = Some(adjust);
-        let mut cell = |icon_name: IconName, label: &str, value: String, value_color: Hsla, sub: AnyElement, lead: bool| {
-            v_flex()
-                .flex_1()
-                .flex_basis(px(0.))
-                .min_w_0()
-                .when(lead && !compact, |d| d.flex_grow(1.5))
-                .px(px(space::XL))
-                .py(px(space::L + 2.))
-                .gap(px(8.))
-                .child(
-                    h_flex()
-                        .gap(px(6.))
-                        .child(icon(icon_name, p.faint, 14.))
-                        .child(div().text_size(px(size::META + 0.5)).text_color(p.muted).min_w_0().truncate().child(sel(label.to_string())))
-                        .when(lead, |d| d.children(adjust.take())),
-                )
-                .child(figure(p, value, if lead { size::LEAD } else { size::FIGURE }).text_color(value_color))
-                .child(div().text_size(px(size::META)).text_color(p.muted).min_w_0().truncate().child(sub))
+        // Six full money figures need about 1,680px; below that, 3 + 3.
+        // Figures are never truncated to make a row fit.
+        let per_row = match w {
+            Width::Compact => 2,
+            Width::Medium | Width::Wide => 3,
+            Width::Ultra => 6,
         };
+
         let gain = s.gain();
         let invested = s.net_invested();
         let gain_sub: AnyElement = if invested > 0 {
@@ -278,7 +283,7 @@ impl VzApp {
                     if gain > 0 { "+" } else { "" },
                     pct
                 ))))
-                .child(div().font_features(tabular()).child(sel({
+                .child(div().font_features(tabular()).min_w_0().truncate().child(sel({
                     let inv = money.format(invested);
                     tr!("on {inv} invested", "sobre {inv} invertido")
                 })))
@@ -287,10 +292,8 @@ impl VzApp {
             t("No capital recorded yet", "Aún no hay capital registrado").into_any_element()
         };
         let fees_sub = if s.fees_collected > 0 {
-            {
-                let fees = money.format(s.fees_collected);
-                tr!("plus {fees} in fees", "más {fees} en cargos")
-            }
+            let fees = money.format(s.fees_collected);
+            tr!("plus {fees} in fees", "más {fees} en cargos")
         } else {
             t("Received, all time", "Cobrado en total").to_string()
         };
@@ -305,89 +308,64 @@ impl VzApp {
         } else {
             t("Interest and fees on hand", "Interés y cargos en mano").to_string()
         };
-        let overdue_sub = if s.overdue_loans > 0 {
-            {
-                let n = s.overdue_loans;
-                if n == 1 {
-                    t("1 loan behind", "1 préstamo atrasado").to_string()
-                } else {
-                    tr!("{n} loans behind", "{n} préstamos atrasados")
-                }
-            }
-        } else {
-            t("Nothing past due", "Nada vencido").to_string()
+        let overdue_sub = match s.overdue_loans {
+            0 => t("Nothing past due", "Nada vencido").to_string(),
+            1 => t("1 loan behind", "1 préstamo atrasado").to_string(),
+            n => tr!("{n} loans behind", "{n} préstamos atrasados"),
         };
 
-        let mut cells = vec![
-            cell(IconName::Wallet, t("Total portfolio value", "Valor total de la cartera"), money.format(pv), p.text, gain_sub, true),
+        let adjust = Button::new("kpi-adjust")
+            .ghost()
+            .size(ButtonSize::Mini)
+            .icon(IconName::Pencil)
+            .tooltip(t("Adjust balances", "Ajustar saldos"))
+            .on_click(cx.listener(|this, _, w, cx| this.open_adjust_form(w, cx)));
+
+        let cell = |stat: Stat, lead: bool| stat.lead(lead);
+        let cells = vec![
             cell(
-                IconName::HandCoins,
-                t("Capital lent out", "Capital prestado"),
-                money.format(s.outstanding_principal),
-                p.text,
-                sel({
-                    let n = count(s.active_loans, "active loan", "active loans", "préstamo activo", "préstamos activos");
-                    tr!("across {n}", "en {n}")
-                })
-                .into_any_element(),
+                Stat::new(t("Total portfolio value", "Valor total de la cartera"), money.format(pv))
+                    .icon(IconName::Wallet)
+                    .accessory(adjust)
+                    .caption(gain_sub),
+                true,
+            ),
+            cell(
+                Stat::new(t("Capital lent out", "Capital prestado"), money.format(s.outstanding_principal))
+                    .icon(IconName::HandCoins)
+                    .caption(sel({
+                        let n = count(s.active_loans, "active loan", "active loans", "préstamo activo", "préstamos activos");
+                        tr!("across {n}", "en {n}")
+                    })),
                 false,
             ),
             cell(
-                IconName::TrendingUp,
-                t("Interest earned", "Interés cobrado"),
-                money.format(s.interest_collected),
-                p.text,
-                sel(fees_sub).into_any_element(),
+                Stat::new(t("Interest earned", "Interés cobrado"), money.format(s.interest_collected))
+                    .icon(IconName::TrendingUp)
+                    .caption(sel(fees_sub)),
                 false,
             ),
             cell(
-                IconName::Landmark,
-                t("Available capital", "Capital disponible"),
-                money.format(s.available_capital),
-                p.text,
-                sel(cash_sub).into_any_element(),
+                Stat::new(t("Available capital", "Capital disponible"), money.format(s.available_capital))
+                    .icon(IconName::Landmark)
+                    .caption(sel(cash_sub)),
                 false,
             ),
             cell(
-                IconName::Coins,
-                t("Available interest", "Interés disponible"),
-                money.format(s.available_interest),
-                p.text,
-                sel(interest_sub).into_any_element(),
+                Stat::new(t("Available interest", "Interés disponible"), money.format(s.available_interest))
+                    .icon(IconName::Coins)
+                    .caption(sel(interest_sub)),
                 false,
             ),
             cell(
-                IconName::CircleAlert,
-                t("Overdue amount", "Monto atrasado"),
-                money.format(s.overdue_amount),
-                if s.overdue_amount > 0 { p.negative } else { p.text },
-                sel(overdue_sub).into_any_element(),
+                Stat::new(t("Overdue amount", "Monto atrasado"), money.format(s.overdue_amount))
+                    .icon(IconName::CircleAlert)
+                    .when(s.overdue_amount > 0, |st| st.tone(p.negative))
+                    .caption(sel(overdue_sub)),
                 false,
             ),
         ];
-        // One row of six on wide windows; two rows of three when narrow.
-        let per_row = if compact { 3 } else { 6 };
-        let mut rows = Vec::new();
-        while !cells.is_empty() {
-            let rest = cells.split_off(per_row.min(cells.len()));
-            let mut row = h_flex().items_stretch();
-            for (i, c) in cells.into_iter().enumerate() {
-                if i > 0 {
-                    row = row.child(vrule(p));
-                }
-                row = row.child(c);
-            }
-            rows.push(row);
-            cells = rest;
-        }
-        let mut strip = card(p);
-        for (i, r) in rows.into_iter().enumerate() {
-            if i > 0 {
-                strip = strip.child(div().h(px(1.)).mx(px(space::XL)).bg(p.border));
-            }
-            strip = strip.child(r);
-        }
-        strip
+        StatStrip::new(per_row).dense(w == Width::Compact).stats(cells)
     }
 
     pub(crate) fn chart_points(&self, range: ChartRange) -> Vec<HistoryPoint> {
@@ -453,12 +431,35 @@ impl VzApp {
         chart.render(SharedString::from(id.to_string()), p, hover, handler)
     }
 
-    fn growth_card(&self, p: &Palette, cx: &mut Context<Self>) -> AnyElement {
+    /// The chart range picker: a segmented control, or a dropdown when the
+    /// card is too narrow for five segments beside its title.
+    fn range_control(&self, w: Width, cx: &mut Context<Self>) -> AnyElement {
+        let range = self.settings().chart_range;
+        let app = cx.entity().downgrade();
+        let pick = |r: ChartRange| {
+            let app = app.clone();
+            move |_: &ClickEvent, w: &mut Window, cx: &mut App| {
+                let _ = app.update(cx, |this, cx| this.update_settings(|s| s.chart_range = r, w, cx));
+            }
+        };
+        if w == Width::Compact {
+            return Dropdown::new("range")
+                .small()
+                .label(range.label())
+                .align_end()
+                .items(ChartRange::ALL.iter().map(|r| DropdownItem::new(r.label(), pick(*r)).selected(*r == range)))
+                .into_any_element();
+        }
+        ChartRange::ALL
+            .iter()
+            .fold(Segmented::new("range").cell_width(42.), |seg, r| seg.option(r.label(), *r == range, pick(*r)))
+            .into_any_element()
+    }
+
+    fn growth_card(&self, p: &Palette, w: Width, cx: &mut Context<Self>) -> AnyElement {
         let money = self.settings().money();
         let range = self.settings().chart_range;
         let points = self.chart_points(range);
-        let options: Vec<(ChartRange, &str)> = ChartRange::ALL.iter().map(|r| (*r, r.label())).collect();
-        let control = segmented(p, "range", &options, range, cx, |app, r, w, cx| app.update_settings(|s| s.chart_range = r, w, cx));
 
         let (gain_change, interest_change) = match (points.first(), points.last()) {
             (Some(a), Some(b)) => {
@@ -480,9 +481,14 @@ impl VzApp {
         };
         let legend = h_flex()
             .gap(px(space::L))
-            .text_size(px(size::META))
+            .typeset(text::CAPTION)
             .text_color(p.muted)
-            .child(h_flex().gap(px(6.)).child(div().w(px(12.)).h(px(2.)).bg(p.accent)).child(t("Portfolio value", "Valor de la cartera")))
+            .child(
+                h_flex()
+                    .gap(px(6.))
+                    .child(div().w(px(12.)).h(px(2.)).rounded_full().bg(p.accent))
+                    .child(t("Portfolio value", "Valor de la cartera")),
+            )
             .when(self.settings().show_interest_line, |d| {
                 d.child(
                     h_flex()
@@ -496,6 +502,12 @@ impl VzApp {
                         .child(t("Capital invested", "Capital invertido")),
                 )
             });
+        let chart_height = match w {
+            Width::Compact => 200.,
+            Width::Medium => 232.,
+            Width::Wide => 296.,
+            Width::Ultra => 320.,
+        };
 
         let body = if points.is_empty() {
             empty_state(
@@ -521,6 +533,7 @@ impl VzApp {
                         .gap(px(6.))
                         .child(
                             h_flex()
+                                .flex_wrap()
                                 .gap(px(4.))
                                 .text_color(p.muted)
                                 .child(t("Gain", "Ganancia"))
@@ -533,18 +546,20 @@ impl VzApp {
                         )
                         .child(legend),
                 )
-                .child(self.growth_chart(p, &points, ChartSlot::Overview, 248., cx))
+                .child(self.growth_chart(p, &points, ChartSlot::Overview, chart_height, cx))
                 .into_any_element()
         };
-        card(p)
-            .flex_1()
+        Card::new()
+            .flex_grow(2.)
+            .flex_basis(px(0.))
             .min_w_0()
-            .child(card_header(p, t("Portfolio growth", "Crecimiento de la cartera"), Some(control.into_any_element())))
+            .title(t("Portfolio growth", "Crecimiento de la cartera"))
+            .action(self.range_control(w, cx))
             .child(body)
             .into_any_element()
     }
 
-    fn allocation_card(&self, p: &Palette, s: &Summary, full_width: bool, cx: &mut Context<Self>) -> AnyElement {
+    fn allocation_card(&self, p: &Palette, s: &Summary, beside: bool, cx: &mut Context<Self>) -> AnyElement {
         let money = self.settings().money();
         let total = s.portfolio_value.max(0);
         let mut cash_c = p.accent;
@@ -563,26 +578,38 @@ impl VzApp {
                 .filter(|(_, v, _)| *v > 0 && total > 0)
                 .map(|(_, v, c)| div().h_full().flex_basis(px(0.)).flex_grow(*v as f32 / total as f32).bg(*c)),
         );
+        // Label left; share and amount right-aligned in their own columns
+        // so figures line up down the list.
         let rows = parts.iter().map(|(label, v, c)| {
             h_flex()
                 .min_h(px(36.))
                 .gap(px(10.))
-                .child(div().size(px(8.)).rounded(px(2.)).bg(*c))
+                .child(div().flex_none().size(px(8.)).rounded(px(2.)).bg(*c))
                 .child(div().flex_1().min_w_0().truncate().text_color(p.muted).child(sel(label.to_string())))
                 .child(
                     div()
-                        .w(px(52.))
+                        .flex_none()
+                        .min_w(px(52.))
                         .text_right()
-                        .text_size(px(size::META))
+                        .typeset(text::CAPTION)
                         .text_color(p.faint)
                         .font_features(tabular())
                         .child(sel(percent_label(*v, total).filter(|_| total > 0).unwrap_or_else(|| "—".into()))),
                 )
-                .child(div().w(px(110.)).text_right().font_features(tabular()).text_color(p.text).child(sel(money.format(*v))))
+                .child(
+                    div()
+                        .flex_none()
+                        .min_w(px(116.))
+                        .text_right()
+                        .whitespace_nowrap()
+                        .font_features(tabular())
+                        .text_color(p.text)
+                        .child(sel(money.format(*v))),
+                )
         });
-        card(p)
-            .when(!full_width, |d| d.w(px(390.)).flex_none())
-            .child(card_header(p, t("Where your money is", "Dónde está tu dinero"), None))
+        Card::new()
+            .when(beside, |d| d.flex_grow(1.).flex_basis(px(0.)).min_w(px(360.)).max_w(px(520.)))
+            .title(t("Where your money is", "Dónde está tu dinero"))
             .child(
                 v_flex()
                     .px(px(space::XL))
@@ -591,7 +618,7 @@ impl VzApp {
                     .child(bar)
                     .child(v_flex().children(rows))
                     .child(div().h(px(1.)).bg(p.border))
-                    .child(crate::ui::components::kv(p, t("Expected interest per month", "Interés esperado por mes"), sel(money.format(s.expected_monthly_interest))))
+                    .child(kv(p, t("Expected interest per month", "Interés esperado por mes"), sel(money.format(s.expected_monthly_interest))))
                     .when(s.defaulted_principal > 0, |d| {
                         d.child(
                             h_flex()
@@ -619,16 +646,10 @@ impl VzApp {
                                     .on_click(cx.listener(|this, _, w, cx| this.open_adjust_form(w, cx))),
                             ),
                     )
-                    .child(
-                        div()
-                            .text_size(px(size::META))
-                            .line_height(px(17.))
-                            .text_color(p.faint)
-                            .child(t(
-                                "Portfolio value = available capital + available interest + capital lent out + interest already due but not yet collected. Defaulted balances are left out.",
-                                "Valor de la cartera = capital disponible + interés disponible + capital prestado + interés ya vencido sin cobrar. Los saldos incobrables no se cuentan.",
-                            )),
-                    ),
+                    .child(div().typeset(text::CAPTION).line_height(px(17.)).text_color(p.faint).child(t(
+                        "Portfolio value = available capital + available interest + capital lent out + interest already due but not yet collected. Defaulted balances are left out.",
+                        "Valor de la cartera = capital disponible + interés disponible + capital prestado + interés ya vencido sin cobrar. Los saldos incobrables no se cuentan.",
+                    ))),
             )
             .into_any_element()
     }
@@ -643,35 +664,31 @@ impl VzApp {
             let name = self.snap.client_name(client_id).to_string();
             let loan_id = pay.loan_id;
             let split = if pay.fee > 0 {
-                {
-                    let (i, c, f) = (money.format(pay.interest), money.format(pay.principal), money.format(pay.fee));
-                    tr!("Interest {i} · Capital {c} · Fee {f}", "Interés {i} · Capital {c} · Cargo {f}")
-                }
+                let (i, c, f) = (money.format(pay.interest), money.format(pay.principal), money.format(pay.fee));
+                tr!("Interest {i} · Capital {c} · Fee {f}", "Interés {i} · Capital {c} · Cargo {f}")
             } else {
-                {
-                    let (i, c) = (money.format(pay.interest), money.format(pay.principal));
-                    tr!("Interest {i} · Capital {c}", "Interés {i} · Capital {c}")
-                }
+                let (i, c) = (money.format(pay.interest), money.format(pay.principal));
+                tr!("Interest {i} · Capital {c}", "Interés {i} · Capital {c}")
             };
-            h_flex()
-                .id(("recent", pay.id as u64))
-                .h(px(60.))
-                .px(px(space::XL))
-                .gap(px(space::M))
-                .cursor_pointer()
-                .hover(|s| s.bg(p.hover))
-                .child(avatar(p, &name, client_id, 32.))
-                .child(v_flex().flex_1().min_w_0().child(div().text_color(p.text).truncate().child(sel(name))).child(
-                    div().text_size(px(size::META)).text_color(p.muted).child(sel({
-                        let (when, id) = (ds.format_short(pay.paid_on, self.today), pay.loan_id);
-                        tr!("{when} · Loan #{id}", "{when} · Préstamo #{id}")
-                    })),
-                ))
-                .child(
+            ListRow::new(("recent", pay.id as u64))
+                .leading(avatar(p, &name, client_id, 32.))
+                .title(name)
+                .subtitle({
+                    let (when, id) = (ds.format_short(pay.paid_on, self.today), pay.loan_id);
+                    tr!("{when} · Loan #{id}", "{when} · Préstamo #{id}")
+                })
+                .trailing(
                     v_flex()
+                        .flex_none()
                         .items_end()
-                        .child(div().font_features(tabular()).text_color(p.positive).child(sel(format!("+{}", money.format(pay.amount)))))
-                        .child(div().text_size(px(size::META)).font_features(tabular()).text_color(p.muted).child(sel(split))),
+                        .child(
+                            div()
+                                .typeset(text::BODY_STRONG)
+                                .font_features(tabular())
+                                .text_color(p.positive)
+                                .child(sel(format!("+{}", money.format(pay.amount)))),
+                        )
+                        .child(div().typeset(text::CAPTION).font_features(tabular()).text_color(p.muted).child(sel(split))),
                 )
                 .on_click(cx.listener(move |this, _, w, cx| this.open_row(Route::Loan(loan_id), w, cx)))
         });
@@ -690,15 +707,12 @@ impl VzApp {
         } else {
             v_flex().pb(px(space::S)).children(rows).into_any_element()
         };
-        card(p)
+        Card::new()
             .flex_1()
             .flex_basis(px(0.))
             .min_w_0()
-            .child(card_header(
-                p,
-                t("Recent payments", "Pagos recientes"),
-                Some(header_link(p, "recent-all", t("View all", "Ver todos"), Route::Payments, cx)),
-            ))
+            .title(t("Recent payments", "Pagos recientes"))
+            .action(header_link(p, "recent-all", t("View all", "Ver todos"), Route::Payments, cx))
             .child(body)
             .into_any_element()
     }
@@ -722,10 +736,8 @@ impl VzApp {
             let name = self.snap.client_name(l.client_id).to_string();
             let loan_id = l.id;
             let pos = l.position(self.today);
-            let due_text = {
-                let id = l.id;
-                tr!("Loan #{id}", "Préstamo #{id}")
-            };
+            let id = l.id;
+            let due_text = tr!("Loan #{id}", "Préstamo #{id}");
             let amount_line = match (st, if *st == DisplayStatus::Overdue { q.overdue_since } else { q.next_due }) {
                 (DisplayStatus::Overdue, Some(d)) => {
                     let (a, when) = (money.format(q.overdue_amount), ds.format_short(d, self.today));
@@ -744,33 +756,25 @@ impl VzApp {
                     tr!("{a} due", "{a} por pagar")
                 }
             };
-            h_flex()
-                .id(("attn", loan_id as u64))
-                .h(px(60.))
-                .px(px(space::XL))
-                .gap(px(space::M))
-                .cursor_pointer()
-                .hover(|s| s.bg(p.hover))
-                .child(avatar(p, &name, l.client_id, 32.))
-                .child(
-                    v_flex().flex_1().min_w_0().child(div().text_color(p.text).truncate().child(sel(name))).child(
-                        div()
-                            .text_size(px(size::META))
-                            .text_color(p.muted)
-                            .font_features(tabular())
-                            .truncate()
-                            .child(sel(format!("{due_text} · {amount_line}"))),
-                    ),
-                )
-                .child(
+            ListRow::new(("attn", loan_id as u64))
+                .leading(avatar(p, &name, l.client_id, 32.))
+                .title(name)
+                .subtitle(format!("{due_text} · {amount_line}"))
+                .trailing(
                     v_flex()
                         .items_end()
                         .gap(px(3.))
                         .flex_none()
-                        .child(div().font_features(tabular()).text_color(p.text).child(sel(money.format(pos.payoff()))))
+                        .child(
+                            div()
+                                .typeset(text::BODY_STRONG)
+                                .font_features(tabular())
+                                .text_color(p.text)
+                                .child(sel(money.format(pos.payoff()))),
+                        )
                         .child(status_detail_pill(p, *st, q, self.today).h(px(20.))),
                 )
-                .child(Button::new(("attn-pay", loan_id as u64)).ghost().small().label(t("Record", "Cobrar")).on_click(cx.listener(
+                .trailing(Button::new(("attn-pay", loan_id as u64)).ghost().small().label(t("Record", "Cobrar")).on_click(cx.listener(
                     move |this, _, w, cx| {
                         cx.stop_propagation();
                         this.open_payment_form(Some(loan_id), w, cx)
@@ -802,11 +806,12 @@ impl VzApp {
         } else {
             t("Needs attention", "Requieren atención").to_string()
         };
-        card(p)
+        Card::new()
             .flex_1()
             .flex_basis(px(0.))
             .min_w_0()
-            .child(card_header(p, title, Some(header_link(p, "attn-all", t("View loans", "Ver préstamos"), Route::Loans, cx))))
+            .title(title)
+            .action(header_link(p, "attn-all", t("View loans", "Ver préstamos"), Route::Loans, cx))
             .child(body)
             .child(div().flex_1())
             .child(
@@ -816,7 +821,7 @@ impl VzApp {
                     .gap(px(6.))
                     .border_t_1()
                     .border_color(p.rule)
-                    .text_size(px(size::META))
+                    .typeset(text::CAPTION)
                     .text_color(p.faint)
                     .child(t("Record a payment from anywhere with", "Registra un pago desde cualquier lugar con"))
                     .child(kbd(p, "Ctrl P")),

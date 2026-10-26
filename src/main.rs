@@ -9,6 +9,7 @@ use gpui_kit::*;
 
 use vz_finance::app::{self, VzApp};
 use vz_finance::services::Store;
+use vz_finance::ui::theme::Typeset as _;
 use vz_finance::{database, ui};
 
 gpui_kit::assets::icon_assets!(
@@ -162,13 +163,13 @@ impl Render for StartupError {
             .bg(p.ground)
             .font_family(ui::theme::FONT)
             .child(
-                ui::components::card(&p)
+                ui::kit::Card::new()
                     .w(px(560.))
                     .p(px(32.))
                     .gap(px(12.))
-                    .child(div().text_size(px(18.)).font_weight(FontWeight::SEMIBOLD).text_color(p.text).child("Acervus Finance could not open your data / No se pudieron abrir tus datos"))
+                    .child(div().typeset(ui::theme::text::HEADING).text_size(px(18.)).text_color(p.text).child("Acervus Finance could not open your data / No se pudieron abrir tus datos"))
                     .child(div().text_color(p.muted).child(ui::components::sel(self.message.clone())))
-                    .child(div().text_size(px(12.)).text_color(p.faint).child(ui::components::sel(format!("Database: {}", self.path))))
+                    .child(div().typeset(ui::theme::text::CAPTION).text_color(p.faint).child(ui::components::sel(format!("Database: {}", self.path))))
                     .child(div().text_color(p.muted).child(
                         "Nothing was changed. If you have a backup, you can copy it over this file after closing the app. / No se cambió nada. Si tienes una copia, puedes reemplazar este archivo con ella después de cerrar la app.",
                     )),
@@ -186,7 +187,7 @@ fn window_options(cx: &mut App) -> WindowOptions {
     WindowOptions {
         window_bounds: Some(WindowBounds::Windowed(Bounds::centered(None, size_wanted, cx))),
         titlebar: Some(TitlebarOptions { title: Some(vz_finance::APP_NAME.into()), ..Default::default() }),
-        window_min_size: Some(size(px(1080.), px(680.))),
+        window_min_size: Some(size(px(720.), px(560.))),
         app_id: Some("VZFinance".into()),
         ..Default::default()
     }

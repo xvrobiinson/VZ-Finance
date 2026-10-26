@@ -37,6 +37,12 @@ pub struct Palette {
     pub chart_reference: Hsla,
     pub chart_secondary: Hsla,
     pub shadow: Hsla,
+    /// Opaque ink every elevation layer is cut from; `shadow_gain` scales
+    /// its alpha so dark surfaces, which swallow shadows, still lift.
+    pub shadow_ink: Hsla,
+    pub shadow_gain: f32,
+    /// Hairline of light along the top edge of raised surfaces.
+    pub highlight: Hsla,
     pub overlay: Hsla,
     pub dark: bool,
 }
@@ -81,6 +87,9 @@ impl Palette {
             chart_reference: hex(0x9AA0AA),
             chart_secondary: hex(0x16856A),
             shadow: hexa(0x141E32, 0.045),
+            shadow_ink: hex(0x0F1A2E),
+            shadow_gain: 1.0,
+            highlight: hexa(0xFFFFFF, 0.0),
             overlay: hexa(0x0B1020, 0.32),
             dark: false,
         }
@@ -115,6 +124,9 @@ impl Palette {
             chart_reference: hex(0x6B717B),
             chart_secondary: hex(0x3CC195),
             shadow: hexa(0x000000, 0.25),
+            shadow_ink: hex(0x000000),
+            shadow_gain: 4.0,
+            highlight: hexa(0xFFFFFF, 0.045),
             overlay: hexa(0x000000, 0.5),
             dark: true,
         }
@@ -134,15 +146,116 @@ pub fn palette(cx: &App) -> Palette {
     *cx.global::<Palette>()
 }
 
-/// Type scale (px). Five sizes do the work; KPI figures use LEAD/FIGURE.
+/// Font families. Inter sets everything up to 18px; Inter Display, cut
+/// tighter for large sizes, sets titles and figures from 20px up. GPUI has
+/// no letter-spacing, so the display cut is how large type gets tracked in.
+pub mod font {
+    pub const TEXT: &str = "Inter";
+    pub const DISPLAY: &str = "Inter Display";
+}
+
+/// Raw sizes (px), kept for code that has not moved to [`TextRole`] yet.
 pub mod size {
     pub const META: f32 = 12.0;
     pub const BODY: f32 = 13.5;
     pub const SECTION: f32 = 15.0;
     pub const FIGURE: f32 = 22.0;
     pub const LEAD: f32 = 30.0;
-    pub const TITLE: f32 = 22.0;
+    pub const TITLE: f32 = 24.0;
 }
+
+/// One typographic role: family, size, line height and weight together, so
+/// a role can't be half-applied.
+#[derive(Clone, Copy, Debug)]
+pub struct TextRole {
+    pub family: &'static str,
+    pub size: f32,
+    pub line: f32,
+    pub weight: FontWeight,
+}
+
+/// The type scale (ratio about 1.125 in the text range, larger for
+/// display). Pick a role, never a raw size.
+pub mod text {
+    use super::{FontWeight, TextRole, font};
+
+    const fn role(family: &'static str, size: f32, line: f32, weight: FontWeight) -> TextRole {
+        TextRole { family, size, line, weight }
+    }
+
+    /// The one number a screen is about (portfolio value).
+    pub const DISPLAY: TextRole = role(font::DISPLAY, 30.0, 36.0, FontWeight::SEMIBOLD);
+    /// Page titles.
+    pub const TITLE: TextRole = role(font::DISPLAY, 24.0, 30.0, FontWeight::SEMIBOLD);
+    /// Secondary headline figures (KPI values).
+    pub const FIGURE: TextRole = role(font::DISPLAY, 22.0, 28.0, FontWeight::MEDIUM);
+    /// Card and section headings.
+    pub const HEADING: TextRole = role(font::TEXT, 15.0, 20.0, FontWeight::SEMIBOLD);
+    /// Running text, table cells.
+    pub const BODY: TextRole = role(font::TEXT, 13.5, 20.0, FontWeight::NORMAL);
+    /// Names and values that lead a row.
+    pub const BODY_STRONG: TextRole = role(font::TEXT, 13.5, 20.0, FontWeight::MEDIUM);
+    /// Buttons, tabs, menu items.
+    pub const LABEL: TextRole = role(font::TEXT, 13.0, 18.0, FontWeight::MEDIUM);
+    /// Secondary lines, field labels, table headers.
+    pub const CAPTION: TextRole = role(font::TEXT, 12.0, 16.0, FontWeight::NORMAL);
+    /// Keyboard hints and dense badges.
+    pub const MICRO: TextRole = role(font::TEXT, 11.0, 14.0, FontWeight::MEDIUM);
+}
+
+/// Applies a [`TextRole`] to any styled element.
+pub trait Typeset: Styled + Sized {
+    fn typeset(self, role: TextRole) -> Self {
+        self.font_family(role.family).text_size(px(role.size)).line_height(px(role.line)).font_weight(role.weight)
+    }
+}
+
+impl<T: Styled> Typeset for T {}
+
+/// How much room the content column has. Screens branch on this, never on
+/// raw pixel widths.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Width {
+    /// Under 760px: one column, figures two to a row.
+    Compact,
+    /// 760–1180px: cards stack, figures three to a row.
+    Medium,
+    /// 1180–1680px: side by side.
+    Wide,
+    /// 1680px and up: side by side with room to spare.
+    Ultra,
+}
+
+impl Width {
+    pub fn of(content_px: f32) -> Self {
+        match content_px {
+            w if w < 760.0 => Self::Compact,
+            w if w < 1180.0 => Self::Medium,
+            w if w < 1680.0 => Self::Wide,
+            _ => Self::Ultra,
+        }
+    }
+
+    /// Side gutter of the content column, from the window width.
+    pub fn gutter(viewport_px: f32) -> f32 {
+        match viewport_px {
+            w if w < 900.0 => space::L,
+            w if w < 1400.0 => space::XL,
+            _ => space::XXL + 4.0,
+        }
+    }
+
+    /// Gap between cards.
+    pub fn gap(self) -> f32 {
+        match self {
+            Self::Compact => space::L,
+            _ => space::XL,
+        }
+    }
+}
+
+/// Below this window width the sidebar collapses to icons on its own.
+pub const SIDEBAR_AUTO_COLLAPSE: f32 = 1024.0;
 
 /// Spacing on an 8px base (4px half steps for tight places).
 pub mod space {
@@ -159,19 +272,77 @@ pub const RADIUS_CONTROL: f32 = 8.0;
 pub const RADIUS_CHIP: f32 = 6.0;
 pub const SIDEBAR_WIDTH: f32 = 232.0;
 pub const SIDEBAR_COLLAPSED: f32 = 64.0;
-pub const FONT: &str = "Inter";
+pub const FONT: &str = font::TEXT;
 
-/// Card elevation: soft, diffused, barely there.
-pub fn card_shadow(p: &Palette) -> Vec<BoxShadow> {
-    vec![
-        BoxShadow::new(px(0.), px(4.), p.shadow).blur_radius(px(18.)),
-        BoxShadow::new(px(0.), px(1.), {
-            let mut c = p.shadow;
-            c.a *= 0.8;
-            c
+/// Depth. Every level is the same three layers (contact, key, ambient) so
+/// one level can spring into another; only the numbers change.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Elevation {
+    /// Sits on the ground: no shadow.
+    Flat,
+    /// Cards at rest.
+    Raised,
+    /// An interactive card under the pointer.
+    Lifted,
+    /// Menus, popovers and anything that floats over content.
+    Floating,
+}
+
+impl Elevation {
+    /// (y, blur, spread, alpha) for the contact, key and ambient layers.
+    fn layers(self) -> [(f32, f32, f32, f32); 3] {
+        match self {
+            Self::Flat => [(0., 0., 0., 0.), (0., 0., 0., 0.), (0., 0., 0., 0.)],
+            Self::Raised => [(1., 2., 0., 0.05), (2., 6., -1., 0.04), (8., 24., -6., 0.07)],
+            Self::Lifted => [(1., 2., 0., 0.06), (4., 10., -2., 0.06), (16., 36., -10., 0.12)],
+            Self::Floating => [(1., 2., 0., 0.08), (8., 20., -4., 0.12), (24., 56., -12., 0.20)],
+        }
+    }
+}
+
+/// The shadow stack for a level.
+pub fn elevation(p: &Palette, level: Elevation) -> Vec<BoxShadow> {
+    elevation_between(p, level, level, 0.0)
+}
+
+/// The shadow stack part way (`t`, 0..1) from one level to another. Used
+/// by springs, so it accepts slight overshoot.
+pub fn elevation_between(p: &Palette, from: Elevation, to: Elevation, t: f32) -> Vec<BoxShadow> {
+    let lerp = |a: f32, b: f32| a + (b - a) * t;
+    let mut out: Vec<BoxShadow> = from
+        .layers()
+        .iter()
+        .zip(to.layers().iter())
+        .map(|(a, b)| {
+            let mut c = p.shadow_ink;
+            c.a = (lerp(a.3, b.3) * p.shadow_gain).clamp(0.0, 0.6);
+            BoxShadow::new(px(0.), px(lerp(a.0, b.0)), c).blur_radius(px(lerp(a.1, b.1).max(0.))).spread_radius(px(lerp(a.2, b.2)))
         })
-        .blur_radius(px(2.)),
-    ]
+        .collect();
+    if p.highlight.a > 0.0 && to != Elevation::Flat {
+        out.push(BoxShadow::new(px(0.), px(1.), p.highlight).inset());
+    }
+    out
+}
+
+/// Motion. Springs, not durations: they pick up from wherever an
+/// interrupted transition was, so nothing snaps. Values follow
+/// interior.dev's tuning; all are slightly over-damped (no bounce) and
+/// settle in roughly 150–250ms. GPUI renders the end state when the system
+/// asks for reduced motion.
+pub mod motion {
+    use gpui_kit::SpringConfig;
+
+    /// Hover and press feedback on controls.
+    pub const CONTROL: SpringConfig = SpringConfig::new(520.0, 34.0, 0.45);
+    /// Something moving to a new place (segmented thumb, chevrons).
+    pub const GLIDE: SpringConfig = SpringConfig::new(520.0, 40.0, 0.75);
+    /// Floating layers arriving.
+    pub const RISE: SpringConfig = SpringConfig::new(560.0, 34.0, 0.6);
+    /// Slow color and elevation changes on large surfaces.
+    pub const FADE: SpringConfig = SpringConfig::new(260.0, 34.0, 0.8);
+    /// How far a floating layer travels as it arrives (px).
+    pub const RISE_DISTANCE: f32 = 6.0;
 }
 
 pub fn tabular() -> FontFeatures {
@@ -185,6 +356,8 @@ pub fn install(pref: ThemePref, cx: &mut App) {
         std::borrow::Cow::Borrowed(include_bytes!("../../assets/fonts/Inter-Regular.ttf")),
         std::borrow::Cow::Borrowed(include_bytes!("../../assets/fonts/Inter-Medium.ttf")),
         std::borrow::Cow::Borrowed(include_bytes!("../../assets/fonts/Inter-SemiBold.ttf")),
+        std::borrow::Cow::Borrowed(include_bytes!("../../assets/fonts/InterDisplay-Medium.ttf")),
+        std::borrow::Cow::Borrowed(include_bytes!("../../assets/fonts/InterDisplay-SemiBold.ttf")),
     ];
     if let Err(e) = cx.text_system().add_fonts(fonts) {
         log::warn!("could not load bundled fonts: {e}");
@@ -205,6 +378,14 @@ pub fn apply(pref: ThemePref, cx: &mut App) {
         t.radius = px(RADIUS_CONTROL);
         t.radius_lg = px(RADIUS_CARD);
         t.shadow = false;
+        // Library transitions (dialogs, menus) use the same curves as ours:
+        // a long exponential settle in, a quick accelerate out.
+        if let (Ok(enter), Ok(exit)) =
+            (gpui_kit::base::Easing::cubic_bezier(0.23, 1.0, 0.32, 1.0), gpui_kit::base::Easing::cubic_bezier(0.4, 0.0, 1.0, 1.0))
+        {
+            t.motion.easing_enter = enter;
+            t.motion.easing_exit = exit;
+        }
         let c = &mut t.colors;
         c.background = p.surface;
         c.foreground = p.text;

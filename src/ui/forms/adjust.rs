@@ -4,18 +4,18 @@
 use std::rc::Rc;
 
 use gpui_kit::component::input::{Input, InputEvent, InputState};
-use gpui_kit::component::{WindowExt as _, h_flex, v_flex};
+use gpui_kit::component::{WindowExt as _, v_flex};
 use gpui_kit::*;
 
 use super::date_field::{DateChanged, DateField};
-use super::{date_field, error_banner, field, footer, invalid_date, picked_date, value};
+use super::{DATE_WIDTH, date_field, error_banner, field, field_row, footer, grow_field, invalid_date, picked_date, value};
 use crate::app::VzApp;
 use crate::domain::money::{Cents, MoneyFormat, parse_money};
 use crate::domain::portfolio::Account;
 use crate::i18n::t;
 use crate::services::Snapshot;
 use crate::tr;
-use crate::ui::theme::{palette, space};
+use crate::ui::theme::{Typeset as _, palette, space, text};
 
 pub struct AdjustForm {
     app: WeakEntity<VzApp>,
@@ -123,18 +123,16 @@ impl Render for AdjustForm {
         v_flex()
             .gap(px(space::L))
             .children(error_banner(&p, &self.error))
-            .child(div().text_color(p.muted).child(t(
+            .child(div().typeset(text::BODY).text_color(p.muted).child(t(
                 "Type what you really have in each account. An adjustment is recorded for each difference, so the history still adds up. Loans and payments are not changed; edit those directly.",
                 "Escribe lo que realmente tienes en cada cuenta. Se registra un ajuste por cada diferencia, para que el historial cuadre. Los préstamos y pagos no cambian; edítalos directamente.",
             )))
             .child(
-                h_flex()
-                    .items_start()
-                    .gap(px(space::M))
-                    .child(div().flex_1().child(field(&p, Account::Capital.label(), money_input(&self.capital), cap_hint, cap_err)))
-                    .child(div().flex_1().child(field(&p, Account::Interest.label(), money_input(&self.interest), int_hint, int_err))),
+                field_row()
+                    .child(grow_field(field(&p, Account::Capital.label(), money_input(&self.capital), cap_hint, cap_err)))
+                    .child(grow_field(field(&p, Account::Interest.label(), money_input(&self.interest), int_hint, int_err))),
             )
-            .child(div().w(px(200.)).child(field(&p, t("As of", "Al día"), self.date.clone(), None, date_err)))
+            .child(div().w(px(DATE_WIDTH)).child(field(&p, t("As of", "Al día"), self.date.clone(), None, date_err)))
             .child(field(&p, t("Reason", "Motivo"), Input::new(&self.reason), None, reason_err))
             .child(footer(
                 &p,

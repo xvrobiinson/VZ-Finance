@@ -1,17 +1,16 @@
 //! Small confirmation forms that take a reason (and sometimes a date):
 //! deleting a record and marking a loan as defaulted.
 
-use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
-use gpui_kit::component::{Disableable as _, WindowExt as _, h_flex, v_flex};
+use gpui_kit::component::{WindowExt as _, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use super::date_field::{DateChanged, DateField};
-use super::{date_field, error_banner, field, picked_date, value};
+use super::{danger_footer, date_field, error_banner, field, picked_date, value};
 use crate::app::{Route, VzApp};
 use crate::i18n::t;
-use crate::ui::theme::{palette, space};
+use crate::ui::theme::{Typeset as _, palette, space, text};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum ReasonKind {
@@ -175,22 +174,9 @@ impl Render for ReasonForm {
         v_flex()
             .gap(px(space::L))
             .children(error_banner(&p, &self.error))
-            .child(div().text_color(p.muted).child(self.kind.explanation()))
+            .child(div().typeset(text::BODY).text_color(p.muted).child(self.kind.explanation()))
             .when(defaulting, |d| d.child(field(&p, t("Date", "Fecha"), self.date.clone(), None, None)))
             .child(field(&p, t("Reason", "Motivo"), Input::new(&self.reason), None, None))
-            .child(
-                h_flex()
-                    .justify_end()
-                    .gap(px(space::S))
-                    .pt(px(space::S))
-                    .child(Button::new("cancel").label(t("Cancel", "Cancelar")).on_click(|_, window, cx| window.close_dialog(cx)))
-                    .child(
-                        Button::new("confirm")
-                            .danger()
-                            .label(self.kind.confirm_label())
-                            .disabled(!can)
-                            .on_click(cx.listener(|this, _, w, cx| this.submit(w, cx))),
-                    ),
-            )
+            .child(danger_footer("confirm", self.kind.confirm_label(), can, cx.listener(|this, _, w, cx| this.submit(w, cx))))
     }
 }

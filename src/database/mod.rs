@@ -14,12 +14,13 @@ const MIGRATIONS: &[(i64, &str)] = &[
     (2, include_str!("migrations/0002_period_rate_loans.sql")),
     (3, include_str!("migrations/0003_editable_records.sql")),
     (4, include_str!("migrations/0004_installment_loans.sql")),
+    (5, include_str!("migrations/0005_client_identity.sql")),
 ];
 
 /// Migrations that rebuild tables and must run with foreign keys disabled.
 const REBUILDS: &[i64] = &[2, 4];
 
-pub const SCHEMA_VERSION: i64 = 4;
+pub const SCHEMA_VERSION: i64 = 5;
 
 /// The tables every VZ Finance database has had since version 1 (backups
 /// from older versions are upgraded after they are restored).
@@ -295,6 +296,36 @@ mod tests {
         assert_eq!(changes, 1);
         let broken: i64 = conn.query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |r| r.get(0)).unwrap();
         assert_eq!(broken, 0);
+    }
+
+    #[test]
+    fn upgrades_a_version_4_database_and_keeps_every_client_and_payment() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        conn.pragma_update(None, "foreign_keys", "ON").unwrap();
+        conn.execute_batch("CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY NOT NULL, applied_at TEXT NOT NULL) STRICT;")
+            .unwrap();
+        for (v, sql) in &MIGRATIONS[..4] {
+            conn.execute_batch(sql).unwrap();
+            conn.execute("INSERT INTO schema_migrations VALUES (?1, 'x')", [v]).unwrap();
+        }
+        conn.execute_batch(
+            "INSERT INTO clients (full_name, phone, created_at) VALUES ('Ana Ruiz', '809', 'x');
+             INSERT INTO loans (client_id, principal, period_rate, interest_period, frequency, method, start_date, created_at)
+               VALUES (1, 100000, 100000, 'monthly', 'monthly', 'interest_only', '2026-01-01', 'x');
+             INSERT INTO payments (loan_id, paid_on, amount, created_at) VALUES (1, '2026-02-01', 10000, 'x');
+             INSERT INTO payment_allocations (payment_id, principal, interest, fee) VALUES (1, 0, 10000, 0);",
+        )
+        .unwrap();
+        migrate(&mut conn).unwrap();
+        assert_eq!(schema_version(&conn).unwrap(), SCHEMA_VERSION);
+        let c = repositories::clients::get(&conn, 1).unwrap().unwrap();
+        assert_eq!(
+            (c.full_name.as_str(), c.phone.as_deref(), c.id_number, c.address, c.has_photo),
+            ("Ana Ruiz", Some("809"), None, None, false)
+        );
+        let paid: i64 = conn.query_row("SELECT SUM(amount) FROM payments WHERE loan_id = 1", [], |r| r.get(0)).unwrap();
+        assert_eq!(paid, 10000);
+        assert!(conn.execute("UPDATE clients SET id_number = ?1 WHERE id = 1", [&"9".repeat(41)]).is_err(), "ID numbers are limited");
     }
 
     #[test]

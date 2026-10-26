@@ -4,7 +4,7 @@ use gpui_kit::*;
 
 use super::nice_ticks;
 use crate::domain::money::{Cents, MoneyFormat};
-use crate::ui::theme::{Palette, tabular};
+use crate::ui::theme::{Palette, Typeset as _, tabular, text};
 
 /// Columns with square tops on a zero baseline. Empty periods draw no bar.
 pub fn column_chart(
@@ -28,7 +28,9 @@ pub fn column_chart(
             .top(px(y))
             .w(px(lane - 10.0))
             .text_right()
+            .typeset(text::CAPTION)
             .text_size(px(11.5))
+            .whitespace_nowrap()
             .text_color(p.faint)
             .font_features(tabular())
             .child(money.format_compact(*t))
@@ -58,7 +60,7 @@ pub fn column_chart(
             .justify_end()
             .gap(px(6.))
             .child(div().w(relative(0.56)).max_w(px(36.)).h(px(h.max(0.0))).when(*v > 0, |d| d.min_h(px(2.))).bg(color).rounded_t(px(3.)))
-            .child(div().h(px(20.)).text_size(px(11.5)).text_color(p.faint).child(label))
+            .child(div().h(px(20.)).typeset(text::CAPTION).text_color(p.faint).child(label))
             .tooltip(move |window, cx| gpui_kit::component::tooltip::Tooltip::new(value_text.clone()).build(window, cx))
     });
     div()

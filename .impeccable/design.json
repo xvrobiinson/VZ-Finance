@@ -1,0 +1,128 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-10-26T12:00:00Z",
+  "title": "Design System: Acervus Finance",
+  "extensions": {
+    "colorMeta": {
+      "ledger-blue": { "role": "primary", "displayName": "Ledger Blue", "canonical": "#365CF5", "tonalRamp": ["#0E1A4D", "#16297A", "#2038A8", "#2C4FE0", "#365CF5", "#6E8BFB", "#A9BBFD", "#EEF2FF"] },
+      "ground": { "role": "neutral", "displayName": "Cool Ground", "canonical": "#F7F8FA", "tonalRamp": ["#17191C", "#3A3D44", "#666C77", "#9AA0AA", "#DCDFE5", "#E9EBEF", "#F3F4F7", "#F7F8FA"] },
+      "surface": { "role": "neutral", "displayName": "Sheet White", "canonical": "#FFFFFF" },
+      "ink": { "role": "neutral", "displayName": "Ink", "canonical": "#17191C" },
+      "muted": { "role": "neutral", "displayName": "Muted Slate", "canonical": "#666C77" },
+      "positive": { "role": "status", "displayName": "Paid Green", "canonical": "#137A60" },
+      "warning": { "role": "status", "displayName": "Due Amber", "canonical": "#9A5F0E" },
+      "negative": { "role": "status", "displayName": "Overdue Red", "canonical": "#C2353D" }
+    },
+    "typographyMeta": {
+      "display": { "displayName": "Display", "purpose": "The one figure a screen is about. Inter Display." },
+      "title": { "displayName": "Title", "purpose": "Page titles. Inter Display." },
+      "figure": { "displayName": "Figure", "purpose": "KPI values, tabular. Inter Display." },
+      "heading": { "displayName": "Heading", "purpose": "Card and section headings." },
+      "body": { "displayName": "Body", "purpose": "Running text and table cells." },
+      "label": { "displayName": "Label", "purpose": "Buttons, segments, menu items." },
+      "caption": { "displayName": "Caption", "purpose": "Secondary lines and table headers." }
+    },
+    "shadows": [
+      { "name": "raised", "value": "0 1px 2px rgba(15,26,46,0.05), 0 2px 6px -1px rgba(15,26,46,0.04), 0 8px 24px -6px rgba(15,26,46,0.07)", "purpose": "Cards at rest." },
+      { "name": "lifted", "value": "0 1px 2px rgba(15,26,46,0.06), 0 4px 10px -2px rgba(15,26,46,0.06), 0 16px 36px -10px rgba(15,26,46,0.12)", "purpose": "Interactive surface under the pointer." },
+      { "name": "floating", "value": "0 1px 2px rgba(15,26,46,0.08), 0 8px 20px -4px rgba(15,26,46,0.12), 0 24px 56px -12px rgba(15,26,46,0.20)", "purpose": "Menus, popovers, overlays." },
+      { "name": "primary-glow", "value": "0 1px 2px rgba(15,26,46,0.10), 0 6px 14px -6px rgba(54,92,245,0.45), inset 0 1px 0 rgba(255,255,255,0.16)", "purpose": "Under the primary button only." }
+    ],
+    "motion": [
+      { "name": "control", "value": "spring(stiffness 520, damping 34, mass 0.45)", "purpose": "Hover and press feedback on controls." },
+      { "name": "glide", "value": "spring(stiffness 520, damping 40, mass 0.75)", "purpose": "Segmented thumb, chevrons: things moving to a new place." },
+      { "name": "rise", "value": "spring(stiffness 560, damping 34, mass 0.6), 6px travel", "purpose": "Floating layers arriving." },
+      { "name": "fade", "value": "spring(stiffness 260, damping 34, mass 0.8)", "purpose": "Slow color or elevation changes on large surfaces." },
+      { "name": "ease-enter", "value": "cubic-bezier(0.23, 1, 0.32, 1)", "purpose": "Library dialog and menu entrances." },
+      { "name": "ease-exit", "value": "cubic-bezier(0.4, 0, 1, 1)", "purpose": "Library exits." }
+    ],
+    "breakpoints": [
+      { "name": "compact", "value": "content < 760px" },
+      { "name": "medium", "value": "content 760-1240px" },
+      { "name": "wide", "value": "content 1240-1680px" },
+      { "name": "ultra", "value": "content >= 1680px" }
+    ]
+  },
+  "components": [
+    {
+      "name": "Primary Button",
+      "kind": "button",
+      "refersTo": "button-primary",
+      "description": "The one main action of a view.",
+      "html": "<button class=\"ds-btn-primary\"><svg width=\"15\" height=\"15\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\"><path d=\"M12 5v14M5 12h14\"/></svg>Record payment</button>",
+      "css": ".ds-btn-primary{display:inline-flex;align-items:center;gap:6px;height:32px;padding:0 12px;border-radius:8px;border:1px solid #365CF5;background:#365CF5;color:#fff;font:500 13px/18px Inter,sans-serif;box-shadow:0 1px 2px rgba(15,26,46,.10),0 6px 14px -6px rgba(54,92,245,.45),inset 0 1px 0 rgba(255,255,255,.16);transition:background .2s cubic-bezier(.23,1,.32,1);cursor:pointer}.ds-btn-primary:hover{background:#2C4FE0}.ds-btn-primary:active{transform:translateY(1px)}.ds-btn-primary:focus-visible{outline:none;box-shadow:0 0 0 3px rgba(54,92,245,.35)}"
+    },
+    {
+      "name": "Secondary Button",
+      "kind": "button",
+      "refersTo": "button-secondary",
+      "description": "Every other framed action.",
+      "html": "<button class=\"ds-btn-secondary\">New loan</button>",
+      "css": ".ds-btn-secondary{display:inline-flex;align-items:center;gap:6px;height:32px;padding:0 12px;border-radius:8px;border:1px solid #DCDFE5;background:#fff;color:#17191C;font:500 13px/18px Inter,sans-serif;box-shadow:0 1px 2px rgba(15,26,46,.05);transition:background .2s cubic-bezier(.23,1,.32,1);cursor:pointer}.ds-btn-secondary:hover{background:#F3F4F7}.ds-btn-secondary:active{background:#EEF0F4;transform:translateY(1px)}.ds-btn-secondary:focus-visible{outline:none;border-color:#365CF5;box-shadow:0 0 0 3px rgba(54,92,245,.35)}"
+    },
+    {
+      "name": "Card",
+      "kind": "card",
+      "refersTo": "card",
+      "description": "Raised sheet holding one subject, with a header.",
+      "html": "<section class=\"ds-card\"><header><h3>Recent payments</h3><a>View all</a></header><div class=\"ds-card-row\"><span>Marta Quiroga</span><b>+RD$7,500.00</b></div></section>",
+      "css": ".ds-card{background:#fff;border:1px solid #E9EBEF;border-radius:12px;box-shadow:0 1px 2px rgba(15,26,46,.05),0 2px 6px -1px rgba(15,26,46,.04),0 8px 24px -6px rgba(15,26,46,.07);font:400 13.5px/20px Inter,sans-serif;color:#17191C;width:360px}.ds-card header{display:flex;justify-content:space-between;align-items:center;padding:20px 24px 12px}.ds-card h3{margin:0;font:600 15px/20px Inter,sans-serif}.ds-card a{color:#2B4BD6;font-size:12.5px}.ds-card-row{display:flex;justify-content:space-between;padding:0 24px 20px}.ds-card-row b{color:#137A60;font-weight:500;font-variant-numeric:tabular-nums}"
+    },
+    {
+      "name": "Segmented Control",
+      "kind": "chip",
+      "refersTo": "segmented-track",
+      "description": "Mutually exclusive options; the white thumb glides between equal cells.",
+      "html": "<div class=\"ds-seg\"><span>1M</span><span>3M</span><span class=\"on\">6M</span><span>1Y</span><span>All</span></div>",
+      "css": ".ds-seg{display:inline-flex;padding:2px;border-radius:8px;background:#F1F2F5;font:500 12.5px/26px Inter,sans-serif}.ds-seg span{width:42px;text-align:center;color:#666C77;border-radius:6px;cursor:pointer;transition:color .15s}.ds-seg span:hover{color:#17191C}.ds-seg .on{background:#fff;color:#17191C;box-shadow:0 1px 2px rgba(15,26,46,.08),0 2px 6px rgba(15,26,46,.05)}"
+    },
+    {
+      "name": "Dropdown Menu",
+      "kind": "custom",
+      "refersTo": "menu",
+      "description": "Floating menu hung from its trigger; rises 6px into place.",
+      "html": "<div class=\"ds-menu\"><div class=\"lit\">New loan<kbd>Ctrl+L</kbd></div><div>New expense<kbd>Ctrl+E</kbd></div><div>Add capital</div></div>",
+      "css": ".ds-menu{display:inline-flex;flex-direction:column;gap:1px;min-width:180px;padding:4px;background:#fff;border:1px solid #E9EBEF;border-radius:10px;box-shadow:0 1px 2px rgba(15,26,46,.08),0 8px 20px -4px rgba(15,26,46,.12),0 24px 56px -12px rgba(15,26,46,.20);font:400 13px/18px Inter,sans-serif;color:#17191C}.ds-menu div{display:flex;justify-content:space-between;gap:12px;align-items:center;height:30px;padding:0 8px;border-radius:6px;cursor:pointer;transition:background .15s}.ds-menu div:hover,.ds-menu .lit{background:#F3F4F7}.ds-menu kbd{font:400 12px Inter,sans-serif;color:#737985}"
+    },
+    {
+      "name": "Status Pill",
+      "kind": "chip",
+      "refersTo": "pill",
+      "description": "The state of money on a loan.",
+      "html": "<span class=\"ds-pill\">28 days overdue</span>",
+      "css": ".ds-pill{display:inline-flex;align-items:center;height:22px;padding:0 8px;border-radius:6px;background:#FDECEC;color:#C2353D;font:500 12px/16px Inter,sans-serif}"
+    }
+  ],
+  "narrative": {
+    "northStar": "The Private Ledger",
+    "overview": "Acervus is a well-kept book of accounts that lives on one PC. Figures lead; the interface stays out of their way. Every screen answers \"where is my money and who owes me\" before it offers anything to do, and every number on it can be traced back to a recorded transaction. The tone is calm, exact and discreet. Nothing shouts unless money is late.",
+    "keyCharacteristics": [
+      "Numbers first: tabular figures everywhere, amounts right-aligned in any list or column, never truncated.",
+      "One accent (Ledger Blue) for action and selection only.",
+      "Raised white cards on a cool grey ground, with three-layer shadows.",
+      "Spring motion on hover, press, selection and arrival; nothing loops.",
+      "The whole window is used. The layout reflows across four widths instead of centering a fixed column."
+    ],
+    "rules": [
+      { "name": "The Money-Only Color Rule", "body": "Green, amber and red describe the state of money. They are never decoration, category colors or brand accents.", "section": "colors" },
+      { "name": "The One Blue Rule", "body": "Ledger Blue marks the thing you can act on or the thing that is selected. If two blue buttons compete on one screen, one of them is wrong.", "section": "colors" },
+      { "name": "The Tabular Rule", "body": "Every number uses tabular figures (tnum, plus cv11 for the single-storey a), so columns of money line up digit for digit.", "section": "typography" },
+      { "name": "The Right Edge Rule", "body": "Amounts in lists, tables and side-by-side columns are right-aligned. Labels stay left. A KPI's figure stays left-aligned under its own label, because it reads as one unit with it.", "section": "typography" },
+      { "name": "The Sheet Rule", "body": "Cards are sheets on a desk: raised, never floating, never nested. Floating is reserved for layers that cover content.", "section": "elevation" }
+    ],
+    "dos": [
+      "Do take every color, size, radius, shadow and spring from ui::theme.",
+      "Do right-align amounts in any list or column, with tabular figures.",
+      "Do move secondary actions into a Dropdown before letting the header wrap.",
+      "Do branch layouts on Width, never on raw pixel checks.",
+      "Do use springs from theme::motion for any state change that moves or fades."
+    ],
+    "donts": [
+      "Don't truncate money to fit a row; change the layout instead.",
+      "Don't nest cards or float a card; Floating belongs to overlays.",
+      "Don't use status colors for decoration.",
+      "Don't add looping or page-load animation; motion only answers input or state.",
+      "Don't put more than one primary button in a view."
+    ]
+  }
+}

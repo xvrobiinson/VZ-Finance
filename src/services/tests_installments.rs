@@ -115,7 +115,7 @@ fn option_two_spread_with_chosen_amounts() {
     assert_eq!(r.installments.len(), 2);
     assert!(r.installments[0].paid);
     let html = receipt::render(&r, &snap);
-    assert!(html.contains("Applied to") && html.contains("Late fees"));
+    assert!(html.contains("This payment") && html.contains("Late fees"));
 }
 
 #[test]

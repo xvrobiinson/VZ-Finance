@@ -100,6 +100,22 @@ impl ChartRange {
     }
 }
 
+/// Which client details are printed on receipts. Each is printed only
+/// when it is ticked and the client has it. Photos are never printed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ReceiptClientFields {
+    pub name: bool,
+    pub id_number: bool,
+    pub phone: bool,
+    pub address: bool,
+}
+
+impl Default for ReceiptClientFields {
+    fn default() -> Self {
+        Self { name: true, id_number: true, phone: true, address: true }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct Settings {
     pub language: Lang,
@@ -118,6 +134,8 @@ pub struct Settings {
     pub receipt_after_payment: bool,
     /// Open the printable loan receipt right after creating a loan.
     pub receipt_after_loan: bool,
+    /// Client details printed on every receipt.
+    pub receipt_client: ReceiptClientFields,
     pub theme: ThemePref,
     pub chart_range: ChartRange,
     pub show_interest_line: bool,
@@ -139,6 +157,7 @@ impl Default for Settings {
             late_fee_rate: Rate(50_000),
             receipt_after_payment: true,
             receipt_after_loan: true,
+            receipt_client: ReceiptClientFields::default(),
             theme: ThemePref::Light,
             chart_range: ChartRange::SixMonths,
             show_interest_line: true,
@@ -173,6 +192,12 @@ impl Settings {
                 .unwrap_or(d.late_fee_rate),
             receipt_after_payment: flag("receipt_after_payment", d.receipt_after_payment),
             receipt_after_loan: flag("receipt_after_loan", d.receipt_after_loan),
+            receipt_client: ReceiptClientFields {
+                name: flag("receipt_client_name", d.receipt_client.name),
+                id_number: flag("receipt_client_id_number", d.receipt_client.id_number),
+                phone: flag("receipt_client_phone", d.receipt_client.phone),
+                address: flag("receipt_client_address", d.receipt_client.address),
+            },
             theme: match get("theme") {
                 Some("dark") => ThemePref::Dark,
                 _ => ThemePref::Light,
@@ -197,6 +222,10 @@ impl Settings {
             ("late_fee_rate", self.late_fee_rate.0.to_string()),
             ("receipt_after_payment", b(self.receipt_after_payment)),
             ("receipt_after_loan", b(self.receipt_after_loan)),
+            ("receipt_client_name", b(self.receipt_client.name)),
+            ("receipt_client_id_number", b(self.receipt_client.id_number)),
+            ("receipt_client_phone", b(self.receipt_client.phone)),
+            ("receipt_client_address", b(self.receipt_client.address)),
             ("theme", self.theme.key().into()),
             ("chart_range", self.chart_range.key().into()),
             ("show_interest_line", b(self.show_interest_line)),

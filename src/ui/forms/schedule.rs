@@ -12,7 +12,7 @@ use crate::domain::installments::Installment;
 use crate::domain::money::{Cents, MoneyFormat, parse_money};
 use crate::i18n::{self, t};
 use crate::ui::components::th;
-use crate::ui::theme::{palette, size, space, tabular};
+use crate::ui::theme::{Palette, RADIUS_CHIP, Typeset as _, palette, space, tabular, text};
 use crate::utils::dates::{input_format, parse_input};
 
 /// Emitted whenever a value in the schedule changes.
@@ -151,6 +151,40 @@ impl ScheduleEditor {
     }
 }
 
+/// Column widths of a schedule table (number, due date, capital, interest,
+/// total), shared by the editor and the loan form's read-only schedule so
+/// both line up. "Capital left" takes the rest.
+pub const COLUMNS: [f32; 5] = [24.0, 112.0, 104.0, 96.0, 104.0];
+/// Gap between schedule columns.
+pub const COLUMN_GAP: f32 = 6.0;
+
+/// One schedule row: the five fixed `cells` and what is left after it,
+/// right-aligned. Money never truncates, so the last column keeps its width.
+pub fn schedule_row(cells: [AnyElement; 5], money_right: bool, left: impl IntoElement) -> Div {
+    let mut row = h_flex().gap(px(COLUMN_GAP)).font_features(tabular());
+    for (i, (cell, w)) in cells.into_iter().zip(COLUMNS).enumerate() {
+        row = row.child(div().w(px(w)).flex_none().when(money_right && i >= 2, |d| d.text_right()).child(cell));
+    }
+    row.child(div().flex_1().whitespace_nowrap().text_right().child(left))
+}
+
+/// Header of a schedule table. Amount headings sit over right-aligned
+/// figures, or left over inputs.
+pub fn schedule_header(p: &Palette, money_right: bool) -> Div {
+    schedule_row(
+        [
+            th(p, "#").into_any_element(),
+            th(p, t("Due date", "Vence")).into_any_element(),
+            th(p, t("Capital", "Capital")).into_any_element(),
+            th(p, t("Interest", "Interés")).into_any_element(),
+            th(p, t("Total", "Total")).into_any_element(),
+        ],
+        money_right,
+        th(p, t("Capital left", "Capital restante")),
+    )
+    .pb(px(space::XS))
+}
+
 impl Render for ScheduleEditor {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let p = palette(cx);
@@ -165,42 +199,26 @@ impl Render for ScheduleEditor {
             }
             let changed =
                 due_ok != Some(r.original.due) || principal != Some(r.original.principal) || interest != Some(r.original.interest);
-            let cell = |state: &Entity<InputState>, w: f32| div().w(px(w)).flex_none().child(Input::new(state).small());
-            h_flex()
-                .gap(px(6.))
-                .py(px(3.))
-                .when(changed, |d| d.bg(p.accent_tint).rounded(px(6.)))
-                .font_features(tabular())
-                .child(div().w(px(24.)).flex_none().text_color(p.faint).child(r.seq.to_string()))
-                .child(cell(&r.due, 112.))
-                .child(cell(&r.principal, 104.))
-                .child(cell(&r.interest, 96.))
-                .child(cell(&r.total, 104.))
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .text_right()
-                        .text_size(px(size::META + 0.5))
-                        .text_color(p.muted)
-                        .child(balance.map(|b| self.money.format(b)).unwrap_or_else(|| "—".into())),
-                )
+            let cell = |state: &Entity<InputState>| Input::new(state).small().into_any_element();
+            schedule_row(
+                [
+                    div().typeset(text::BODY).text_color(p.faint).child(r.seq.to_string()).into_any_element(),
+                    cell(&r.due),
+                    cell(&r.principal),
+                    cell(&r.interest),
+                    cell(&r.total),
+                ],
+                false,
+                div().typeset(text::CAPTION).text_color(p.muted).child(balance.map(|b| self.money.format(b)).unwrap_or_else(|| "—".into())),
+            )
+            .py(px(3.))
+            .when(changed, |d| d.bg(p.accent_tint).rounded(px(RADIUS_CHIP)))
         });
         v_flex()
             .gap(px(2.))
-            .child(
-                h_flex()
-                    .gap(px(6.))
-                    .pb(px(4.))
-                    .child(div().w(px(24.)).child(th(&p, "#")))
-                    .child(div().w(px(112.)).child(th(&p, t("Due date", "Vence"))))
-                    .child(div().w(px(104.)).child(th(&p, t("Capital", "Capital"))))
-                    .child(div().w(px(96.)).child(th(&p, t("Interest", "Interés"))))
-                    .child(div().w(px(104.)).child(th(&p, t("Total", "Total"))))
-                    .child(div().flex_1().text_right().child(th(&p, t("Capital left", "Capital restante")))),
-            )
+            .child(schedule_header(&p, false))
             .child(div().id("schedule-rows").max_h(px(300.)).overflow_y_scroll().child(v_flex().gap(px(2.)).children(rows)))
-            .child(div().pt(px(space::S)).text_size(px(size::META)).text_color(p.faint).child(t(
+            .child(div().pt(px(space::S)).typeset(text::CAPTION).text_color(p.faint).child(t(
                 "Highlighted rows differ from the calculated schedule.",
                 "Las filas resaltadas difieren del calendario calculado.",
             )))

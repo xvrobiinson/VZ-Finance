@@ -1,22 +1,27 @@
+use std::sync::Arc;
+
 use gpui_kit::assets::IconName;
-use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::Input;
-use gpui_kit::component::{Disableable as _, Sizable as _, h_flex, v_flex};
+use gpui_kit::component::{h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
-use super::{crumb, ncolumn, status_detail_pill};
+use super::{column, crumb, ncolumn, status_detail_pill};
 use crate::app::{Route, VzApp};
 use crate::database::repositories::clients::Client;
 use crate::domain::ledger::{ContractStatus, DisplayStatus};
 use crate::domain::money::Cents;
 use crate::i18n::{count, t};
 use crate::tr;
-use crate::ui::components::{
-    Tone, avatar, card, card_header, empty_state, figure, icon, label, page_header, pill, sel, table_header, table_row, th, vrule,
-};
+use crate::ui::components::{Tone, avatar, empty_state, icon, kv, page_header, pill, sel, table_header, table_row, th};
 use crate::ui::forms::reason::ReasonKind;
-use crate::ui::theme::{Palette, palette, size, space, tabular};
+use crate::ui::kit::{Button, Card, Dropdown, DropdownItem, ListRow, Stat, StatStrip};
+use crate::ui::theme::{Palette, RADIUS_CONTROL, Typeset as _, Width, palette, space, tabular, text};
+
+/// Diameter of the avatar beside the profile title.
+const PROFILE_AVATAR: f32 = 40.;
+/// Height of a shown client photo; it keeps its shape inside.
+const PHOTO_HEIGHT: f32 = 220.;
 
 /// Per-client figures derived from the ledger.
 #[derive(Default, Clone)]
@@ -70,7 +75,10 @@ impl VzApp {
 
     pub(crate) fn render_clients(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let p = palette(cx);
-        let narrow = self.content_width(window) < 1000.;
+        let w = Width::of(self.content_width(window));
+        // Compact keeps name, balance and status; Medium adds the loan count.
+        let show_count = w >= Width::Medium;
+        let show_history = w >= Width::Wide;
         let money = self.settings().money();
         let query = self.client_search.read(cx).value().to_lowercase();
         let archived_count = self.snap.clients.iter().filter(|c| c.is_archived()).count();
@@ -86,6 +94,7 @@ impl VzApp {
                     c.full_name.to_lowercase().contains(q)
                         || c.phone.as_deref().is_some_and(|x| x.to_lowercase().contains(q))
                         || c.email.as_deref().is_some_and(|x| x.to_lowercase().contains(q))
+                        || c.id_number.as_deref().is_some_and(|x| x.to_lowercase().contains(q))
                 }
             })
             .map(|c| (c, self.client_stats(c.id)))
@@ -113,8 +122,14 @@ impl VzApp {
 
         let toolbar = h_flex()
             .justify_between()
-            .pb(px(space::L))
-            .child(div().w(px(380.)).child(Input::new(&self.client_search).prefix(icon(IconName::Search, p.faint, 14.)).cleanable(true)))
+            .gap(px(space::M))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .max_w(px(380.))
+                    .child(Input::new(&self.client_search).prefix(icon(IconName::Search, p.faint, 14.)).cleanable(true)),
+            )
             .when(archived_count > 0, |d| {
                 d.child(
                     Button::new("toggle-archived")
@@ -168,57 +183,56 @@ impl VzApp {
                 let contact = [c.phone.clone(), c.email.clone()].into_iter().flatten().collect::<Vec<_>>().join(" · ");
                 table_row(&p, ("client", id as u64), true)
                     .child(
-                        h_flex().flex_1().min_w(px(200.)).gap(px(space::M)).child(avatar(&p, &c.full_name, c.id, 32.)).child(
+                        h_flex().flex_1().min_w_0().gap(px(space::M)).child(avatar(&p, &c.full_name, c.id, 32.)).child(
                             v_flex()
                                 .min_w_0()
                                 .child(
                                     div()
+                                        .typeset(text::BODY)
                                         .text_color(if c.is_archived() { p.muted } else { p.text })
                                         .truncate()
                                         .child(sel(c.full_name.clone())),
                                 )
-                                .child(div().text_size(px(size::META)).text_color(p.muted).truncate().child(sel(if contact.is_empty() {
+                                .child(div().typeset(text::CAPTION).text_color(p.muted).truncate().child(sel(if contact.is_empty() {
                                     t("No contact details", "Sin datos de contacto").to_string()
                                 } else {
                                     contact
                                 }))),
                         ),
                     )
-                    .child(ncolumn(90.).font_features(tabular()).child(sel(st.active_loans.to_string())))
-                    .when(!narrow, |d| {
-                        d.child(ncolumn(140.).font_features(tabular()).text_color(p.muted).child(sel(money.format(st.borrowed))))
-                    })
-                    .child(ncolumn(140.).font_features(tabular()).child(sel(money.format(st.outstanding))))
-                    .when(!narrow, |d| {
-                        d.child(ncolumn(130.).font_features(tabular()).text_color(p.muted).child(sel(money.format(st.interest_paid))))
-                    })
-                    .child(div().w(px(130.)).flex().justify_end().child(self.client_status_pill(&p, c, st)))
+                    .when(show_count, |d| d.child(ncolumn(90.).child(sel(st.active_loans.to_string()))))
+                    .when(show_history, |d| d.child(ncolumn(140.).text_color(p.muted).child(sel(money.format(st.borrowed)))))
+                    .child(ncolumn(140.).child(sel(money.format(st.outstanding))))
+                    .when(show_history, |d| d.child(ncolumn(130.).text_color(p.muted).child(sel(money.format(st.interest_paid)))))
+                    .child(column(130.).flex().justify_end().child(self.client_status_pill(&p, c, st)))
                     .on_click(cx.listener(move |this, _, w, cx| this.open_row(Route::Client(id), w, cx)))
             });
             v_flex()
                 .child(
                     table_header(&p)
-                        .child(div().flex_1().min_w(px(200.)).child(th(&p, t("Client", "Cliente"))))
-                        .child(ncolumn(90.).child(th(&p, t("Active loans", "Préstamos"))))
-                        .when(!narrow, |d| d.child(ncolumn(140.).child(th(&p, t("Total borrowed", "Total prestado")))))
+                        .child(div().flex_1().min_w_0().child(th(&p, t("Client", "Cliente"))))
+                        .when(show_count, |d| d.child(ncolumn(90.).child(th(&p, t("Active loans", "Préstamos")))))
+                        .when(show_history, |d| d.child(ncolumn(140.).child(th(&p, t("Total borrowed", "Total prestado")))))
                         .child(ncolumn(140.).child(th(&p, t("Owes", "Debe"))))
-                        .when(!narrow, |d| d.child(ncolumn(130.).child(th(&p, t("Interest paid", "Interés pagado")))))
+                        .when(show_history, |d| d.child(ncolumn(130.).child(th(&p, t("Interest paid", "Interés pagado")))))
                         .child(ncolumn(130.).child(th(&p, t("Status", "Estado")))),
                 )
                 .children(rows)
-                .child(div().px(px(space::XL)).py(px(space::M)).text_size(px(size::META)).text_color(p.faint).child(sel({
+                .child(div().px(px(space::XL)).py(px(space::M)).typeset(text::CAPTION).text_color(p.faint).child(sel({
                     let n = visible.len();
                     tr!("{n} shown", "{n} en la lista")
                 })))
                 .into_any_element()
         };
 
-        v_flex().child(header).child(toolbar).child(card(&p).overflow_hidden().child(body)).into_any_element()
+        v_flex().child(header).child(toolbar.pb(px(space::L))).child(Card::new().overflow_hidden().child(body)).into_any_element()
     }
 
     pub(crate) fn render_client(&mut self, id: i64, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let p = palette(cx);
-        let narrow = self.content_width(window) < 1000.;
+        let w = Width::of(self.content_width(window));
+        let gap = px(w.gap());
+        let side_by_side = w >= Width::Wide;
         let Some(client) = self.snap.client(id).cloned() else {
             return div().child(t("Client not found", "Cliente no encontrado")).into_any_element();
         };
@@ -240,114 +254,54 @@ impl VzApp {
         .join("  ·  ");
         let archived = client.is_archived();
 
-        let mut actions = vec![
-            Button::new("edit-client")
-                .ghost()
-                .icon(IconName::Pencil)
-                .label(t("Edit", "Editar"))
-                .on_click(cx.listener(move |this, _, w, cx| this.open_client_form(Some(id), w, cx)))
-                .into_any_element(),
-            Button::new("archive-client")
-                .ghost()
-                .icon(if archived { IconName::ArchiveRestore } else { IconName::Archive })
-                .label(if archived { t("Restore", "Restaurar") } else { t("Archive", "Archivar") })
-                .on_click(cx.listener(move |this, _, w, cx| this.confirm_archive(id, w, cx)))
-                .into_any_element(),
-            Button::new("delete-client")
-                .ghost()
-                .icon(IconName::Trash)
-                .disabled(st.total_loans > 0)
-                .tooltip(if st.total_loans > 0 {
-                    t(
-                        "Clients with loans can't be deleted. Delete the loans or move them to another client first.",
-                        "No se puede eliminar un cliente con préstamos. Elimínalos o pásalos a otro cliente primero.",
-                    )
-                } else {
-                    t("Delete client", "Eliminar cliente")
-                })
-                .on_click(cx.listener(move |this, _, w, cx| this.open_reason_form(ReasonKind::DeleteClient(id), w, cx)))
-                .into_any_element(),
-        ];
-        if !archived {
-            actions.push(
-                Button::new("client-new-loan")
-                    .label(t("New loan", "Nuevo préstamo"))
-                    .on_click(cx.listener(move |this, _, w, cx| this.open_loan_form(Some(id), w, cx)))
-                    .into_any_element(),
-            );
-        }
-        let first_active = self.snap.loans_for_client(id).find(|l| l.status == ContractStatus::Active).map(|l| l.id);
-        if st.active_loans > 0 {
-            actions.push(
-                Button::new("client-pay")
-                    .primary()
-                    .icon(IconName::Plus)
-                    .label(t("Record payment", "Registrar pago"))
-                    .on_click(cx.listener(move |this, _, w, cx| {
-                        let only = if this.client_stats(id).active_loans == 1 { first_active } else { None };
-                        this.open_payment_form(only, w, cx)
-                    }))
-                    .into_any_element(),
-            );
-        }
-
-        let title = h_flex()
-            .gap(px(space::M))
-            .child(avatar(&p, &client.full_name, client.id, 40.))
-            .child(sel(client.full_name.clone()))
-            .child(self.client_status_pill(&p, &client, &st));
         let header = h_flex()
+            .flex_wrap()
             .justify_between()
             .items_end()
             .gap(px(space::L))
-            .pb(px(space::XL))
-            .child(v_flex().gap(px(8.)).child(div().text_size(px(size::TITLE)).font_weight(FontWeight::SEMIBOLD).child(title)).child(
-                div().pl(px(52.)).text_color(p.muted).child(sel(if contact.is_empty() {
-                    t("No contact details", "Sin datos de contacto").to_string()
-                } else {
-                    contact
-                })),
-            ))
-            .child(h_flex().gap(px(space::S)).children(actions));
+            .child(
+                v_flex()
+                    .min_w_0()
+                    .gap(px(space::S))
+                    .child(
+                        h_flex()
+                            .gap(px(space::M))
+                            .child(avatar(&p, &client.full_name, client.id, PROFILE_AVATAR))
+                            .child(div().min_w_0().truncate().typeset(text::TITLE).text_color(p.text).child(sel(client.full_name.clone())))
+                            .child(self.client_status_pill(&p, &client, &st)),
+                    )
+                    .child(div().pl(px(PROFILE_AVATAR + space::M)).text_color(p.muted).child(sel(if contact.is_empty() {
+                        t("No contact details", "Sin datos de contacto").to_string()
+                    } else {
+                        contact
+                    }))),
+            )
+            .child(h_flex().flex_none().gap(px(space::S)).children(self.client_actions(id, archived, &st, w, cx)));
 
-        let cell = |label_text: &str, value: String, sub: String| {
-            v_flex()
-                .flex_1()
-                .flex_basis(px(0.))
-                .min_w_0()
-                .px(px(space::XL))
-                .py(px(space::L + 2.))
-                .gap(px(6.))
-                .child(label(&p, label_text.to_string()).truncate())
-                .child(figure(&p, value, size::FIGURE))
-                .child(div().text_size(px(size::META)).text_color(p.muted).truncate().child(sel(sub)))
-        };
-        let strip = card(&p)
-            .flex_row()
-            .child(cell(
-                t("Owes", "Debe"),
-                money.format(st.outstanding),
-                count(st.active_loans, "active loan", "active loans", "préstamo activo", "préstamos activos"),
-            ))
-            .child(vrule(&p))
-            .child(cell(
-                t("Total paid", "Total pagado"),
-                money.format(st.paid),
-                t("Capital, interest and fees", "Capital, interés y cargos").into(),
-            ))
-            .child(vrule(&p))
-            .child(cell(
-                t("Interest paid", "Interés pagado"),
-                money.format(st.interest_paid),
-                t("Income from this client", "Ganancia con este cliente").into(),
-            ))
-            .child(vrule(&p))
-            .child(cell(t("Total borrowed", "Total prestado"), money.format(st.borrowed), {
+        // Four figures: one row when wide, two by two below that.
+        let per_row = if side_by_side { 4 } else { 2 };
+        let cells = vec![
+            Stat::new(t("Owes", "Debe"), money.format(st.outstanding)).caption(sel(count(
+                st.active_loans,
+                "active loan",
+                "active loans",
+                "préstamo activo",
+                "préstamos activos",
+            ))),
+            Stat::new(t("Total paid", "Total pagado"), money.format(st.paid))
+                .caption(sel(t("Capital, interest and fees", "Capital, interés y cargos"))),
+            Stat::new(t("Interest paid", "Interés pagado"), money.format(st.interest_paid))
+                .caption(sel(t("Income from this client", "Ganancia con este cliente"))),
+            Stat::new(t("Total borrowed", "Total prestado"), money.format(st.borrowed)).caption(sel({
                 let n = count(st.total_loans, "loan", "loans", "préstamo", "préstamos");
                 tr!("{n} in total", "{n} en total")
-            }));
+            })),
+        ];
+        let strip = StatStrip::new(per_row).dense(w == Width::Compact).stats(cells);
 
-        // Loans, active first.
+        // Loans, active first. Compact drops the amount lent and the next
+        // due date; balance and status stay.
+        let full_loans = w >= Width::Medium;
         let mut loans: Vec<_> = self.snap.book.loans.iter().filter(|l| l.client_id == id).collect();
         loans.sort_by_key(|l| (l.facts.status != ContractStatus::Active, std::cmp::Reverse(l.facts.start_date)));
         let loan_rows = loans.iter().map(|l| {
@@ -362,20 +316,22 @@ impl VzApp {
                     v_flex()
                         .flex_1()
                         .min_w_0()
-                        .child(div().child(sel(tr!("Loan #{lid}", "Préstamo #{lid}"))))
-                        .child(div().text_size(px(size::META)).text_color(p.muted).truncate().child(sel(desc))),
+                        .child(div().typeset(text::BODY).truncate().child(sel(tr!("Loan #{lid}", "Préstamo #{lid}"))))
+                        .child(div().typeset(text::CAPTION).font_features(tabular()).text_color(p.muted).truncate().child(sel(desc))),
                 )
-                .child(ncolumn(130.).font_features(tabular()).text_color(p.muted).child(sel(money.format(l.facts.principal))))
-                .child(ncolumn(130.).font_features(tabular()).child(sel(money.format(pos.payoff()))))
-                .child(
-                    ncolumn(120.)
-                        .text_color(p.muted)
-                        .child(sel(q.next_due.map(|d| ds.format_short(d, self.today)).unwrap_or_else(|| "—".into()))),
-                )
-                .child(div().w(px(130.)).flex().justify_end().child(status_detail_pill(&p, status, &q, self.today)))
+                .when(full_loans, |d| d.child(ncolumn(130.).text_color(p.muted).child(sel(money.format(l.facts.principal)))))
+                .child(ncolumn(130.).child(sel(money.format(pos.payoff()))))
+                .when(full_loans, |d| {
+                    d.child(
+                        ncolumn(120.)
+                            .text_color(p.muted)
+                            .child(sel(q.next_due.map(|d| ds.format_short(d, self.today)).unwrap_or_else(|| "—".into()))),
+                    )
+                })
+                .child(column(130.).flex().justify_end().child(status_detail_pill(&p, status, &q, self.today)))
                 .on_click(cx.listener(move |this, _, w, cx| this.open_row(Route::Loan(lid), w, cx)))
         });
-        let loans_card = card(&p).overflow_hidden().child(card_header(&p, t("Loans", "Préstamos"), None)).child(if loans.is_empty() {
+        let loans_card = Card::new().overflow_hidden().title(t("Loans", "Préstamos")).child(if loans.is_empty() {
             empty_state(
                 &p,
                 IconName::HandCoins,
@@ -394,10 +350,10 @@ impl VzApp {
             v_flex()
                 .child(
                     table_header(&p)
-                        .child(div().flex_1().child(th(&p, t("Loan", "Préstamo"))))
-                        .child(ncolumn(130.).child(th(&p, t("Lent", "Prestado"))))
+                        .child(div().flex_1().min_w_0().child(th(&p, t("Loan", "Préstamo"))))
+                        .when(full_loans, |d| d.child(ncolumn(130.).child(th(&p, t("Lent", "Prestado")))))
                         .child(ncolumn(130.).child(th(&p, t("Owes today", "Debe hoy"))))
-                        .child(ncolumn(120.).child(th(&p, t("Next payment", "Próximo pago"))))
+                        .when(full_loans, |d| d.child(ncolumn(120.).child(th(&p, t("Next payment", "Próximo pago")))))
                         .child(ncolumn(130.).child(th(&p, t("Status", "Estado")))),
                 )
                 .children(loan_rows)
@@ -409,91 +365,243 @@ impl VzApp {
         let pays: Vec<_> = self.snap.payments.iter().rev().filter(|x| loan_ids.contains(&x.loan_id)).take(12).collect();
         let timeline = pays.iter().map(|x| {
             let reversed = x.is_reversed();
-            h_flex()
-                .min_h(px(48.))
-                .px(px(space::XL))
-                .gap(px(space::M))
-                .border_b_1()
-                .border_color(p.rule)
-                .child(div().size(px(8.)).rounded_full().bg(if reversed { p.control } else { p.positive }))
-                .child(
-                    v_flex()
-                        .flex_1()
-                        .min_w_0()
-                        .child(div().text_color(if reversed { p.muted } else { p.text }).child(sel({
-                            let (when, lid) = (ds.format(x.paid_on), x.loan_id);
-                            tr!("{when} · Loan #{lid}", "{when} · Préstamo #{lid}")
-                        })))
-                        .child(div().text_size(px(size::META)).text_color(p.muted).truncate().child(sel(if reversed {
-                            {
-                                let why = x.reversal_reason.clone().unwrap_or_default();
-                                tr!("Reversed: {why}", "Anulado: {why}")
-                            }
-                        } else {
-                            {
-                                let (i, c) = (money.format(x.interest), money.format(x.principal));
-                                tr!("Interest {i} · Capital {c}", "Interés {i} · Capital {c}")
-                            }
-                        }))),
-                )
-                .child(
+            ListRow::new(("cl-pay", x.id as u64))
+                .muted(reversed)
+                .leading(div().flex_none().size(px(space::S)).rounded_full().bg(if reversed { p.control } else { p.positive }))
+                .title({
+                    let (when, lid) = (ds.format(x.paid_on), x.loan_id);
+                    tr!("{when} · Loan #{lid}", "{when} · Préstamo #{lid}")
+                })
+                .subtitle(if reversed {
+                    let why = x.reversal_reason.clone().unwrap_or_default();
+                    tr!("Reversed: {why}", "Anulado: {why}")
+                } else {
+                    let (i, c) = (money.format(x.interest), money.format(x.principal));
+                    tr!("Interest {i} · Capital {c}", "Interés {i} · Capital {c}")
+                })
+                .trailing(
                     div()
+                        .flex_none()
+                        .typeset(text::BODY_STRONG)
                         .font_features(tabular())
+                        .whitespace_nowrap()
                         .text_color(if reversed { p.muted } else { p.positive })
                         .when(reversed, |d| d.line_through())
                         .child(sel(format!("+{}", money.format(x.amount)))),
                 )
         });
-        let timeline_card =
-            card(&p).overflow_hidden().child(card_header(&p, t("Payment history", "Historial de pagos"), None)).child(if pays.is_empty() {
-                empty_state(
-                    &p,
-                    IconName::Receipt,
-                    t("No payments yet", "Aún no hay pagos"),
-                    t(
-                        "Payments from this client appear here, newest first.",
-                        "Los pagos de este cliente aparecen aquí, del más reciente al más antiguo.",
-                    ),
-                    None,
+        let timeline_card = Card::new().overflow_hidden().title(t("Payment history", "Historial de pagos")).child(if pays.is_empty() {
+            empty_state(
+                &p,
+                IconName::Receipt,
+                t("No payments yet", "Aún no hay pagos"),
+                t(
+                    "Payments from this client appear here, newest first.",
+                    "Los pagos de este cliente aparecen aquí, del más reciente al más antiguo.",
+                ),
+                None,
+            )
+            .into_any_element()
+        } else {
+            v_flex().pb(px(space::S)).children(timeline).into_any_element()
+        });
+
+        let notes_card = Card::new()
+            .title(t("Notes", "Notas"))
+            .action(
+                Button::new("edit-notes")
+                    .ghost()
+                    .small()
+                    .label(t("Edit", "Editar"))
+                    .on_click(cx.listener(move |this, _, w, cx| this.open_client_form(Some(id), w, cx))),
+            )
+            .child(
+                div()
+                    .px(px(space::XL))
+                    .pb(px(space::XL))
+                    .typeset(text::BODY)
+                    .text_color(if client.notes.is_empty() { p.muted } else { p.text })
+                    .child(sel(if client.notes.is_empty() { t("No notes yet.", "Sin notas.").to_string() } else { client.notes.clone() })),
+            );
+
+        let details_card = self.client_details(&p, &client, cx);
+
+        // Loans and history beside the details and notes when wide (2 : 1,
+        // that column held between 340 and 480px); stacked below that.
+        let body = if side_by_side {
+            h_flex()
+                .items_start()
+                .gap(gap)
+                .child(v_flex().flex_grow(2.).flex_basis(px(0.)).min_w_0().gap(gap).child(loans_card).child(timeline_card))
+                .child(
+                    v_flex()
+                        .flex_grow(1.)
+                        .flex_basis(px(0.))
+                        .min_w(px(340.))
+                        .max_w(px(480.))
+                        .gap(gap)
+                        .children(details_card)
+                        .child(notes_card),
                 )
                 .into_any_element()
-            } else {
-                v_flex().children(timeline).into_any_element()
-            });
-
-        let notes_card =
-            card(&p)
-                .child(card_header(
-                    &p,
-                    t("Notes", "Notas"),
-                    Some(
-                        Button::new("edit-notes")
-                            .ghost()
-                            .small()
-                            .label(t("Edit", "Editar"))
-                            .on_click(cx.listener(move |this, _, w, cx| this.open_client_form(Some(id), w, cx)))
-                            .into_any_element(),
-                    ),
-                ))
-                .child(
-                    div().px(px(space::XL)).pb(px(space::XL)).text_color(if client.notes.is_empty() { p.muted } else { p.text }).child(
-                        sel(if client.notes.is_empty() { t("No notes yet.", "Sin notas.").to_string() } else { client.notes.clone() }),
-                    ),
-                );
+        } else {
+            v_flex().gap(gap).child(loans_card).children(details_card).child(notes_card).child(timeline_card).into_any_element()
+        };
 
         v_flex()
             .child(crumb(&p, t("Clients", "Clientes"), Route::Clients, cx))
-            .child(header)
-            .child(v_flex().gap(px(space::XL)).child(strip).child(if narrow {
-                v_flex().gap(px(space::XL)).child(loans_card).child(notes_card).child(timeline_card).into_any_element()
-            } else {
-                h_flex()
-                    .items_start()
-                    .gap(px(space::XL))
-                    .child(v_flex().flex_1().min_w_0().gap(px(space::XL)).child(loans_card).child(timeline_card))
-                    .child(v_flex().w(px(340.)).flex_none().gap(px(space::XL)).child(notes_card))
-                    .into_any_element()
-            }))
+            .child(v_flex().gap(gap).child(header).child(strip).child(body))
             .into_any_element()
+    }
+
+    /// ID number, address and photo, each only when the client has it; no
+    /// card at all when they have none. The photo may show an identity
+    /// document, so it stays hidden until asked for.
+    fn client_details(&self, p: &Palette, client: &Client, cx: &mut Context<Self>) -> Option<Card> {
+        let lines: Vec<(&str, String)> =
+            [(t("ID number", "Identificación"), &client.id_number), (t("Address", "Dirección"), &client.address)]
+                .into_iter()
+                .filter_map(|(label, v)| v.clone().map(|v| (label, v)))
+                .collect();
+        if lines.is_empty() && !client.has_photo {
+            return None;
+        }
+        let id = client.id;
+        let shown = self.shown_photo.as_ref().filter(|(cid, _)| *cid == id).map(|(_, image)| image.clone());
+        let photo = client.has_photo.then(|| {
+            v_flex()
+                .gap(px(space::S))
+                .pt(px(space::S))
+                .child(
+                    h_flex()
+                        .justify_between()
+                        .gap(px(space::L))
+                        .child(div().text_color(p.muted).child(t("Photo or ID", "Foto o identificación")))
+                        .child(
+                            Button::new("toggle-photo")
+                                .small()
+                                .ghost()
+                                .icon(if shown.is_some() { IconName::EyeOff } else { IconName::Eye })
+                                .label(if shown.is_some() { t("Hide", "Ocultar") } else { t("Show", "Mostrar") })
+                                .on_click(cx.listener(move |this, _, w, cx| this.toggle_client_photo(id, w, cx))),
+                        ),
+                )
+                .children(shown.map(|image| {
+                    div()
+                        .w_full()
+                        .h(px(PHOTO_HEIGHT))
+                        .rounded(px(RADIUS_CONTROL))
+                        .border_1()
+                        .border_color(p.rule)
+                        .bg(p.raised)
+                        .overflow_hidden()
+                        .child(img(image).size_full().object_fit(ObjectFit::Contain))
+                }))
+        });
+        Some(Card::new().title(t("Identification", "Identificación")).child(
+            v_flex().px(px(space::XL)).pb(px(space::L)).children(lines.into_iter().map(|(label, v)| kv(p, label, sel(v)))).children(photo),
+        ))
+    }
+
+    /// Shows the client's photo, read from the database only now, or hides it.
+    fn toggle_client_photo(&mut self, id: i64, window: &mut Window, cx: &mut Context<Self>) {
+        if self.shown_photo.as_ref().is_some_and(|(cid, _)| *cid == id) {
+            self.shown_photo = None;
+        } else {
+            match self.store.client_photo(id) {
+                Ok(Some(bytes)) => self.shown_photo = Some((id, Arc::new(Image::from_bytes(ImageFormat::Jpeg, bytes)))),
+                Ok(None) => self.notify_error(
+                    t("This client's photo is no longer on file.", "La foto de este cliente ya no está guardada."),
+                    window,
+                    cx,
+                ),
+                Err(e) => {
+                    log::warn!("client photo not loaded: {e:#}");
+                    self.notify_error(
+                        t("The photo couldn't be read. Try again.", "No se pudo leer la foto. Inténtalo de nuevo."),
+                        window,
+                        cx,
+                    )
+                }
+            }
+        }
+        cx.notify();
+    }
+
+    /// Profile actions. Wide windows show them all; narrower ones keep the
+    /// main action and fold the rest into a "More" menu so the header never
+    /// wraps its buttons.
+    fn client_actions(&self, id: i64, archived: bool, st: &ClientStats, w: Width, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        let has_loans = st.total_loans > 0;
+        let first_active = self.snap.loans_for_client(id).find(|l| l.status == ContractStatus::Active).map(|l| l.id);
+        let pay = (st.active_loans > 0).then(|| {
+            Button::new("client-pay")
+                .primary()
+                .icon(IconName::Plus)
+                .label(t("Record payment", "Registrar pago"))
+                .on_click(cx.listener(move |this, _, w, cx| {
+                    let only = if this.client_stats(id).active_loans == 1 { first_active } else { None };
+                    this.open_payment_form(only, w, cx)
+                }))
+                .into_any_element()
+        });
+        let edit = cx.listener(move |this, _, w, cx| this.open_client_form(Some(id), w, cx));
+        let archive = cx.listener(move |this, _, w, cx| this.confirm_archive(id, w, cx));
+        let delete = cx.listener(move |this, _, w, cx| this.open_reason_form(ReasonKind::DeleteClient(id), w, cx));
+        let new_loan = cx.listener(move |this, _, w, cx| this.open_loan_form(Some(id), w, cx));
+        let archive_icon = if archived { IconName::ArchiveRestore } else { IconName::Archive };
+        let archive_label = if archived { t("Restore", "Restaurar") } else { t("Archive", "Archivar") };
+
+        if w >= Width::Wide {
+            let mut actions = vec![
+                Button::new("edit-client").ghost().icon(IconName::Pencil).label(t("Edit", "Editar")).on_click(edit).into_any_element(),
+                Button::new("archive-client").ghost().icon(archive_icon).label(archive_label).on_click(archive).into_any_element(),
+                Button::new("delete-client")
+                    .ghost()
+                    .icon(IconName::Trash)
+                    .disabled(has_loans)
+                    .tooltip(if has_loans {
+                        t(
+                            "Clients with loans can't be deleted. Delete the loans or move them to another client first.",
+                            "No se puede eliminar un cliente con préstamos. Elimínalos o pásalos a otro cliente primero.",
+                        )
+                    } else {
+                        t("Delete client", "Eliminar cliente")
+                    })
+                    .on_click(delete)
+                    .into_any_element(),
+            ];
+            if !archived {
+                actions.push(Button::new("client-new-loan").label(t("New loan", "Nuevo préstamo")).on_click(new_loan).into_any_element());
+            }
+            actions.extend(pay);
+            return actions;
+        }
+
+        // With no payment to record, "New loan" stays out as the main action.
+        let mut more = Dropdown::new("client-more").icon(IconName::Ellipsis).tooltip(t("More actions", "Más acciones")).align_end();
+        let mut actions = Vec::new();
+        match (archived, pay.is_some()) {
+            (true, _) => {}
+            (false, true) => more = more.item(DropdownItem::new(t("New loan", "Nuevo préstamo"), new_loan).icon(IconName::HandCoins)),
+            (false, false) => {
+                actions.push(Button::new("client-new-loan").label(t("New loan", "Nuevo préstamo")).on_click(new_loan).into_any_element())
+            }
+        }
+        more = more
+            .item(DropdownItem::new(t("Edit", "Editar"), edit).icon(IconName::Pencil))
+            .item(DropdownItem::new(archive_label, archive).icon(archive_icon));
+        // A client with loans can't be deleted; the item stays, disabled, so
+        // the menu can say why.
+        more = more.item(
+            DropdownItem::new(t("Delete client", "Eliminar cliente"), delete)
+                .icon(IconName::Trash)
+                .danger()
+                .disabled(has_loans)
+                .when(has_loans, |i| i.hint(t("Has loans", "Tiene préstamos"))),
+        );
+        actions.insert(0, more.into_any_element());
+        actions.extend(pay);
+        actions
     }
 }

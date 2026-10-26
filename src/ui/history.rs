@@ -37,6 +37,9 @@ fn field_label(field: &str) -> &'static str {
         "full_name" => t("Name", "Nombre"),
         "phone" => t("Phone", "Teléfono"),
         "email" => t("Email", "Correo"),
+        "id_number" => t("ID number", "Identificación"),
+        "address" => t("Address", "Dirección"),
+        "photo" => t("Photo", "Foto"),
         "payments" => t("Payments recorded", "Pagos registrados"),
         "received" => t("Received", "Recibido"),
         "interest_period" => t("Interest period", "Período del interés"),
@@ -88,6 +91,10 @@ fn field_value(field: &str, raw: &str, snap: &Snapshot) -> String {
             CapitalKind::from_key(raw).map(|k| k.label()).or_else(|| EntryKind::from_key(raw).map(|k| k.label())).unwrap_or(raw).to_string()
         }
         "account" => Account::from_key(raw).map(|a| a.label().to_string()).unwrap_or_else(|| raw.into()),
+        "photo" => match raw {
+            "replaced" => t("New photo", "Foto nueva").into(),
+            _ => t("On file", "Guardada").into(),
+        },
         _ => raw.into(),
     }
 }

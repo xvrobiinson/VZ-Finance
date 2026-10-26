@@ -2,18 +2,21 @@ use std::rc::Rc;
 
 use gpui_kit::assets::IconName;
 use gpui_kit::component::IndexPath;
-use gpui_kit::component::button::Button;
 use gpui_kit::component::input::{Input, InputEvent, InputState, Textarea, TextareaState};
 use gpui_kit::component::searchable_list::SearchableListItem;
 use gpui_kit::component::select::{Select, SelectEvent, SelectState};
 use gpui_kit::component::switch::Switch;
-use gpui_kit::component::{Sizable as _, WindowExt as _, h_flex, v_flex};
+use gpui_kit::component::{WindowExt as _, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
+use super::client::{ClientForm, OnCreated};
 use super::date_field::{DateChanged, DateField};
-use super::schedule::{ScheduleChanged, ScheduleEditor};
-use super::{date_field, error_banner, field, footer, invalid_date, picked_date, reason_input, value};
+use super::schedule::{COLUMN_GAP, COLUMNS, ScheduleChanged, ScheduleEditor, schedule_header, schedule_row};
+use super::{
+    body_room, choice_tile, date_field, error_banner, field, field_row, footer, grow_field, invalid_date, panel, picked_date, reason_input,
+    value,
+};
 use crate::app::{Route, VzApp};
 use crate::domain::installments::{self, Installment};
 use crate::domain::ledger::{ContractStatus, LoanFacts};
@@ -23,8 +26,22 @@ use crate::domain::portfolio::{Account, Book};
 use crate::i18n::t;
 use crate::services::{Record, Snapshot};
 use crate::tr;
-use crate::ui::components::{icon, kv, num, th};
-use crate::ui::theme::{Palette, palette, size, space, tabular};
+use crate::ui::components::{icon, kv, num};
+use crate::ui::kit::{Button, Segmented, Stat};
+use crate::ui::theme::{Palette, RADIUS_CONTROL, Typeset as _, palette, space, text};
+
+/// Narrowest the terms column gets beside the preview; it widens to fit
+/// the payment-period control.
+const TERMS_COLUMN: f32 = 440.0;
+/// Room the schedule's "Capital left" column needs for its heading and a
+/// six-figure amount.
+const CAPITAL_LEFT: f32 = 88.0;
+
+/// Narrowest the preview gets beside the terms: the schedule's fixed
+/// columns, "Capital left", and the panel's padding.
+fn preview_min() -> f32 {
+    COLUMNS.iter().sum::<f32>() + COLUMN_GAP * COLUMNS.len() as f32 + CAPITAL_LEFT + 2.0 * space::L
+}
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Choice {
@@ -94,6 +111,16 @@ fn facts_for(terms: &LoanTerms) -> LoanFacts {
     }
 }
 
+/// The clients a loan can go to, by name. Archived clients can't get new
+/// loans, but a loan being edited keeps its client (`keep`).
+pub fn client_choices(snap: &Snapshot, keep: Option<i64>) -> Vec<Choice> {
+    snap.clients
+        .iter()
+        .filter(|c| !c.is_archived() || Some(c.id) == keep)
+        .map(|c| Choice { id: c.id, title: c.full_name.clone().into() })
+        .collect()
+}
+
 fn proposed(terms: &LoanTerms) -> Vec<Installment> {
     installments::proposed_schedule(&facts_for(terms), terms.method, terms.installments.unwrap_or(1))
 }
@@ -109,13 +136,7 @@ impl LoanForm {
     ) -> Self {
         let existing = editing.and_then(|id| snap.loan(id).cloned());
         let client_id = existing.as_ref().map(|l| l.client_id).or(client_id);
-        // Archived clients can't get new loans, but a loan keeps its client.
-        let choices: Vec<Choice> = snap
-            .clients
-            .iter()
-            .filter(|c| !c.is_archived() || Some(c.id) == client_id.filter(|_| editing.is_some()))
-            .map(|c| Choice { id: c.id, title: c.full_name.clone().into() })
-            .collect();
+        let choices = client_choices(&snap, client_id.filter(|_| editing.is_some()));
         let selected = client_id.and_then(|id| choices.iter().position(|c| c.id == id)).map(IndexPath::new);
         let client = cx.new(|cx| SelectState::new(choices, selected, window, cx).searchable(true));
         let prefill = |s: InputState, v: Option<String>| match v {
@@ -208,6 +229,37 @@ impl LoanForm {
 
     pub fn first_focus(&self, cx: &App) -> FocusHandle {
         if self.client_id.is_some() { self.principal.focus_handle(cx) } else { self.client.focus_handle(cx) }
+    }
+
+    pub fn client_id(&self) -> Option<i64> {
+        self.client_id
+    }
+
+    /// Opens the client form on top of this one and returns it. Everything
+    /// typed here stays as it is; a client saved there is selected here.
+    pub fn add_client(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Option<Entity<ClientForm>> {
+        let form = cx.entity().downgrade();
+        let on_created: OnCreated = Rc::new(move |id, window, cx| {
+            let _ = form.update(cx, |f, cx| f.client_added(id, window, cx));
+        });
+        self.app.update(cx, |app, cx| app.open_new_client_for(on_created, window, cx)).ok()
+    }
+
+    /// A client was just added: refresh the list and select them, then move
+    /// on to the amount. Nothing else in the form changes.
+    pub fn client_added(&mut self, id: i64, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(app) = self.app.upgrade() {
+            self.snap = app.read(cx).snap.clone();
+        }
+        let keep = self.client_id.filter(|_| self.editing.is_some());
+        let choices = client_choices(&self.snap, keep);
+        self.client.update(cx, |s, cx| {
+            s.set_items(choices, window, cx);
+            s.set_selected_value(&id, window, cx);
+        });
+        self.client_id = Some(id);
+        self.principal.focus_handle(cx).focus(window, cx);
+        cx.notify();
     }
 
     fn open_schedule(&mut self, schedule: &[Installment], window: &mut Window, cx: &mut Context<Self>) {
@@ -386,37 +438,7 @@ impl LoanForm {
         }
     }
 
-    fn chip(
-        &self,
-        p: &Palette,
-        id: impl Into<ElementId>,
-        label: String,
-        selected: bool,
-        on: impl Fn(&mut Self, &mut Window, &mut Context<Self>) + 'static,
-        cx: &mut Context<Self>,
-    ) -> Stateful<Div> {
-        div()
-            .id(id)
-            .h(px(32.))
-            .px(px(12.))
-            .flex()
-            .items_center()
-            .rounded(px(8.))
-            .border_1()
-            .border_color(if selected { p.accent } else { p.control })
-            .when(selected, |d| d.bg(p.accent_tint).text_color(p.accent_text).font_weight(FontWeight::MEDIUM))
-            .when(!selected, |d| d.hover(|s| s.bg(p.hover)))
-            .cursor_pointer()
-            .whitespace_nowrap()
-            .child(label)
-            .on_click(cx.listener(move |this, _, window, cx| {
-                on(this, window, cx);
-                this.terms_changed(window, cx);
-            }))
-    }
-
     fn method_tile(&self, p: &Palette, m: Method, cx: &mut Context<Self>) -> impl IntoElement {
-        let selected = self.method == m;
         let desc = match m {
             Method::Declining => t("Interest on the capital still owed", "Interés sobre el capital adeudado"),
             Method::Flat => t("Interest on the amount lent", "Interés sobre el monto prestado"),
@@ -427,55 +449,34 @@ impl LoanForm {
             Method::Flat => t("Flat installments", "Cuotas fijas"),
             Method::InterestOnly => t("Interest only", "Solo interés"),
         };
-        v_flex()
-            .id(m.key())
-            .flex_1()
-            .min_w_0()
-            .p(px(10.))
-            .gap(px(2.))
-            .rounded(px(8.))
-            .border_1()
-            .border_color(if selected { p.accent } else { p.border })
-            .when(selected, |d| d.bg(p.accent_tint))
-            .when(!selected, |d| d.hover(|s| s.bg(p.hover)))
-            .cursor_pointer()
-            .child(div().font_weight(FontWeight::MEDIUM).text_color(if selected { p.accent_text } else { p.text }).child(title))
-            .child(div().text_size(px(size::META)).text_color(p.muted).child(desc))
-            .on_click(cx.listener(move |this, _, window, cx| {
-                this.method = m;
-                this.terms_changed(window, cx);
-            }))
-    }
-
-    /// Daily / weekly / 15 days / monthly, as small chips.
-    fn period_chips(&self, p: &Palette, id: &'static str, selected: Frequency, interest: bool, cx: &mut Context<Self>) -> Div {
-        h_flex().gap(px(6.)).flex_wrap().children(Frequency::ALL.map(|f| {
-            self.chip(
-                p,
-                SharedString::from(format!("{id}-{}", f.key())),
-                f.label().to_string(),
-                selected == f,
-                move |this, _, _| {
-                    if interest {
-                        this.interest_period = f;
-                    } else {
-                        this.frequency = f;
-                    }
-                },
-                cx,
-            )
+        choice_tile(p, m.key(), title, Some(desc.to_string()), self.method == m).on_click(cx.listener(move |this, _, window, cx| {
+            this.method = m;
+            this.terms_changed(window, cx);
         }))
     }
 
+    /// Daily / weekly / 15 days / monthly.
+    fn period_control(&self, id: &'static str, selected: Frequency, interest: bool, cx: &mut Context<Self>) -> Segmented {
+        let options = Frequency::ALL.map(|f| (f, SharedString::from(f.label()))).to_vec();
+        Segmented::pick(id, options, selected, cx, move |this: &mut Self, f, window, cx| {
+            if interest {
+                this.interest_period = f;
+            } else {
+                this.frequency = f;
+            }
+            this.terms_changed(window, cx);
+        })
+    }
+
     fn preview(&self, p: &Palette, terms: Option<&LoanTerms>, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
-        let card = v_flex().p(px(space::L + 2.)).gap(px(space::M)).rounded(px(10.)).bg(p.raised).border_1().border_color(p.rule);
+        let card = panel(p).gap(px(space::M));
         let Some(terms) = terms else {
             return card
                 .h_full()
                 .justify_center()
                 .items_center()
                 .child(icon(IconName::Calculator, p.faint, 20.))
-                .child(div().max_w(px(280.)).text_center().text_color(p.muted).child(t(
+                .child(div().max_w(px(280.)).text_center().typeset(text::BODY).text_color(p.muted).child(t(
                     "Enter the amount, rate and installments to see the payment schedule.",
                     "Escribe el monto, la tasa y las cuotas para ver el calendario de pagos.",
                 )))
@@ -506,23 +507,16 @@ impl LoanForm {
         let bullet = |text: String| {
             h_flex()
                 .items_start()
-                .gap(px(8.))
+                .gap(px(space::S))
                 .child(div().mt(px(7.)).size(px(4.)).rounded_full().bg(p.accent).flex_none())
-                .child(div().flex_1().min_w_0().text_size(px(size::META + 0.5)).text_color(p.muted).child(text))
+                .child(div().flex_1().min_w_0().typeset(text::CAPTION).text_color(p.muted).child(text))
         };
-        let figure = |label: &str, value: String, big: bool| {
+        // Secondary figures beside the total: smaller, never truncated.
+        let figure = |label: &str, value: String| {
             v_flex()
-                .flex_1()
-                .flex_basis(px(0.))
-                .when(big, |d| d.flex_grow(1.5))
-                .min_w_0()
                 .gap(px(2.))
-                .child(div().text_size(px(size::META)).text_color(p.muted).truncate().child(label.to_string()))
-                .child(num(value).truncate().text_size(px(if big { size::FIGURE } else { size::META + 4. })).font_weight(if big {
-                    FontWeight::SEMIBOLD
-                } else {
-                    FontWeight::MEDIUM
-                }))
+                .child(div().typeset(text::CAPTION).text_color(p.muted).whitespace_nowrap().child(label.to_string()))
+                .child(num(value).typeset(text::BODY_STRONG))
         };
         let table: AnyElement = match &self.schedule {
             Some(editor) => editor.clone().into_any_element(),
@@ -530,30 +524,22 @@ impl LoanForm {
                 let mut left = terms.principal;
                 let rows = shown.iter().map(|x| {
                     left -= x.principal;
-                    h_flex()
-                        .h(px(26.))
-                        .gap(px(6.))
-                        .font_features(tabular())
-                        .text_size(px(size::META + 0.5))
-                        .child(div().w(px(24.)).text_color(p.faint).child(x.seq.to_string()))
-                        .child(div().w(px(112.)).child(ds.format(x.due)))
-                        .child(div().w(px(104.)).text_right().child(money.format(x.principal)))
-                        .child(div().w(px(96.)).text_right().child(money.format(x.interest)))
-                        .child(div().w(px(104.)).text_right().font_weight(FontWeight::MEDIUM).child(money.format(x.total())))
-                        .child(div().flex_1().text_right().text_color(p.muted).child(money.format(left)))
+                    schedule_row(
+                        [
+                            div().text_color(p.faint).child(x.seq.to_string()).into_any_element(),
+                            div().child(ds.format(x.due)).into_any_element(),
+                            div().child(money.format(x.principal)).into_any_element(),
+                            div().child(money.format(x.interest)).into_any_element(),
+                            div().typeset(text::BODY_STRONG).child(money.format(x.total())).into_any_element(),
+                        ],
+                        true,
+                        div().text_color(p.muted).child(money.format(left)),
+                    )
+                    .h(px(26.))
+                    .typeset(text::BODY)
                 });
                 v_flex()
-                    .child(
-                        h_flex()
-                            .gap(px(6.))
-                            .pb(px(4.))
-                            .child(div().w(px(24.)).child(th(p, "#")))
-                            .child(div().w(px(112.)).child(th(p, t("Due date", "Vence"))))
-                            .child(div().w(px(104.)).text_right().child(th(p, t("Capital", "Capital"))))
-                            .child(div().w(px(96.)).text_right().child(th(p, t("Interest", "Interés"))))
-                            .child(div().w(px(104.)).text_right().child(th(p, t("Total", "Total"))))
-                            .child(div().flex_1().text_right().child(th(p, t("Capital left", "Capital restante")))),
-                    )
+                    .child(schedule_header(p, true))
                     .child(div().id("schedule-preview").max_h(px(260.)).overflow_y_scroll().child(v_flex().children(rows)))
                     .into_any_element()
             }
@@ -604,15 +590,17 @@ impl LoanForm {
             });
         card.child(
             h_flex()
-                .gap(px(space::L))
-                .child(figure(t("Total to repay", "Total a pagar"), money.format(total_principal + total_interest), true))
-                .child(figure(t("Capital", "Capital"), money.format(total_principal), false))
-                .child(figure(t("Interest", "Interés"), money.format(total_interest), false))
-                .child(figure(t("Installments", "Cuotas"), format!("{n} · {every}"), false)),
+                .flex_wrap()
+                .items_end()
+                .gap(px(space::XL))
+                .child(Stat::new(t("Total to repay", "Total a pagar"), money.format(total_principal + total_interest)))
+                .child(figure(t("Capital", "Capital"), money.format(total_principal)))
+                .child(figure(t("Interest", "Interés"), money.format(total_interest)))
+                .child(figure(t("Installments", "Cuotas"), format!("{n} · {every}"))),
         )
         .child(
             v_flex()
-                .gap(px(4.))
+                .gap(px(space::XS))
                 .child(bullet(terms.method.explanation().to_string()))
                 .child(bullet({
                     let r = rate.label();
@@ -641,11 +629,11 @@ impl LoanForm {
             d.child(
                 div()
                     .px(px(space::M))
-                    .py(px(8.))
-                    .rounded(px(8.))
+                    .py(px(space::S))
+                    .rounded(px(RADIUS_CONTROL))
                     .bg(p.warning_tint)
                     .text_color(p.warning)
-                    .text_size(px(size::META + 0.5))
+                    .typeset(text::CAPTION)
                     .child(t(
                         "The terms changed after you edited the schedule. Your edits were kept; use the calculated schedule to start over.",
                         "Los términos cambiaron después de editar el calendario. Se conservaron tus cambios; usa el calendario calculado para empezar de nuevo.",
@@ -660,16 +648,17 @@ impl LoanForm {
                 .border_color(p.border)
                 .child(
                     h_flex()
+                        .flex_wrap()
                         .justify_between()
                         .gap(px(space::M))
-                        .child(div().font_weight(FontWeight::MEDIUM).child(if self.schedule_edited {
+                        .child(div().typeset(text::BODY_STRONG).child(if self.schedule_edited {
                             t("Payment schedule · edited", "Calendario de pagos · editado")
                         } else {
                             t("Payment schedule", "Calendario de pagos")
                         }))
                         .child(schedule_actions),
                 )
-                .children(schedule.as_ref().err().map(|e| div().text_size(px(size::META + 0.5)).text_color(p.negative).child(e.clone())))
+                .children(schedule.as_ref().err().map(|e| div().typeset(text::CAPTION).text_color(p.negative).child(e.clone())))
                 .child(table),
         )
         .into_any_element()
@@ -690,21 +679,15 @@ impl LoanForm {
         let bullet = |text: String| {
             h_flex()
                 .items_start()
-                .gap(px(8.))
+                .gap(px(space::S))
                 .child(div().mt(px(7.)).size(px(5.)).rounded_full().bg(p.accent).flex_none())
-                .child(div().flex_1().min_w_0().text_color(p.text).child(text))
+                .child(div().flex_1().min_w_0().typeset(text::BODY).text_color(p.text).child(text))
         };
         card.h_full()
-            .child(
-                v_flex()
-                    .gap(px(2.))
-                    .child(div().text_size(px(size::META)).text_color(p.muted).child(tr!("Interest {every}", "Interés {every}")))
-                    .child(num(i.clone()).text_size(px(size::FIGURE + 2.)).line_height(px(30.)).font_weight(FontWeight::MEDIUM))
-                    .child(div().text_size(px(size::META)).text_color(p.muted).child(match rate.conversion_note() {
-                        Some(note) => note,
-                        None => tr!("{quoted} of {principal}", "{quoted} de {principal}"),
-                    })),
-            )
+            .child(Stat::new(tr!("Interest {every}", "Interés {every}"), i.clone()).caption(match rate.conversion_note() {
+                Some(note) => note,
+                None => tr!("{quoted} of {principal}", "{quoted} de {principal}"),
+            }))
             .child(v_flex().child(kv(p, t("First payment due", "Primer pago"), ds.format(terms.first_due()))).child(kv(
                 p,
                 t("Loan date", "Fecha del préstamo"),
@@ -712,11 +695,11 @@ impl LoanForm {
             )))
             .child(
                 v_flex()
-                    .gap(px(8.))
+                    .gap(px(space::S))
                     .pt(px(space::M))
                     .border_t_1()
                     .border_color(p.border)
-                    .child(div().font_weight(FontWeight::MEDIUM).child(t("How payments work", "Cómo funcionan los pagos")))
+                    .child(div().typeset(text::BODY_STRONG).child(t("How payments work", "Cómo funcionan los pagos")))
                     .child(bullet(tr!(
                         "Paying {i} covers the interest. The capital stays at {principal}.",
                         "Si paga {i}, cubre el interés. El capital sigue en {principal}."
@@ -779,153 +762,290 @@ impl Render for LoanForm {
         let rate_err = parsed.rate_err.clone().filter(|_| show || typed);
         let installment_loan = self.method.has_installments();
 
-        let mut chips = h_flex().gap(px(6.)).flex_wrap();
-        for (i, r) in RATE_PRESETS.iter().enumerate() {
-            let r = *r;
-            let id: &'static str = ["rate-5", "rate-10", "rate-15"][i];
-            chips = chips.child(self.chip(&p, id, r.percent_label(), self.preset == Some(r), move |this, _, _| this.preset = Some(r), cx));
-        }
-        chips = chips.child(self.chip(
-            &p,
-            "rate-other",
-            t("Other", "Otra").to_string(),
-            self.preset.is_none(),
-            |this, _, _| this.preset = None,
-            cx,
-        ));
+        // The terms sit beside the preview when the window leaves room for
+        // both, and above it otherwise.
+        let column = Segmented::fitted_width(&Frequency::ALL.map(|f| f.label())).max(TERMS_COLUMN);
+        let side_by_side = body_room(window) >= column + space::XL + preview_min();
+
+        let presets = RATE_PRESETS.iter().map(|r| (Some(*r), SharedString::from(r.percent_label())));
+        let rate_options: Vec<_> = presets.chain([(None, SharedString::from(t("Other", "Otra")))]).collect();
+        let rate_presets = Segmented::pick("rate", rate_options, self.preset, cx, |this: &mut Self, r, window, cx| {
+            this.preset = r;
+            this.terms_changed(window, cx);
+        });
         let rate_control = v_flex()
             .gap(px(space::S))
-            .child(h_flex().gap(px(space::S)).child(chips).when(self.preset.is_none(), |d| {
+            .child(h_flex().flex_wrap().gap(px(space::S)).child(rate_presets).when(self.preset.is_none(), |d| {
                 d.child(div().w(px(92.)).child(Input::new(&self.custom_rate).suffix(div().text_color(p.muted).child("%"))))
             }))
-            .child(self.period_chips(&p, "per", self.interest_period, true, cx));
+            .child(self.period_control("per", self.interest_period, true, cx));
         let rate_label = {
             let per = self.interest_period.per();
             tr!("Interest rate · {per}", "Tasa de interés · {per}")
         };
 
-        h_flex()
-            .items_start()
-            .gap(px(space::XL))
-            .child(
-                v_flex()
-                    .w(px(440.))
-                    .flex_none()
-                    .gap(px(space::M + 2.))
-                    .children(error_banner(&p, &self.error))
-                    .child(field(
-                        &p,
-                        t("Client", "Cliente"),
-                        Select::new(&self.client)
-                            .placeholder(t("Choose a client", "Elige un cliente"))
-                            .search_placeholder(t("Search clients", "Buscar clientes")),
-                        None,
-                        client_err,
-                    ))
-                    .child(field(
-                        &p,
-                        t("Amount lent", "Monto prestado"),
-                        Input::new(&self.principal).prefix(div().text_color(p.muted).child(money.symbol.clone())),
-                        principal_hint,
-                        principal_err,
-                    ))
-                    .child(field(
-                        &p,
-                        t("Loan type", "Tipo de préstamo"),
-                        h_flex()
-                            .gap(px(space::S))
-                            .items_stretch()
-                            .children(Method::ALL.map(|m| self.method_tile(&p, m, cx).into_any_element())),
-                        None,
-                        None,
-                    ))
-                    .child(field(&p, &rate_label, rate_control, None, rate_err))
-                    .child(field(
-                        &p,
-                        t("Payments due", "Pagos"),
-                        self.period_chips(&p, "every", self.frequency, false, cx),
-                        installment_loan.then(|| t("How often installments fall due", "Cada cuánto vencen las cuotas").to_string()),
-                        None,
-                    ))
-                    .child(
-                        h_flex()
-                            .gap(px(space::M))
-                            .items_start()
-                            .child(div().flex_1().child(field(
-                                &p,
-                                t("Loan date", "Fecha del préstamo"),
-                                self.start.clone(),
-                                None,
-                                parsed.start_err.clone().filter(|_| show),
-                            )))
-                            .when(installment_loan, |d| {
-                                d.child(div().w(px(110.)).flex_none().child(field(
-                                    &p,
-                                    t("Installments", "Cuotas"),
-                                    Input::new(&self.installments),
-                                    None,
-                                    parsed.count_err.clone(),
-                                )))
-                                .child(div().w(px(130.)).flex_none().child(field(
-                                    &p,
-                                    t("Late fee", "Cargo por mora"),
-                                    Input::new(&self.late_fee).suffix(div().text_color(p.muted).child("%")),
-                                    Some(t("Once per overdue installment", "Una vez por cuota atrasada").to_string()),
-                                    parsed.fee_err.clone(),
-                                )))
-                            }),
-                    )
-                    .child(field(&p, t("Notes", "Notas"), Textarea::new(&self.notes), None, None))
-                    .when(self.editing.is_none(), |d| {
-                        d.child(
-                            h_flex()
-                                .gap(px(10.))
-                                .child(Switch::new("print-loan-receipt").checked(self.print_receipt).on_click(cx.listener(
-                                    |this, checked: &bool, _, cx| {
-                                        this.print_receipt = *checked;
-                                        cx.notify();
-                                    },
-                                )))
-                                .child(div().child(t(
-                                    "Open the loan receipt to print after saving",
-                                    "Abrir el recibo del préstamo para imprimir al guardar",
-                                ))),
-                        )
-                    })
-                    .when_some(self.editing, |d, id| {
-                        let n = self.snap.payments_for_loan(id).filter(|x| !x.is_reversed()).count();
-                        d.child(field(
-                            &p,
-                            t("Reason for the change", "Motivo del cambio"),
-                            Input::new(&self.reason),
-                            (n > 0).then(|| {
-                                let n = crate::i18n::count(n, "payment", "payments", "pago", "pagos");
-                                tr!("Its {n} will be worked out again.", "Sus {n} se volverán a calcular.")
-                            }),
-                            None,
-                        ))
-                    }),
-            )
-            .child(
-                v_flex()
-                    .flex_1()
-                    .min_w_0()
-                    .self_stretch()
+        let terms = v_flex()
+            .gap(px(space::M + 2.))
+            .map(|d| if side_by_side { d.w(px(column)).flex_none() } else { d.w_full() })
+            .children(error_banner(&p, &self.error))
+            .child(field(
+                &p,
+                t("Client", "Cliente"),
+                h_flex()
                     .gap(px(space::S))
                     .child(
-                        div()
-                            .text_size(px(size::META + 1.))
-                            .font_weight(FontWeight::MEDIUM)
-                            .child(t("Review before saving", "Revisa antes de guardar")),
+                        div().flex_1().min_w_0().child(
+                            Select::new(&self.client)
+                                .placeholder(t("Choose a client", "Elige un cliente"))
+                                .search_placeholder(t("Search clients", "Buscar clientes")),
+                        ),
                     )
-                    .child(div().flex_1().child(self.preview(&p, parsed.terms.as_ref(), window, cx)))
-                    .child(footer(
+                    .child(
+                        Button::new("add-client")
+                            .icon(IconName::Plus)
+                            .label(t("Add new client", "Agregar cliente nuevo"))
+                            .tooltip(t("Add a client without leaving this loan", "Agrega un cliente sin salir de este préstamo"))
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.add_client(window, cx);
+                            })),
+                    ),
+                None,
+                client_err,
+            ))
+            .child(field(
+                &p,
+                t("Amount lent", "Monto prestado"),
+                Input::new(&self.principal).prefix(div().text_color(p.muted).child(money.symbol.clone())),
+                principal_hint,
+                principal_err,
+            ))
+            .child(field(
+                &p,
+                t("Loan type", "Tipo de préstamo"),
+                h_flex().gap(px(space::S)).items_stretch().children(Method::ALL.map(|m| self.method_tile(&p, m, cx).into_any_element())),
+                None,
+                None,
+            ))
+            .child(field(&p, &rate_label, rate_control, None, rate_err))
+            .child(field(
+                &p,
+                t("Payments due", "Pagos"),
+                self.period_control("every", self.frequency, false, cx),
+                installment_loan.then(|| t("How often installments fall due", "Cada cuánto vencen las cuotas").to_string()),
+                None,
+            ))
+            .child(
+                field_row()
+                    .child(grow_field(field(
                         &p,
-                        if self.editing.is_some() { t("Save changes", "Guardar cambios") } else { t("Create loan", "Crear préstamo") },
-                        can_submit,
-                        false,
-                        cx.listener(|this, _, window, cx| this.submit(window, cx)),
-                    )),
+                        t("Loan date", "Fecha del préstamo"),
+                        self.start.clone(),
+                        None,
+                        parsed.start_err.clone().filter(|_| show),
+                    )))
+                    .when(installment_loan, |d| {
+                        d.child(div().w(px(110.)).flex_none().child(field(
+                            &p,
+                            t("Installments", "Cuotas"),
+                            Input::new(&self.installments),
+                            None,
+                            parsed.count_err.clone(),
+                        )))
+                        .child(div().w(px(130.)).flex_none().child(field(
+                            &p,
+                            t("Late fee", "Cargo por mora"),
+                            Input::new(&self.late_fee).suffix(div().text_color(p.muted).child("%")),
+                            Some(t("Once per overdue installment", "Una vez por cuota atrasada").to_string()),
+                            parsed.fee_err.clone(),
+                        )))
+                    }),
             )
+            .child(field(&p, t("Notes", "Notas"), Textarea::new(&self.notes), None, None))
+            .when(self.editing.is_none(), |d| {
+                d.child(
+                    h_flex()
+                        .gap(px(10.))
+                        .child(Switch::new("print-loan-receipt").checked(self.print_receipt).on_click(cx.listener(
+                            |this, checked: &bool, _, cx| {
+                                this.print_receipt = *checked;
+                                cx.notify();
+                            },
+                        )))
+                        .child(div().typeset(text::BODY).child(t(
+                            "Open the loan receipt to print after saving",
+                            "Abrir el recibo del préstamo para imprimir al guardar",
+                        ))),
+                )
+            })
+            .when_some(self.editing, |d, id| {
+                let n = self.snap.payments_for_loan(id).filter(|x| !x.is_reversed()).count();
+                d.child(field(
+                    &p,
+                    t("Reason for the change", "Motivo del cambio"),
+                    Input::new(&self.reason),
+                    (n > 0).then(|| {
+                        let n = crate::i18n::count(n, "payment", "payments", "pago", "pagos");
+                        tr!("Its {n} will be worked out again.", "Sus {n} se volverán a calcular.")
+                    }),
+                    None,
+                ))
+            });
+
+        let review = v_flex()
+            .gap(px(space::S))
+            .map(|d| if side_by_side { d.flex_1().min_w_0().self_stretch() } else { d.w_full() })
+            .child(div().typeset(text::LABEL).child(t("Review before saving", "Revisa antes de guardar")))
+            .child(div().when(side_by_side, |d| d.flex_1()).child(self.preview(&p, parsed.terms.as_ref(), window, cx)))
+            .child(footer(
+                &p,
+                if self.editing.is_some() { t("Save changes", "Guardar cambios") } else { t("Create loan", "Crear préstamo") },
+                can_submit,
+                false,
+                cx.listener(|this, _, window, cx| this.submit(window, cx)),
+            ));
+
+        if side_by_side {
+            h_flex().items_start().gap(px(space::XL)).child(terms).child(review)
+        } else {
+            v_flex().gap(px(space::XL)).child(terms).child(review)
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::cell::RefCell;
+
+    // The kit's glob import also brings GPUI's `test` macro; keep the
+    // built-in one for what `#[gpui::test]` expands to.
+    use ::gpui;
+    use core::prelude::v1::test;
+    use gpui_kit::component::Root;
+
+    use super::*;
+    use crate::database::repositories::clients::ClientInput;
+    use crate::domain::portfolio::CapitalKind;
+    use crate::services::Store;
+
+    /// The app in a test window over an in-memory database with one client
+    /// and money to lend, and the New loan form open.
+    fn loan_form(cx: &mut TestAppContext) -> (Entity<VzApp>, Entity<LoanForm>, &mut VisualTestContext) {
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            crate::ui::theme::install(Default::default(), cx);
+            cx.set_reduce_motion(true);
+        });
+        let today = crate::utils::dates::today();
+        let mut store = Store::in_memory();
+        store.create_client(&ClientInput { full_name: "Ana Ruiz".into(), ..Default::default() }).unwrap();
+        store.add_capital(CapitalKind::Contribution, 10_000_000, today, "", today).unwrap();
+        let slot = Rc::new(RefCell::new(None));
+        let keep = slot.clone();
+        let (_, cx) = cx.add_window_view(move |window, cx| {
+            let app = cx.new(|cx| VzApp::new(store, window, cx));
+            *keep.borrow_mut() = Some(app.clone());
+            Root::new(app, window, cx)
+        });
+        let app = slot.borrow_mut().take().unwrap();
+        let form = cx.update(|window, cx| app.update(cx, |a, cx| a.loan_dialog(None, None, window, cx)));
+        cx.run_until_parked();
+        // Something typed before adding the client.
+        cx.update(|window, cx| {
+            form.update(cx, |f, cx| {
+                f.principal.update(cx, |s, cx| s.set_value("2500", window, cx));
+                f.notes.update(cx, |s, cx| s.set_value("Motorcycle", window, cx));
+                // Never open a browser from a test.
+                f.print_receipt = false;
+            })
+        });
+        (app, form, cx)
+    }
+
+    fn clients(app: &Entity<VzApp>, cx: &mut VisualTestContext) -> Vec<(i64, String)> {
+        cx.update(|_, cx| app.read(cx).snap.clients.iter().map(|c| (c.id, c.full_name.clone())).collect())
+    }
+
+    fn typed(form: &Entity<LoanForm>, cx: &mut VisualTestContext) -> (String, String) {
+        cx.update(|_, cx| {
+            let f = form.read(cx);
+            (value(&f.principal, cx), f.notes.read(cx).value().to_string())
+        })
+    }
+
+    /// How many dialogs are open, found by closing them one by one.
+    fn close_all(cx: &mut VisualTestContext) -> usize {
+        let mut n = 0;
+        while cx.update(|window, cx| window.has_active_dialog(cx)) {
+            cx.update(|window, cx| window.close_dialog(cx));
+            cx.run_until_parked();
+            n += 1;
+        }
+        n
+    }
+
+    #[gpui::test]
+    fn a_client_added_from_the_loan_form_is_selected_and_the_loan_is_theirs(cx: &mut TestAppContext) {
+        let (app, form, cx) = loan_form(cx);
+        let client = cx.update(|window, cx| form.update(cx, |f, cx| f.add_client(window, cx))).unwrap();
+        cx.run_until_parked();
+
+        // A failed save keeps the client form open with what was typed.
+        let long = "x".repeat(201);
+        cx.update(|window, cx| {
+            client.update(cx, |f, cx| {
+                f.name.update(cx, |s, cx| s.set_value(long.clone(), window, cx));
+                f.submit(window, cx);
+            })
+        });
+        assert_eq!(clients(&app, cx).len(), 1);
+        assert_eq!(cx.update(|_, cx| value(&client.read(cx).name, cx)), long);
+
+        // Saving twice in a row (a double click, or Enter and a click) adds one client.
+        cx.update(|window, cx| {
+            client.update(cx, |f, cx| {
+                f.name.update(cx, |s, cx| s.set_value("Bruno Díaz", window, cx));
+                f.submit(window, cx);
+                f.submit(window, cx);
+            })
+        });
+        cx.update(|window, cx| client.update(cx, |f, cx| f.submit(window, cx)));
+        cx.run_until_parked();
+        let all = clients(&app, cx);
+        assert_eq!(all.iter().filter(|(_, n)| n == "Bruno Díaz").count(), 1);
+        let bruno = all.iter().find(|(_, n)| n == "Bruno Díaz").unwrap().0;
+
+        // The loan form selected them, kept what was typed, and lists them.
+        assert_eq!(cx.update(|_, cx| form.read(cx).client_id()), Some(bruno));
+        assert_eq!(cx.update(|_, cx| form.read(cx).client.read(cx).selected_value().copied()), Some(bruno));
+        assert_eq!(typed(&form, cx), ("2500".into(), "Motorcycle".into()));
+
+        // The loan is created for the new client.
+        cx.update(|window, cx| form.update(cx, |f, cx| f.submit(window, cx)));
+        cx.run_until_parked();
+        let loans: Vec<_> = cx.update(|_, cx| app.read(cx).snap.loans.iter().map(|l| (l.client_id, l.terms.principal)).collect());
+        assert_eq!(loans, vec![(bruno, 250_000)]);
+        assert_eq!(close_all(cx), 0, "both forms closed");
+    }
+
+    #[gpui::test]
+    fn cancelling_the_client_form_leaves_the_loan_form_as_it_was(cx: &mut TestAppContext) {
+        let (app, form, cx) = loan_form(cx);
+        cx.update(|window, cx| form.update(cx, |f, cx| f.add_client(window, cx))).unwrap();
+        cx.run_until_parked();
+        // Cancel closes only the client form.
+        cx.update(|window, cx| window.close_dialog(cx));
+        cx.run_until_parked();
+        assert_eq!(clients(&app, cx).len(), 1);
+        assert_eq!(cx.update(|_, cx| form.read(cx).client_id()), None);
+        assert_eq!(typed(&form, cx), ("2500".into(), "Motorcycle".into()));
+        assert_eq!(close_all(cx), 1, "the loan form is still open");
+    }
+
+    #[gpui::test]
+    fn the_client_form_opens_over_the_loan_form(cx: &mut TestAppContext) {
+        let (_, form, cx) = loan_form(cx);
+        cx.update(|window, cx| form.update(cx, |f, cx| f.add_client(window, cx))).unwrap();
+        cx.run_until_parked();
+        assert_eq!(close_all(cx), 2);
     }
 }

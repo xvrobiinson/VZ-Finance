@@ -1,6 +1,6 @@
 [package]
 name = "vz-finance"
-version = "0.4.0"
+version = "0.5.0"
 edition = "2024"
 description = "VZ Finance: a private, offline lending portfolio manager for Windows"
 license = "Proprietary"
@@ -30,6 +30,8 @@ thiserror = "2.0.21"
 
 [dev-dependencies]
 tempfile = "3.27.0"
+# Test windows for the forms (GPUI test platform).
+gpui-pre = { version = "=0.3.9", features = ["test-support"] }
 
 [build-dependencies]
 embed-resource = "3.0.12"

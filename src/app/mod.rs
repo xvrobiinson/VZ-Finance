@@ -22,7 +22,7 @@ use crate::services::settings::{CURRENCIES, Settings};
 use crate::services::{CashShortfall, InsufficientCash, Invalid, Snapshot, Store};
 use crate::tr;
 use crate::ui::forms::loan::Choice;
-use crate::ui::theme::{self, FONT, palette, space};
+use crate::ui::theme::{self, Typeset as _, palette, space};
 use crate::utils::dates::today;
 
 actions!(
@@ -122,6 +122,9 @@ pub struct VzApp {
     pub(crate) load_error: Option<String>,
     /// The business logo, decoded once per upload.
     pub(crate) logo: Option<Arc<Image>>,
+    /// A client photo someone chose to show, with the client it belongs to.
+    /// Hidden again after any change to the data.
+    pub(crate) shown_photo: Option<(i64, Arc<Image>)>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -208,6 +211,7 @@ impl VzApp {
             analytics_hover: None,
             load_error,
             logo,
+            shown_photo: None,
             _subscriptions: subs,
         };
         app.apply_language(window, cx);
@@ -263,6 +267,7 @@ impl VzApp {
         match self.store.snapshot() {
             Ok(s) => {
                 self.logo = logo_image(&s, self.logo.take());
+                self.shown_photo = None;
                 self.snap = Rc::new(s);
                 self.load_error = None;
             }
@@ -285,9 +290,15 @@ impl VzApp {
     /// Width available to a screen's content, for layouts that reflow on
     /// narrow windows.
     pub fn content_width(&self, window: &Window) -> f32 {
-        let side = if self.settings().sidebar_collapsed { theme::SIDEBAR_COLLAPSED } else { theme::SIDEBAR_WIDTH };
+        let side = if self.sidebar_collapsed(window) { theme::SIDEBAR_COLLAPSED } else { theme::SIDEBAR_WIDTH };
         let viewport = f32::from(window.viewport_size().width);
-        (viewport - side - 2.0 * (space::XXL + 4.0)).min(1440.0 - 2.0 * (space::XXL + 4.0))
+        viewport - side - 2.0 * theme::Width::gutter(viewport)
+    }
+
+    /// The sidebar shows icons only when the user collapsed it or the
+    /// window is too narrow to spare the room.
+    pub fn sidebar_collapsed(&self, window: &Window) -> bool {
+        self.settings().sidebar_collapsed || f32::from(window.viewport_size().width) < theme::SIDEBAR_AUTO_COLLAPSE
     }
 
     /// The active loan the current screen is about, for context-aware
@@ -579,6 +590,7 @@ impl Render for VzApp {
         i18n::set(self.snap.settings.language);
         crate::ui::components::begin_selectable_frame();
         let p = palette(cx);
+        let gutter = theme::Width::gutter(f32::from(window.viewport_size().width));
         let content = match self.route {
             Route::Overview => self.render_overview(window, cx),
             Route::Clients => self.render_clients(window, cx),
@@ -636,14 +648,17 @@ impl Render for VzApp {
             .flex_row()
             .bg(p.ground)
             .text_color(p.text)
-            .font_family(FONT)
-            .text_size(px(theme::size::BODY))
-            .line_height(px(20.))
+            .typeset(theme::text::BODY)
             .child(self.render_sidebar(window, cx))
-            .child(v_flex().flex_1().min_w_0().h_full().children(banner).child(
-                div().id(SharedString::from(format!("scroll-{:?}", self.route.section()))).flex_1().min_h_0().overflow_y_scroll().child(
-                    div().w_full().max_w(px(1440.)).mx_auto().px(px(space::XXL + 4.)).pt(px(space::XXL - 4.)).pb(px(48.)).child(content),
+            .child(
+                v_flex().flex_1().min_w_0().h_full().children(banner).child(
+                    div()
+                        .id(SharedString::from(format!("scroll-{:?}", self.route.section())))
+                        .flex_1()
+                        .min_h_0()
+                        .overflow_y_scroll()
+                        .child(div().w_full().px(px(gutter)).pt(px(gutter.min(space::XXL - 4.))).pb(px(48.)).child(content)),
                 ),
-            ))
+            )
     }
 }

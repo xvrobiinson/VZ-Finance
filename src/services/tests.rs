@@ -269,13 +269,13 @@ fn writes_a_loan_receipt() {
     let (s, _, lid, _) = lent(today);
     let snap = s.snapshot().unwrap();
     let r = receipt::loan_data(&snap, lid).unwrap();
-    assert_eq!((r.principal, r.interest_per_period, r.payoff_at_first_due()), (100_000, 10_000, 110_000));
-    assert_eq!(r.upcoming.len(), 6);
-    assert_eq!(r.upcoming[0], (1, d(2026, 2, 1), 10_000));
-    assert_eq!(r.upcoming[5].1, d(2026, 7, 1));
+    assert_eq!((r.principal, r.interest_per_period, r.interest_after_half), (100_000, 10_000, 5_000));
+    // An open loan has no schedule, so no due dates are printed.
+    assert!(r.schedule.is_empty());
     let dir = tempfile::tempdir().unwrap();
     let html = std::fs::read_to_string(receipt::write_loan(&snap, lid, dir.path()).unwrap()).unwrap();
     assert!(html.contains("Marta Quiroga") && html.contains("Loan receipt"));
+    assert!(!html.contains("Feb 1, 2026") && !html.contains("Due date"));
 }
 
 #[test]
@@ -287,7 +287,8 @@ fn writes_a_receipt() {
     let data = receipt::data(&snap, pid).unwrap();
     assert_eq!((data.interest, data.principal), (10_000, 50_000));
     assert_eq!((data.principal_before, data.principal_after), (100_000, 50_000));
-    assert_eq!(data.next_due, Some((d(2026, 3, 1), 5_000)));
+    // Open loans print no due dates.
+    assert_eq!(data.next_due, None);
     let path = receipt::write(&snap, pid, dir.path()).unwrap();
     let html = std::fs::read_to_string(path).unwrap();
     assert!(html.contains("Marta Quiroga"));

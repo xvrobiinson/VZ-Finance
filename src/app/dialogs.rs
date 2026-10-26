@@ -12,7 +12,7 @@ use crate::services::Store;
 use crate::tr;
 use crate::ui::forms::adjust::AdjustForm;
 use crate::ui::forms::capital::CapitalForm;
-use crate::ui::forms::client::ClientForm;
+use crate::ui::forms::client::{ClientForm, OnCreated};
 use crate::ui::forms::entry::EntryForm;
 use crate::ui::forms::focus_once;
 use crate::ui::forms::loan::LoanForm;
@@ -47,27 +47,61 @@ submit_impl!(ClientForm, LoanForm, PaymentForm, CapitalForm, ReasonForm, EntryFo
 
 impl VzApp {
     pub fn open_client_form(&mut self, client_id: Option<i64>, window: &mut Window, cx: &mut Context<Self>) {
+        self.client_dialog(client_id, None, window, cx);
+    }
+
+    /// A new client added from inside another form (the loan form): the
+    /// dialog opens on top of it, `on_created` gets the new client's id and
+    /// the app stays where it is.
+    pub fn open_new_client_for(&mut self, on_created: OnCreated, window: &mut Window, cx: &mut Context<Self>) -> Entity<ClientForm> {
+        self.client_dialog(None, Some(on_created), window, cx)
+    }
+
+    fn client_dialog(
+        &mut self,
+        client_id: Option<i64>,
+        on_created: Option<OnCreated>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Entity<ClientForm> {
         let existing = client_id.and_then(|id| self.snap.client(id).cloned());
+        // The photo is read only for the form that edits it.
+        let photo = existing.as_ref().filter(|c| c.has_photo).and_then(|c| match self.store.client_photo(c.id) {
+            Ok(p) => p,
+            Err(e) => {
+                log::warn!("client photo not loaded: {e:#}");
+                None
+            }
+        });
         let app = cx.entity().downgrade();
-        let form = cx.new(|cx| ClientForm::new(app, existing.clone(), window, cx));
+        let form = cx.new(|cx| ClientForm::new(app, existing.clone(), photo, on_created, window, cx));
         let title = if existing.is_some() { t("Edit client", "Editar cliente") } else { t("New client", "Nuevo cliente") };
         let first = Cell::new(true);
+        let dialog_form = form.clone();
         window.open_dialog(cx, move |dialog, window, cx| {
-            let handle = form.read(cx).name.focus_handle(cx);
+            let handle = dialog_form.read(cx).name.focus_handle(cx);
             focus_once(&first, &handle, window, cx);
-            dialog.title(title).w(px(560.)).child(form.clone()).on_ok(confirm(&form))
+            dialog.title(title).w(px(560.)).child(dialog_form.clone()).on_ok(confirm(&dialog_form))
         });
+        form
     }
 
     pub fn open_loan_form(&mut self, client_id: Option<i64>, window: &mut Window, cx: &mut Context<Self>) {
-        self.loan_dialog(client_id, None, window, cx)
+        self.loan_dialog(client_id, None, window, cx);
     }
 
     pub fn edit_loan(&mut self, loan_id: i64, window: &mut Window, cx: &mut Context<Self>) {
-        self.loan_dialog(None, Some(loan_id), window, cx)
+        self.loan_dialog(None, Some(loan_id), window, cx);
     }
 
-    fn loan_dialog(&mut self, client_id: Option<i64>, editing: Option<i64>, window: &mut Window, cx: &mut Context<Self>) {
+    /// Opens the loan form and returns it.
+    pub(crate) fn loan_dialog(
+        &mut self,
+        client_id: Option<i64>,
+        editing: Option<i64>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Entity<LoanForm> {
         let app = cx.entity().downgrade();
         let snap = self.snap.clone();
         let form = cx.new(|cx| LoanForm::new(app, snap, client_id, editing, window, cx));
@@ -76,11 +110,13 @@ impl VzApp {
             None => t("New loan", "Nuevo préstamo").to_string(),
         };
         let first = Cell::new(true);
+        let dialog_form = form.clone();
         window.open_dialog(cx, move |dialog, window, cx| {
-            let handle = form.read(cx).first_focus(cx);
+            let handle = dialog_form.read(cx).first_focus(cx);
             focus_once(&first, &handle, window, cx);
-            dialog.title(title.clone()).w(px(1120.)).child(form.clone()).on_ok(confirm(&form))
+            dialog.title(title.clone()).w(px(1120.)).child(dialog_form.clone()).on_ok(confirm(&dialog_form))
         });
+        form
     }
 
     pub fn open_payment_form(&mut self, loan_id: Option<i64>, window: &mut Window, cx: &mut Context<Self>) {

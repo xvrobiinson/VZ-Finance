@@ -9,8 +9,7 @@ pub mod payments;
 pub mod settings;
 
 use gpui_kit::assets::IconName;
-use gpui_kit::component::button::{Button, ButtonVariants as _};
-use gpui_kit::component::{Sizable as _, h_flex, v_flex};
+use gpui_kit::component::{h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
@@ -19,12 +18,13 @@ use crate::database::repositories::changes::{Action, Change};
 use crate::domain::ledger::{Delinquency, DisplayStatus};
 use crate::i18n::t;
 use crate::tr;
-use crate::ui::components::{Tone, card, card_header, icon, pill, status_tone};
-use crate::ui::theme::{Palette, size, space};
+use crate::ui::components::{icon, pill, status_tone};
+use crate::ui::kit::{Button, Card};
+use crate::ui::theme::{Palette, Typeset as _, space, tabular, text};
 use crate::utils::dates::days_between;
 
-/// A small icon button for a table row (edit, delete). Clicks don't reach
-/// the row underneath.
+/// A small ghost icon button for a table row (edit, delete). Clicks don't
+/// reach the row underneath.
 pub fn row_icon_button(
     id: impl Into<ElementId>,
     icon_name: IconName,
@@ -74,31 +74,27 @@ impl VzApp {
                             h_flex()
                                 .justify_between()
                                 .gap(px(space::M))
-                                .child(div().font_weight(FontWeight::MEDIUM).min_w_0().truncate().child(d.title))
-                                .child(div().flex_none().text_size(px(size::META)).text_color(p.faint).child(d.when)),
+                                .child(div().typeset(text::BODY_STRONG).min_w_0().truncate().child(d.title))
+                                .child(div().flex_none().typeset(text::CAPTION).text_color(p.faint).child(d.when)),
                         )
-                        .children(d.lines.into_iter().map(|l| {
-                            div().text_size(px(size::META + 0.5)).text_color(p.muted).font_features(crate::ui::theme::tabular()).child(l)
-                        }))
+                        .children(
+                            d.lines.into_iter().map(|l| div().typeset(text::CAPTION).text_color(p.muted).font_features(tabular()).child(l)),
+                        )
                         .when(!d.reason.is_empty(), |el| {
                             let why = d.reason.clone();
-                            el.child(div().text_size(px(size::META + 0.5)).text_color(p.text).child(tr!("Reason: {why}", "Motivo: {why}")))
+                            el.child(div().typeset(text::CAPTION).text_color(p.text).child(tr!("Reason: {why}", "Motivo: {why}")))
                         }),
                 )
         });
-        card(p)
+        Card::new()
             .overflow_hidden()
-            .child(card_header(
-                p,
-                t("Change history", "Historial de cambios"),
-                Some(
-                    div()
-                        .text_size(px(size::META))
-                        .text_color(p.muted)
-                        .child(t("Every edit and deletion is kept here", "Aquí queda cada edición y eliminación"))
-                        .into_any_element(),
-                ),
-            ))
+            .title(t("Change history", "Historial de cambios"))
+            .action(
+                div()
+                    .typeset(text::CAPTION)
+                    .text_color(p.muted)
+                    .child(t("Every edit and deletion is kept here", "Aquí queda cada edición y eliminación")),
+            )
             .child(v_flex().children(rows))
             .into_any_element()
     }
@@ -122,43 +118,12 @@ pub fn status_detail_pill(p: &Palette, status: DisplayStatus, q: &Delinquency, t
     pill(p, text, status_tone(status))
 }
 
-/// Segmented control. `options` are (key, label); returns the row.
-pub fn segmented<K: Copy + PartialEq + 'static>(
-    p: &Palette,
-    id: &str,
-    options: &[(K, &str)],
-    selected: K,
-    cx: &mut Context<VzApp>,
-    on_select: impl Fn(&mut VzApp, K, &mut Window, &mut Context<VzApp>) + Clone + 'static,
-) -> Div {
-    h_flex().p(px(2.)).gap(px(2.)).rounded(px(8.)).bg(p.neutral_tint).children(options.iter().map(|(k, label)| {
-        let k = *k;
-        let is = k == selected;
-        let on_select = on_select.clone();
-        h_flex()
-            .id(SharedString::from(format!("{id}-{label}")))
-            .h(px(26.))
-            .px(px(10.))
-            .rounded(px(6.))
-            .text_size(px(size::META + 0.5))
-            .cursor_pointer()
-            .when(is, |d| {
-                d.bg(p.surface)
-                    .text_color(p.text)
-                    .font_weight(FontWeight::MEDIUM)
-                    .shadow(vec![BoxShadow::new(px(0.), px(1.), p.shadow).blur_radius(px(3.))])
-            })
-            .when(!is, |d| d.text_color(p.muted).hover(|s| s.text_color(p.text)))
-            .child(label.to_string())
-            .on_click(cx.listener(move |this, _, w, cx| on_select(this, k, w, cx)))
-    }))
-}
-
 /// "View all" style link in a card header.
 pub fn header_link(p: &Palette, id: &str, text: &str, route: Route, cx: &mut Context<VzApp>) -> AnyElement {
     div()
         .id(SharedString::from(id.to_string()))
-        .text_size(px(size::META + 0.5))
+        .typeset(text::CAPTION)
+        .text_size(px(12.5))
         .text_color(p.accent_text)
         .cursor_pointer()
         .hover(|s| s.underline())
@@ -173,7 +138,8 @@ pub fn crumb(p: &Palette, text: &str, route: Route, cx: &mut Context<VzApp>) -> 
         .id("crumb")
         .gap(px(4.))
         .pb(px(10.))
-        .text_size(px(size::META + 0.5))
+        .typeset(text::CAPTION)
+        .text_size(px(12.5))
         .text_color(p.muted)
         .cursor_pointer()
         .hover(|s| s.text_color(p.text))
@@ -183,22 +149,11 @@ pub fn crumb(p: &Palette, text: &str, route: Route, cx: &mut Context<VzApp>) -> 
         .into_any_element()
 }
 
-pub fn tone_for_gain(gain: i64) -> Tone {
-    match gain.signum() {
-        1 => Tone::Positive,
-        -1 => Tone::Negative,
-        _ => Tone::Neutral,
-    }
-}
-
 pub fn column(width: f32) -> Div {
     div().w(px(width)).flex_none()
 }
 
+/// A right-aligned number column: tabular figures, never wrapped or cut.
 pub fn ncolumn(width: f32) -> Div {
-    div().w(px(width)).flex_none().text_right()
-}
-
-pub fn grow() -> Div {
-    v_flex().flex_1().min_w_0()
+    div().w(px(width)).flex_none().text_right().font_features(tabular()).whitespace_nowrap()
 }

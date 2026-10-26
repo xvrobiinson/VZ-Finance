@@ -15,25 +15,50 @@ pub mod schedule;
 use std::cell::Cell;
 
 use chrono::NaiveDate;
-use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::InputState;
-use gpui_kit::component::{Disableable as _, WindowExt as _, h_flex, v_flex};
+use gpui_kit::component::{WindowExt as _, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use crate::i18n::t;
-use crate::ui::theme::{Palette, size, space};
+use crate::ui::kit::Button;
+use crate::ui::theme::{Palette, RADIUS_CARD, RADIUS_CONTROL, Typeset as _, space, text};
 use date_field::DateField;
+
+/// Width of a date field beside another field.
+pub const DATE_WIDTH: f32 = 200.0;
+/// Narrowest a growing field gets before its row wraps.
+pub const FIELD_MIN: f32 = 160.0;
+/// Room a dialog keeps around itself in the window, and inside around its
+/// body, on each side (GPUI Component's dialog: 16px margin, 16px padding).
+const DIALOG_INSET: f32 = 2.0 * space::L;
 
 /// Label above a control, with an optional hint and inline error.
 pub fn field(p: &Palette, label: &str, control: impl IntoElement, hint: Option<String>, error: Option<String>) -> Div {
     v_flex()
         .gap(px(6.))
         .min_w_0()
-        .child(div().text_size(px(size::META + 1.)).font_weight(FontWeight::MEDIUM).text_color(p.text).child(label.to_string()))
+        .child(div().typeset(text::LABEL).text_color(p.text).child(label.to_string()))
         .child(control)
-        .when_some(error.clone(), |d, e| d.child(div().text_size(px(size::META)).text_color(p.negative).child(e)))
-        .when(error.is_none(), |d| d.when_some(hint, |d, h| d.child(div().text_size(px(size::META)).text_color(p.muted).child(h))))
+        .when_some(error.clone(), |d, e| d.child(div().typeset(text::CAPTION).text_color(p.negative).child(e)))
+        .when(error.is_none(), |d| d.when_some(hint, |d, h| d.child(div().typeset(text::CAPTION).text_color(p.muted).child(h))))
+}
+
+/// A row of fields side by side that wraps to the next line rather than
+/// squeezing a field under [`FIELD_MIN`]. Give growing fields [`grow_field`].
+pub fn field_row() -> Div {
+    h_flex().flex_wrap().items_start().gap(px(space::M))
+}
+
+/// A field in a [`field_row`] that takes the room left over.
+pub fn grow_field(content: impl IntoElement) -> Div {
+    div().flex_1().min_w(px(FIELD_MIN)).child(content)
+}
+
+/// The widest a dialog body can be in this window. Wide forms stack their
+/// columns when this is less than they need.
+pub fn body_room(window: &Window) -> f32 {
+    f32::from(window.viewport_size().width) - 2.0 * DIALOG_INSET
 }
 
 pub fn value(state: &Entity<InputState>, cx: &App) -> String {
@@ -48,6 +73,15 @@ pub fn date_field(date: NaiveDate, window: &mut Window, cx: &mut App) -> Entity<
     cx.new(|cx| DateField::new(date, window, cx))
 }
 
+/// Cancel, then `primary`, at the right.
+fn actions(primary: Button) -> Div {
+    h_flex()
+        .justify_end()
+        .gap(px(space::S))
+        .child(Button::new("cancel").label(t("Cancel", "Cancelar")).on_click(|_, window, cx| window.close_dialog(cx)))
+        .child(primary)
+}
+
 /// Footer with Cancel and the primary action.
 pub fn footer(
     p: &Palette,
@@ -56,21 +90,41 @@ pub fn footer(
     busy: bool,
     on_primary: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
 ) -> Div {
-    h_flex()
-        .justify_end()
-        .gap(px(space::S))
+    actions(Button::new("submit").primary().label(primary_label.to_string()).loading(busy).disabled(!enabled).on_click(on_primary))
         .pt(px(space::XL))
         .mt(px(space::S))
         .border_t_1()
         .border_color(p.rule)
-        .child(Button::new("cancel").label(t("Cancel", "Cancelar")).on_click(|_, window, cx| window.close_dialog(cx)))
-        .child(
-            Button::new("submit").primary().label(primary_label.to_string()).loading(busy).disabled(!enabled || busy).on_click(on_primary),
-        )
+}
+
+/// Footer of a confirmation that destroys or removes something: Cancel and
+/// a danger button.
+pub fn danger_footer(
+    id: &'static str,
+    label: &str,
+    enabled: bool,
+    on_confirm: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+) -> Div {
+    actions(Button::new(id).danger().label(label.to_string()).disabled(!enabled).on_click(on_confirm)).pt(px(space::S))
 }
 
 pub fn error_banner(p: &Palette, error: &Option<String>) -> Option<Div> {
-    error.as_ref().map(|e| div().px(px(space::M)).py(px(10.)).rounded(px(8.)).bg(p.negative_tint).text_color(p.negative).child(e.clone()))
+    error.as_ref().map(|e| {
+        div()
+            .px(px(space::M))
+            .py(px(space::S))
+            .rounded(px(RADIUS_CONTROL))
+            .bg(p.negative_tint)
+            .typeset(text::BODY)
+            .text_color(p.negative)
+            .child(e.clone())
+    })
+}
+
+/// An inset panel inside a dialog for previews (the schedule, how a
+/// payment is split). Not a card: it sits flat in the dialog.
+pub fn panel(p: &Palette) -> Div {
+    v_flex().p(px(space::L)).rounded(px(RADIUS_CARD)).bg(p.raised).border_1().border_color(p.rule)
 }
 
 /// Focus `handle` the first time the dialog builder runs, never after.
@@ -89,21 +143,22 @@ pub fn reason_input<T: 'static>(window: &mut Window, cx: &mut Context<T>) -> Ent
     cx.new(|cx| InputState::new(window, cx).placeholder(t("Optional: why it changed", "Opcional: por qué cambió")))
 }
 
-/// A selectable tile with a title and an optional line under it. The caller
-/// adds the click handler.
+/// A selectable tile with a title and an optional line under it, for
+/// choices that need a word of explanation (a plain choice is a
+/// [`segmented`] control). The caller adds the click handler.
 pub fn choice_tile(p: &Palette, id: &'static str, title: &str, sub: Option<String>, selected: bool) -> Stateful<Div> {
     v_flex()
         .id(id)
         .flex_1()
         .min_w_0()
-        .p(px(10.))
+        .p(px(space::M))
         .gap(px(2.))
-        .rounded(px(8.))
+        .rounded(px(RADIUS_CONTROL))
         .border_1()
         .border_color(if selected { p.accent } else { p.border })
         .when(selected, |d| d.bg(p.accent_tint))
         .when(!selected, |d| d.hover(|s| s.bg(p.hover)))
         .cursor_pointer()
-        .child(div().font_weight(FontWeight::MEDIUM).text_color(if selected { p.accent_text } else { p.text }).child(title.to_string()))
-        .children(sub.map(|s| div().text_size(px(size::META)).text_color(p.muted).truncate().child(s)))
+        .child(div().typeset(text::BODY_STRONG).text_color(if selected { p.accent_text } else { p.text }).child(title.to_string()))
+        .children(sub.map(|s| div().typeset(text::CAPTION).text_color(p.muted).child(s)))
 }

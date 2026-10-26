@@ -1,3 +1,5 @@
+use std::rc::Rc;
+
 use gpui_kit::assets::IconName;
 use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::{h_flex, v_flex};
@@ -8,7 +10,9 @@ use super::{Route, VzApp};
 use crate::i18n::t;
 use crate::tr;
 use crate::ui::components::{Tone, icon, pill};
-use crate::ui::theme::{Palette, SIDEBAR_COLLAPSED, SIDEBAR_WIDTH, palette, size, space};
+use crate::ui::kit::interact::{faded, hover_state, scoped};
+use crate::ui::kit::{Button, ClickHandler};
+use crate::ui::theme::{Palette, RADIUS_CONTROL, SIDEBAR_COLLAPSED, SIDEBAR_WIDTH, Typeset as _, motion, palette, space, text};
 
 fn nav() -> [(Route, IconName, &'static str, &'static str); 6] {
     [
@@ -41,10 +45,97 @@ fn mark(p: &Palette) -> Div {
         .child(div().w(px(3.)).h(px(12.)).rounded(px(1.)).bg(p.accent))
 }
 
-impl VzApp {
-    pub(crate) fn render_sidebar(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+/// One sidebar destination: icon, label and an optional badge (just the
+/// icon when collapsed). The hover fill springs in like the kit's rows.
+#[derive(IntoElement)]
+struct NavItem {
+    id: ElementId,
+    icon: IconName,
+    label: SharedString,
+    tip: SharedString,
+    active: bool,
+    collapsed: bool,
+    badge: Option<AnyElement>,
+    on_click: ClickHandler,
+}
+
+impl NavItem {
+    fn new(
+        id: impl Into<ElementId>,
+        icon: IconName,
+        label: impl Into<SharedString>,
+        tip: impl Into<SharedString>,
+        on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+    ) -> Self {
+        Self {
+            id: id.into(),
+            icon,
+            label: label.into(),
+            tip: tip.into(),
+            active: false,
+            collapsed: false,
+            badge: None,
+            on_click: Rc::new(on_click),
+        }
+    }
+
+    fn active(mut self, active: bool) -> Self {
+        self.active = active;
+        self
+    }
+
+    fn collapsed(mut self, collapsed: bool) -> Self {
+        self.collapsed = collapsed;
+        self
+    }
+
+    fn badge(mut self, badge: Option<impl IntoElement>) -> Self {
+        self.badge = badge.map(|b| b.into_any_element());
+        self
+    }
+}
+
+impl RenderOnce for NavItem {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
         let p = palette(cx);
-        let collapsed = self.settings().sidebar_collapsed;
+        let (hovered, on_hover) = hover_state(&self.id, window, cx);
+        let (active, tip, f) = (self.active, self.tip, self.on_click);
+        let ink = if active { p.text } else { p.muted };
+        h_flex()
+            .id(self.id.clone())
+            .h(px(36.))
+            .mx(px(10.))
+            .px(px(10.))
+            .gap(px(10.))
+            .rounded(px(RADIUS_CONTROL))
+            .cursor_pointer()
+            .when(self.collapsed, |d| d.justify_center().px_0())
+            .child(icon(self.icon, ink, 16.))
+            .when(!self.collapsed, |d| {
+                d.child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .truncate()
+                        .typeset(if active { text::BODY_STRONG } else { text::BODY })
+                        .text_color(ink)
+                        .child(self.label),
+                )
+                .children(self.badge)
+            })
+            .on_hover(on_hover)
+            .tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx))
+            .on_click(move |e, w, cx| f(e, w, cx))
+            .with_spring(scoped(&self.id, "fill"), SpringAnimation::new(motion::CONTROL).to(hovered && !active), move |d, t| {
+                d.bg(if active { p.active } else { faded(p.hover, t.0) })
+            })
+    }
+}
+
+impl VzApp {
+    pub(crate) fn render_sidebar(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+        let p = palette(cx);
+        let collapsed = self.sidebar_collapsed(window);
         let section = self.route.section();
         let summary = self.snap.book.summary(self.today);
         let overdue = summary.overdue_loans;
@@ -52,35 +143,18 @@ impl VzApp {
         let business = crate::APP_NAME;
         let items = nav();
         let nav = items.iter().map(|(route, icon_name, label, keys)| {
-            let active = section == *route;
             let route = *route;
-            let tip = format!("{label}  {keys}");
             let badge = (route == Route::Loans && overdue > 0).then(|| pill(&p, overdue.to_string(), Tone::Negative).h(px(20.)).px(px(6.)));
-            h_flex()
-                .id(SharedString::from(format!("nav-{:?}", route)))
-                .h(px(36.))
-                .mx(px(10.))
-                .px(px(10.))
-                .gap(px(10.))
-                .rounded(px(8.))
-                .cursor_pointer()
-                .when(collapsed, |d| d.justify_center().px_0())
-                .when(active, |d| d.bg(p.active))
-                .when(!active, |d| d.hover(|s| s.bg(p.hover)))
-                .child(icon(*icon_name, if active { p.text } else { p.muted }, 16.))
-                .when(!collapsed, |d| {
-                    d.child(
-                        div()
-                            .flex_1()
-                            .text_color(if active { p.text } else { p.muted })
-                            .font_weight(if active { FontWeight::MEDIUM } else { FontWeight::NORMAL })
-                            .whitespace_nowrap()
-                            .child(label.to_string()),
-                    )
-                    .children(badge)
-                })
-                .tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx))
-                .on_click(cx.listener(move |this, _, window, cx| this.navigate(route, window, cx)))
+            NavItem::new(
+                SharedString::from(format!("nav-{:?}", route)),
+                *icon_name,
+                label.to_string(),
+                format!("{label}  {keys}"),
+                cx.listener(move |this, _, window, cx| this.navigate(route, window, cx)),
+            )
+            .active(section == route)
+            .collapsed(collapsed)
+            .badge(badge)
         });
 
         let backup_label = match &self.settings().last_backup_at {
@@ -88,6 +162,14 @@ impl VzApp {
             None => t("Not backed up yet", "Sin copia de seguridad").to_string(),
         };
         let backup_tone = if self.settings().last_backup_at.is_some() { p.faint } else { p.warning };
+        let toggle = |id: &'static str, icon_name: IconName, tip: &'static str| {
+            Button::new(id)
+                .ghost()
+                .small()
+                .icon(icon_name)
+                .tooltip(tip)
+                .on_click(cx.listener(|this, _, w, cx| this.toggle_sidebar(&super::ToggleSidebar, w, cx)))
+        };
 
         v_flex()
             .flex_none()
@@ -113,96 +195,52 @@ impl VzApp {
                         None => mark(&p).into_any_element(),
                     })
                     .when(!collapsed, |d| {
-                        d.child(
-                            div()
-                                .flex_1()
-                                .min_w_0()
-                                .line_clamp(2)
-                                .text_size(px(size::SECTION))
-                                .line_height(px(19.))
-                                .font_weight(FontWeight::SEMIBOLD)
-                                .text_color(p.text)
-                                .child(business),
-                        )
-                    })
-                    .when(!collapsed, |d| {
-                        d.child(
-                            h_flex()
-                                .id("collapse")
-                                .size(px(28.))
-                                .rounded(px(6.))
-                                .justify_center()
-                                .cursor_pointer()
-                                .hover(|s| s.bg(p.hover))
-                                .child(icon(IconName::PanelLeftClose, p.faint, 16.))
-                                .tooltip(|window, cx| Tooltip::new(t("Collapse sidebar  Ctrl+B", "Ocultar menú  Ctrl+B")).build(window, cx))
-                                .on_click(cx.listener(|this, _, w, cx| this.toggle_sidebar(&super::ToggleSidebar, w, cx))),
-                        )
+                        d.child(div().flex_1().min_w_0().line_clamp(2).typeset(text::HEADING).text_color(p.text).child(business))
+                            .child(toggle("collapse", IconName::PanelLeftClose, t("Collapse sidebar  Ctrl+B", "Ocultar menú  Ctrl+B")))
                     }),
             )
             .when(collapsed, |d| {
-                d.child(
-                    h_flex().justify_center().pb(px(8.)).child(
-                        h_flex()
-                            .id("expand")
-                            .size(px(28.))
-                            .rounded(px(6.))
-                            .justify_center()
-                            .cursor_pointer()
-                            .hover(|s| s.bg(p.hover))
-                            .child(icon(IconName::PanelLeftOpen, p.faint, 16.))
-                            .tooltip(|window, cx| Tooltip::new(t("Expand sidebar  Ctrl+B", "Mostrar menú  Ctrl+B")).build(window, cx))
-                            .on_click(cx.listener(|this, _, w, cx| this.toggle_sidebar(&super::ToggleSidebar, w, cx))),
-                    ),
-                )
+                d.child(h_flex().justify_center().pb(px(space::S)).child(toggle(
+                    "expand",
+                    IconName::PanelLeftOpen,
+                    t("Expand sidebar  Ctrl+B", "Mostrar menú  Ctrl+B"),
+                )))
             })
-            .child(v_flex().gap(px(2.)).pt(px(4.)).children(nav))
+            .child(v_flex().gap(px(2.)).pt(px(space::XS)).children(nav))
             .child(div().flex_1())
             .child(
                 v_flex()
                     .gap(px(2.))
                     .pb(px(space::L))
                     .child(
-                        h_flex()
-                            .id("backup")
-                            .h(px(36.))
-                            .mx(px(10.))
-                            .px(px(10.))
-                            .gap(px(10.))
-                            .rounded(px(8.))
-                            .cursor_pointer()
-                            .when(collapsed, |d| d.justify_center().px_0())
-                            .hover(|s| s.bg(p.hover))
-                            .child(icon(IconName::DatabaseBackup, p.muted, 16.))
-                            .when(!collapsed, |d| d.child(div().text_color(p.muted).child(t("Back up database", "Copia de seguridad"))))
-                            .tooltip(|window, cx| {
-                                Tooltip::new(t("Back up database  Ctrl+S", "Copia de seguridad  Ctrl+S")).build(window, cx)
-                            })
-                            .on_click(cx.listener(|this, _, w, cx| this.backup_now(&super::BackupNow, w, cx))),
+                        NavItem::new(
+                            "backup",
+                            IconName::DatabaseBackup,
+                            t("Back up database", "Copia de seguridad"),
+                            t("Back up database  Ctrl+S", "Copia de seguridad  Ctrl+S"),
+                            cx.listener(|this, _, w, cx| this.backup_now(&super::BackupNow, w, cx)),
+                        )
+                        .collapsed(collapsed),
                     )
                     .when(!collapsed, |d| {
                         d.child(
                             v_flex()
                                 .mx(px(20.))
                                 .mt(px(10.))
-                                .pt(px(12.))
+                                .pt(px(space::M))
                                 .border_t_1()
                                 .border_color(p.border)
                                 .gap(px(2.))
+                                .typeset(text::CAPTION)
+                                .text_color(p.faint)
                                 .child(
-                                    h_flex().gap(px(6.)).child(icon(IconName::ShieldCheck, p.faint, 13.)).child(
-                                        div()
-                                            .text_size(px(size::META))
-                                            .text_color(p.faint)
-                                            .child(t("Private · stored on this PC", "Privado · guardado en esta PC")),
-                                    ),
+                                    h_flex()
+                                        .gap(px(6.))
+                                        .child(icon(IconName::ShieldCheck, p.faint, 13.))
+                                        .child(t("Private · stored on this PC", "Privado · guardado en esta PC")),
                                 )
-                                .child(div().text_size(px(size::META)).text_color(backup_tone).child(backup_label))
-                                .child(div().text_size(px(size::META)).text_color(p.faint).child(format!(
-                                    "{} {}",
-                                    t("Version", "Versión"),
-                                    env!("CARGO_PKG_VERSION")
-                                ))),
+                                .child(div().text_color(backup_tone).child(backup_label))
+                                .child(format!("{} {}", t("Version", "Versión"), env!("CARGO_PKG_VERSION"))),
                         )
                     }),
             )

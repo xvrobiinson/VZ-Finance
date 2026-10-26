@@ -1,52 +1,81 @@
 use gpui_kit::assets::IconName;
-use gpui_kit::component::button::{Button, ButtonVariants as _};
+use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::input::Input;
 use gpui_kit::component::select::Select;
 use gpui_kit::component::switch::Switch;
-use gpui_kit::component::{Disableable as _, Sizable as _, h_flex, v_flex};
+use gpui_kit::component::{h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
-use super::segmented;
 use crate::app::VzApp;
 use crate::domain::loans::{Frequency, RATE_PRESETS};
 use crate::domain::money::{NumberStyle, Rate};
 use crate::i18n::{Lang, t};
 use crate::services::settings::{ChartRange, ThemePref};
-use crate::ui::components::{card, icon, kbd, sel};
-use crate::ui::theme::{Palette, palette, size, space};
+use crate::ui::components::{icon, kbd, page_header, sel};
+use crate::ui::kit::{Button, Card, Dropdown, DropdownItem, Segmented};
+use crate::ui::theme::{Palette, RADIUS_CONTROL, Typeset as _, Width, palette, space, tabular, text};
 use crate::utils::dates::DateStyle;
 
-fn section(p: &Palette, title: &str, description: &str, body: impl IntoElement) -> Div {
-    h_flex()
-        .items_start()
-        .gap(px(40.))
-        .py(px(space::XL + 4.))
-        .border_b_1()
-        .border_color(p.border)
-        .child(
-            v_flex()
-                .w(px(260.))
-                .flex_none()
-                .gap(px(4.))
-                .child(div().text_size(px(size::SECTION)).font_weight(FontWeight::MEDIUM).child(title.to_string()))
-                .child(div().text_color(p.muted).child(description.to_string())),
-        )
-        .child(card(p).flex_1().min_w_0().p(px(space::XL)).gap(px(space::L)).child(body))
+/// A client detail that can be printed on receipts.
+#[derive(Clone, Copy)]
+enum ClientField {
+    Name,
+    IdNumber,
+    Phone,
+    Address,
 }
 
+/// Settings read as a form; past this width lines get too long to scan.
+const FORM_MAX: f32 = 760.0;
+/// Narrowest a setting's name column gets before its control moves to the
+/// next line.
+const LABEL_MIN: f32 = 240.0;
+/// Width of text fields and the currency select.
+const FIELD_W: f32 = 260.0;
+
+/// One group of settings: a card with its title, a line on what the group
+/// covers, then its rows.
+fn section(p: &Palette, title: &str, description: &str, body: impl IntoElement) -> Card {
+    Card::new()
+        .title(title.to_string())
+        .child(div().px(px(space::XL)).typeset(text::CAPTION).text_color(p.muted).child(description.to_string()))
+        .child(div().p(px(space::XL)).pt(px(space::L)).child(body))
+}
+
+/// A setting: name and hint on the left, its control on the right. When
+/// the card is too narrow for both, the control drops below the name.
 fn row(p: &Palette, title: &str, hint: Option<&str>, control: impl IntoElement) -> Div {
     h_flex()
+        .flex_wrap()
         .justify_between()
-        .gap(px(space::XL))
+        .gap_x(px(space::XL))
+        .gap_y(px(space::S))
         .child(
             v_flex()
+                .flex_1()
+                .min_w(px(LABEL_MIN))
                 .gap(px(2.))
-                .min_w_0()
-                .child(div().font_weight(FontWeight::MEDIUM).child(title.to_string()))
-                .children(hint.map(|h| div().text_size(px(size::META)).text_color(p.muted).child(h.to_string()))),
+                .child(div().typeset(text::BODY_STRONG).text_color(p.text).child(title.to_string()))
+                .children(hint.map(|h| div().typeset(text::CAPTION).text_color(p.muted).child(h.to_string()))),
         )
         .child(div().flex_none().child(control))
+}
+
+/// A select over app settings, for option sets with too many or too long
+/// labels for a segmented control. `options` are (key, label).
+fn select<K: Copy + PartialEq + 'static>(
+    id: &str,
+    options: &[(K, &str)],
+    selected: K,
+    cx: &Context<VzApp>,
+    on_select: impl Fn(&mut VzApp, K, &mut Window, &mut Context<VzApp>) + Clone + 'static,
+) -> Dropdown {
+    let current = options.iter().find(|(k, _)| *k == selected).map(|(_, l)| l.to_string()).unwrap_or_default();
+    Dropdown::new(SharedString::from(id.to_string())).label(current).align_end().items(options.iter().map(|(k, label)| {
+        let (k, on_select) = (*k, on_select.clone());
+        DropdownItem::new(label.to_string(), cx.listener(move |this, _, w, cx| on_select(this, k, w, cx))).selected(k == selected)
+    }))
 }
 
 /// Facts read from disk for the Settings screen, refreshed every few seconds
@@ -78,8 +107,9 @@ impl VzApp {
         self.settings_facts.as_ref().expect("just set")
     }
 
-    pub(crate) fn render_settings(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+    pub(crate) fn render_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let p = palette(cx);
+        let w = Width::of(self.content_width(window));
         let s = self.settings().clone();
         let today = self.today;
         let db_path = self.store.path().to_path_buf();
@@ -115,7 +145,7 @@ impl VzApp {
                     "Printed at the top of every receipt. Leave it empty to print “Acervus Finance”.",
                     "Se imprime arriba en cada recibo. Déjalo vacío para imprimir “Acervus Finance”.",
                 )),
-                h_flex().gap(px(space::S)).child(div().w(px(260.)).child(Input::new(&self.receipt_name_input))).child(
+                h_flex().gap(px(space::S)).child(div().w(px(FIELD_W)).child(Input::new(&self.receipt_name_input))).child(
                     Button::new("save-name")
                         .primary()
                         .label(t("Save", "Guardar"))
@@ -138,7 +168,7 @@ impl VzApp {
                             .size(px(56.))
                             .flex_none()
                             .justify_center()
-                            .rounded(px(8.))
+                            .rounded(px(RADIUS_CONTROL))
                             .border_1()
                             .border_color(p.border)
                             .bg(p.raised)
@@ -175,7 +205,7 @@ impl VzApp {
                 &p,
                 t("Language", "Idioma"),
                 None,
-                segmented(&p, "lang", &lang_opts, s.language, cx, |app, v, w, cx| app.update_settings(|s| s.language = v, w, cx)),
+                Segmented::pick("lang", lang_opts.iter().copied(), s.language, cx, |app, v, w, cx| app.update_settings(|s| s.language = v, w, cx)),
             ));
 
         let general = v_flex()
@@ -184,13 +214,13 @@ impl VzApp {
                 &p,
                 t("Currency", "Moneda"),
                 Some(t("Changes the symbol shown. Amounts are never converted.", "Cambia el símbolo. Los montos nunca se convierten.")),
-                div().w(px(260.)).child(Select::new(&self.currency_select)),
+                div().w(px(FIELD_W)).child(Select::new(&self.currency_select)),
             ))
             .child(row(
                 &p,
                 t("Number format", "Formato de números"),
                 None,
-                segmented(&p, "numfmt", &number_opts, s.number_style, cx, |app, v, w, cx| {
+                Segmented::pick("numfmt", number_opts.iter().copied(), s.number_style, cx, |app, v, w, cx| {
                     app.update_settings(|s| s.number_style = v, w, cx)
                 }),
             ))
@@ -198,7 +228,7 @@ impl VzApp {
                 &p,
                 t("Date format", "Formato de fecha"),
                 None,
-                segmented(&p, "datefmt", &date_opts, s.date_style, cx, |app, v, w, cx| app.update_settings(|s| s.date_style = v, w, cx)),
+                select("datefmt", &date_opts, s.date_style, cx, |app, v, w, cx| app.update_settings(|s| s.date_style = v, w, cx)),
             ));
 
         let lending = v_flex()
@@ -207,13 +237,13 @@ impl VzApp {
                 &p,
                 t("Default rate", "Tasa predeterminada"),
                 Some(t("Preselected for new loans", "Se preselecciona en préstamos nuevos")),
-                segmented(&p, "rate", &rate_opts, s.default_rate, cx, |app, v, w, cx| app.update_settings(|s| s.default_rate = v, w, cx)),
+                Segmented::pick("rate", rate_opts.iter().copied(), s.default_rate, cx, |app, v, w, cx| app.update_settings(|s| s.default_rate = v, w, cx)),
             ))
             .child(row(
                 &p,
                 t("Default payments", "Pagos predeterminados"),
                 None,
-                segmented(&p, "freq", &freq_opts, s.default_frequency, cx, |app, v, w, cx| app.update_settings(|s| s.default_frequency = v, w, cx)),
+                select("freq", &freq_opts, s.default_frequency, cx, |app, v, w, cx| app.update_settings(|s| s.default_frequency = v, w, cx)),
             ))
             .child(row(
                 &p,
@@ -222,16 +252,17 @@ impl VzApp {
                     "Charged once on what is unpaid when an installment becomes overdue. Each loan keeps the rate it was made with.",
                     "Se cobra una vez sobre lo que falte cuando una cuota se atrasa. Cada préstamo conserva la tasa con que se hizo.",
                 )),
-                segmented(&p, "fee", &fee_opts, s.late_fee_rate, cx, |app, v, w, cx| app.update_settings(|s| s.late_fee_rate = v, w, cx)),
+                Segmented::pick("fee", fee_opts.iter().copied(), s.late_fee_rate, cx, |app, v, w, cx| app.update_settings(|s| s.late_fee_rate = v, w, cx)),
             ))
             .child(
                 v_flex()
-                    .gap(px(4.))
+                    .gap(px(space::XS))
                     .p(px(space::M))
-                    .rounded(px(8.))
+                    .rounded(px(RADIUS_CONTROL))
                     .bg(p.raised)
-                    .text_size(px(size::META + 0.5))
+                    .typeset(text::CAPTION)
                     .text_color(p.muted)
+                    .font_features(tabular())
                     .child(t(
                         "Installment loans: each installment repays an equal part of the capital plus the period's interest (on the capital still owed, or on the amount lent with flat interest). Example: 10,000 at 10% a month in 5 installments is 3,000, 2,800, 2,600, 2,400 and 2,200.",
                         "Préstamos por cuotas: cada cuota paga una parte igual del capital más el interés del período (sobre el capital adeudado, o sobre el monto prestado con interés fijo). Ejemplo: 10,000 al 10% mensual en 5 cuotas son 3,000, 2,800, 2,600, 2,400 y 2,200.",
@@ -261,13 +292,47 @@ impl VzApp {
                 &p,
                 t("Open the loan receipt after each new loan", "Abrir el recibo del préstamo al crear cada préstamo"),
                 Some(t(
-                    "Amount, rate, payment dates and signature lines for the client",
-                    "Monto, tasa, fechas de pago y líneas de firma para el cliente",
+                    "Amount, rate, the installment schedule and signature lines for the client",
+                    "Monto, tasa, el calendario de cuotas y líneas de firma para el cliente",
                 )),
                 Switch::new("rcpt-loan").checked(s.receipt_after_loan).on_click(cx.listener(|this, checked: &bool, w, cx| {
                     let v = *checked;
                     this.update_settings(|s| s.receipt_after_loan = v, w, cx)
                 })),
+            ))
+            .child(row(
+                &p,
+                t("Client info to add to every receipt", "Datos del cliente en cada recibo"),
+                Some(t(
+                    "A detail the client doesn't have is left out. Photos are never printed.",
+                    "Si el cliente no tiene un dato, se omite. Las fotos nunca se imprimen.",
+                )),
+                v_flex().gap(px(space::S)).children(
+                    [
+                        ("rcpt-client-name", t("Client name", "Nombre del cliente"), s.receipt_client.name, ClientField::Name),
+                        ("rcpt-client-id", t("ID number", "Número de identificación"), s.receipt_client.id_number, ClientField::IdNumber),
+                        ("rcpt-client-phone", t("Phone number", "Teléfono"), s.receipt_client.phone, ClientField::Phone),
+                        ("rcpt-client-address", t("Address", "Dirección"), s.receipt_client.address, ClientField::Address),
+                    ]
+                    .map(|(id, label, checked, which)| {
+                        Checkbox::new(id).label(label).checked(checked).on_click(cx.listener(move |this, checked: &bool, w, cx| {
+                            let v = *checked;
+                            this.update_settings(
+                                |s| {
+                                    let f = &mut s.receipt_client;
+                                    *match which {
+                                        ClientField::Name => &mut f.name,
+                                        ClientField::IdNumber => &mut f.id_number,
+                                        ClientField::Phone => &mut f.phone,
+                                        ClientField::Address => &mut f.address,
+                                    } = v
+                                },
+                                w,
+                                cx,
+                            )
+                        }))
+                    }),
+                ),
             ))
             .child(row(
                 &p,
@@ -287,7 +352,7 @@ impl VzApp {
                 &p,
                 t("Default chart range", "Rango del gráfico"),
                 None,
-                segmented(&p, "range-set", &range_opts, s.chart_range, cx, |app, v, w, cx| {
+                Segmented::pick("range-set", range_opts.iter().copied(), s.chart_range, cx, |app, v, w, cx| {
                     app.update_settings(|s| s.chart_range = v, w, cx)
                 }),
             ))
@@ -304,7 +369,9 @@ impl VzApp {
                 &p,
                 t("Theme", "Tema"),
                 None,
-                segmented(&p, "theme", &theme_opts, s.theme, cx, |app, v, w, cx| app.update_settings(|s| s.theme = v, w, cx)),
+                Segmented::pick("theme", theme_opts.iter().copied(), s.theme, cx, |app, v, w, cx| {
+                    app.update_settings(|s| s.theme = v, w, cx)
+                }),
             ));
 
         let path_text = db_path.display().to_string();
@@ -327,10 +394,10 @@ impl VzApp {
             .child(
                 div()
                     .px(px(space::M))
-                    .py(px(10.))
-                    .rounded(px(8.))
+                    .py(px(space::S + 2.))
+                    .rounded(px(RADIUS_CONTROL))
                     .bg(p.raised)
-                    .text_size(px(size::META + 0.5))
+                    .typeset(text::CAPTION)
                     .text_color(p.muted)
                     .child(sel(path_text)),
             )
@@ -375,7 +442,7 @@ impl VzApp {
                         .gap(px(2.))
                         .child(
                             div()
-                                .text_size(px(size::META))
+                                .typeset(text::CAPTION)
                                 .text_color(p.muted)
                                 .child(t("Backups in the backups folder", "Copias en la carpeta de copias")),
                         )
@@ -386,13 +453,13 @@ impl VzApp {
                             h_flex()
                                 .justify_between()
                                 .gap(px(space::M))
-                                .min_h(px(32.))
-                                .child(div().min_w_0().truncate().text_size(px(size::META + 0.5)).child(name))
+                                .min_h(px(space::XXL))
+                                .child(div().min_w_0().truncate().typeset(text::CAPTION).text_color(p.text).child(name))
                                 .child(
                                     h_flex()
                                         .gap(px(space::M))
                                         .flex_none()
-                                        .child(div().text_size(px(size::META)).text_color(p.faint).child(when))
+                                        .child(div().typeset(text::CAPTION).font_features(tabular()).text_color(p.faint).child(when))
                                         .child(
                                             Button::new(("restore-file", i))
                                                 .ghost()
@@ -424,8 +491,7 @@ impl VzApp {
                     "Borra clientes, préstamos, pagos y movimientos para empezar de cero. Antes se guarda una copia.",
                 )),
                 Button::new("reset-data")
-                    .danger()
-                    .ghost()
+                    .danger_ghost()
                     .icon(IconName::Trash)
                     .label(t("Reset…", "Borrar…"))
                     .on_click(cx.listener(|this, _, w, cx| this.open_reset_form(w, cx))),
@@ -454,8 +520,8 @@ impl VzApp {
                     .child(
                         v_flex()
                             .min_w_0()
-                            .child(div().font_weight(FontWeight::MEDIUM).child(c.label))
-                            .child(div().text_size(px(size::META)).text_color(p.muted).truncate().child(sel(c.path.display().to_string()))),
+                            .child(div().typeset(text::BODY_STRONG).child(c.label))
+                            .child(div().typeset(text::CAPTION).text_color(p.muted).truncate().child(sel(c.path.display().to_string()))),
                     )
                     .child(
                         h_flex()
@@ -466,7 +532,7 @@ impl VzApp {
                                 if ok { p.positive } else { p.negative },
                                 14.,
                             ))
-                            .child(div().text_size(px(size::META + 0.5)).text_color(if ok { p.muted } else { p.negative }).child(status)),
+                            .child(div().typeset(text::CAPTION).text_color(if ok { p.muted } else { p.negative }).child(status)),
                     )
             }))
             .child(row(
@@ -493,21 +559,27 @@ impl VzApp {
 
         let about = v_flex()
             .gap(px(space::S))
-            .child(
-                h_flex()
-                    .gap(px(space::M))
-                    .child(div().text_size(px(size::SECTION + 2.)).font_weight(FontWeight::SEMIBOLD).child(crate::APP_NAME))
-                    .child(div().text_color(p.muted).child(format!("{} {}", t("Version", "Versión"), env!("CARGO_PKG_VERSION")))),
-            )
+            .child(h_flex().flex_wrap().gap(px(space::M)).child(div().typeset(text::HEADING).child(crate::APP_NAME)).child(
+                div().text_color(p.muted).font_features(tabular()).child(format!(
+                    "{} {}",
+                    t("Version", "Versión"),
+                    env!("CARGO_PKG_VERSION")
+                )),
+            ))
             .child(div().text_color(p.muted).child(format!("Developed by {}", crate::DEVELOPER)))
-            .child(div().text_size(px(size::META)).text_color(p.faint).child(t(
+            .child(div().typeset(text::CAPTION).text_color(p.faint).child(t(
                 "Supported on Windows 10 (version 1809 or later) and Windows 11, 64-bit.",
                 "Compatible con Windows 10 (versión 1809 o posterior) y Windows 11, de 64 bits.",
             )));
 
         let privacy = v_flex()
             .gap(px(space::M))
-            .child(h_flex().gap(px(8.)).child(icon(IconName::ShieldCheck, p.positive, 16.)).child(t("Offline and private", "Sin internet y privado")))
+            .child(
+                h_flex()
+                    .gap(px(space::S))
+                    .child(icon(IconName::ShieldCheck, p.positive, 16.))
+                    .child(div().typeset(text::BODY_STRONG).child(t("Offline and private", "Sin internet y privado"))),
+            )
             .child(div().text_color(p.muted).child(t(
                 "The app makes no network requests, sends no telemetry and needs no account. All data stays in the database file above.",
                 "La app no usa internet, no envía datos y no necesita cuenta. Todo queda en el archivo de base de datos de arriba.",
@@ -515,6 +587,10 @@ impl VzApp {
             .child(div().text_color(p.muted).child(t(
                 "The database is not encrypted by the app. Protect it with Windows BitLocker or device encryption, and keep backups somewhere safe.",
                 "La app no cifra la base de datos. Protégela con BitLocker o el cifrado del dispositivo y guarda las copias en un lugar seguro.",
+            )))
+            .child(div().text_color(p.muted).child(t(
+                "Client photos, which may show an ID, are kept in the database, so backups include them: treat backups as private as the photos. Photos are never printed on receipts, exported to CSV or written to the log.",
+                "Las fotos de los clientes, que pueden mostrar una identificación, se guardan en la base de datos, así que las copias las incluyen: trátalas con la misma privacidad. Las fotos nunca se imprimen en recibos, se exportan a CSV ni se escriben en el registro.",
             )));
 
         let keys = [
@@ -529,18 +605,26 @@ impl VzApp {
             (t("Back", "Atrás"), "Alt ←"),
         ];
         let shortcuts = v_flex().gap(px(2.)).children(keys.iter().map(|(a, k)| {
-            h_flex().justify_between().min_h(px(30.)).child(div().text_color(p.muted).child(a.to_string())).child(kbd(&p, k))
+            h_flex()
+                .justify_between()
+                .gap(px(space::M))
+                .min_h(px(30.))
+                .child(div().text_color(p.muted).child(a.to_string()))
+                .child(kbd(&p, k))
         }));
 
         v_flex()
+            .w_full()
+            .max_w(px(FORM_MAX))
+            .gap(px(w.gap()))
             .child(
-                crate::ui::components::page_header(
+                page_header(
                     &p,
                     t("Settings", "Configuración"),
                     Some(t("Changes are saved right away.", "Los cambios se guardan al instante.").into_any_element()),
                     vec![],
                 )
-                .pb(px(space::S)),
+                .pb_0(),
             )
             .child(section(
                 &p,

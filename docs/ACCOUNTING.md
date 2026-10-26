@@ -164,20 +164,50 @@ pays 600 on the due date, 100 covers the interest and 500 reduces the capital to
 
 ## Receipts
 
+Every figure on a receipt comes from the same records and rules as the loan
+page: stored payment splits, the stored per-installment splits, and the
+ledger. A receipt shows the loan as it stood right after its payment, so a
+reprint of an old receipt shows the same figures.
+
 - **Payment receipt** (Payments, the loan page, or right after recording a
-  payment): the amount paid, its split between interest and capital, the
-  capital before and after, interest still pending, the total owed, the
-  percentage of the original capital paid and remaining, the share of what was
-  owed that the payment covered, and the next payment.
+  payment): the amount paid and its split, the balance after it (capital
+  before and after, interest and late fees pending, what is due and unpaid,
+  the total still owed), and **every earlier payment on the loan**, oldest
+  first (by date, then by the order they were recorded), with this payment
+  marked. Each payment shows what it went to and the capital left after it.
+  - **Installment loans** also list every installment of the schedule, no
+    more and no fewer, with its amount, what this payment put on it, what is
+    paid, what is left and its status: **Paid** (nothing left, with a green
+    check), **Partly paid**, **Overdue** (past its due date with something
+    unpaid, partly paid or not) or **Pending**. A status comes from the
+    per-installment splits, never from the payment total. A payment in the
+    history is **Settled** (green check) only when every installment it went
+    to is paid in full; otherwise it shows **Partly paid** and what is left.
+    The next installment due is shown with its date.
+  - **Open (interest-only) loans** have no schedule, so their receipts show
+    no due dates and no installments. A payment in the history shows
+    **Interest paid to date** (green check) when no interest charged by then
+    is left, **Partly paid** with the interest left otherwise, and **Loan paid
+    off** when nothing is owed after it.
+  - A reversed payment from older versions is listed as **Void · not
+    counted**, crossed out, and is left out of every figure.
 - **Loan receipt** (the loan page, or right after creating a loan): what the
-  client received and on which date, the rate, how often payments are due, the
-  interest per payment, the next six due dates with their interest while the
-  capital is unchanged, the payoff amount on the first due date, how payments
-  work, and lines for both signatures.
-- For installment loans the loan receipt has the whole schedule (due date,
-  capital, interest and total of each installment), the late-fee rule and
-  whether the schedule was set by agreement; the payment receipt shows the
-  installments the payment went to, late fees, and what is still overdue.
+  client received and on which date, the rate, how often payments are made,
+  how payments work (in smaller type) and lines for both signatures.
+  Installment loans add the whole schedule (due date, capital, interest and
+  total of each installment), the late-fee rule and whether the schedule was
+  set by agreement. Open loans show the interest per payment and no dates.
+- **Client details**: Settings → Receipts → "Client info to add to every
+  receipt" chooses the name, ID number, phone and address (all on by default).
+  Only ticked details are printed, and only when the client has them. When the
+  name is off it is left out everywhere, including the signature line. Client
+  photos are never printed.
+- **Paper**: both receipts are laid out on US Letter (8.5 × 11 in, 0.5 in
+  margins) with the same layout on screen and in print. The usual receipt
+  fits on one page (up to about 26 history rows, or 12 installments and 12
+  payments; a loan receipt up to 20 installments). A longer one continues on
+  the next page with the column headings repeated, every page is numbered
+  ("Page 1 of 2"), and the first page says it continues. Nothing is left out.
 - Both carry the name set in Settings → Name on receipts (or "Acervus Finance"
   when it is empty) and the logo. They are saved as HTML files in
   `%LOCALAPPDATA%\VZFinance\receipts` and open in the default browser, which

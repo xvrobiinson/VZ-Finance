@@ -9,14 +9,17 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use super::date_field::{DateChanged, DateField};
-use super::{choice_tile, date_field, error_banner, field, footer, invalid_date, picked_date, reason_input, value};
+use super::{
+    DATE_WIDTH, choice_tile, date_field, error_banner, field, field_row, footer, grow_field, invalid_date, picked_date, reason_input, value,
+};
 use crate::app::VzApp;
 use crate::domain::money::{MoneyFormat, parse_money};
 use crate::domain::portfolio::{Account, EntryKind};
 use crate::i18n::t;
 use crate::services::{Record, Snapshot};
 use crate::tr;
-use crate::ui::theme::{palette, space};
+use crate::ui::kit::Segmented;
+use crate::ui::theme::{Typeset as _, palette, space, text};
 
 pub struct EntryForm {
     app: WeakEntity<VzApp>,
@@ -191,18 +194,14 @@ impl Render for EntryForm {
             EntryKind::Transfer => t("Move from", "Mover de"),
             EntryKind::Adjustment => t("Account", "Cuenta"),
         };
-        let direction = h_flex().gap(px(space::S)).children(
-            [(true, t("Add to the balance", "Sumar al saldo")), (false, t("Take from the balance", "Restar del saldo"))].map(
-                |(up, label)| {
-                    choice_tile(&p, if up { "adj-up" } else { "adj-down" }, label, None, self.increase == up).on_click(cx.listener(
-                        move |this, _, _, cx| {
-                            this.increase = up;
-                            cx.notify();
-                        },
-                    ))
-                },
-            ),
-        );
+        let directions = vec![
+            (true, SharedString::from(t("Add to the balance", "Sumar al saldo"))),
+            (false, SharedString::from(t("Take from the balance", "Restar del saldo"))),
+        ];
+        let direction = Segmented::pick("adj-direction", directions, self.increase, cx, |this: &mut Self, up, _, cx| {
+            this.increase = up;
+            cx.notify();
+        });
 
         let amount_err = match &amount {
             Err(e) if self.show_errors => Some(e.to_string()),
@@ -239,7 +238,7 @@ impl Render for EntryForm {
         v_flex()
             .gap(px(space::L))
             .children(error_banner(&p, &self.error))
-            .child(div().text_color(p.muted).child(explain))
+            .child(div().typeset(text::BODY).text_color(p.muted).child(explain))
             .child(field(
                 &p,
                 account_label,
@@ -252,17 +251,15 @@ impl Render for EntryForm {
             ))
             .when(self.kind == EntryKind::Adjustment, |d| d.child(field(&p, t("Direction", "Sentido"), direction, None, None)))
             .child(
-                h_flex()
-                    .items_start()
-                    .gap(px(space::M))
-                    .child(div().flex_1().child(field(
+                field_row()
+                    .child(grow_field(field(
                         &p,
                         t("Amount", "Monto"),
                         Input::new(&self.amount).prefix(div().text_color(p.muted).child(money.symbol.clone())),
                         None,
                         amount_err,
                     )))
-                    .child(div().w(px(200.)).child(field(&p, t("Date", "Fecha"), self.date.clone(), None, date_err))),
+                    .child(div().w(px(DATE_WIDTH)).flex_none().child(field(&p, t("Date", "Fecha"), self.date.clone(), None, date_err))),
             )
             .child(field(
                 &p,

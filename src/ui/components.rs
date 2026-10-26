@@ -12,7 +12,7 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use crate::domain::ledger::DisplayStatus;
-use crate::ui::theme::{self, Palette, RADIUS_CARD, RADIUS_CHIP, card_shadow, size, space, tabular};
+use crate::ui::theme::{Palette, RADIUS_CHIP, Typeset as _, space, tabular, text};
 
 thread_local! {
     /// How many times each `sel` call site has run in the frame being built.
@@ -48,51 +48,9 @@ pub fn icon(name: IconName, color: Hsla, size_px: f32) -> Icon {
     Icon::new(name).text_color(color).size(px(size_px))
 }
 
-/// A gently elevated white surface.
-pub fn card(p: &Palette) -> Div {
-    v_flex().bg(p.surface).rounded(px(RADIUS_CARD)).border_1().border_color(p.border).shadow(card_shadow(p))
-}
-
-/// Card header: title on the left, optional element on the right.
-#[track_caller]
-pub fn card_header(p: &Palette, title: impl Into<SharedString>, right: Option<AnyElement>) -> Div {
-    h_flex()
-        .justify_between()
-        .items_center()
-        .gap(px(space::M))
-        .px(px(space::XL))
-        .pt(px(space::L + 4.))
-        .pb(px(space::M))
-        .child(div().text_size(px(size::SECTION)).font_weight(FontWeight::SEMIBOLD).text_color(p.text).child(sel(title)))
-        .children(right)
-}
-
-/// Tabular figure for money and counts.
-#[track_caller]
-pub fn figure(p: &Palette, text: impl Into<SharedString>, px_size: f32) -> Div {
-    div()
-        .font_features(tabular())
-        .text_size(px(px_size))
-        .line_height(px(px_size * 1.2))
-        .font_weight(if px_size >= size::FIGURE { FontWeight::MEDIUM } else { FontWeight::NORMAL })
-        .text_color(p.text)
-        .whitespace_nowrap()
-        .child(sel(text))
-}
-
 #[track_caller]
 pub fn num(text: impl Into<SharedString>) -> Div {
     div().font_features(tabular()).whitespace_nowrap().child(sel(text))
-}
-
-#[track_caller]
-pub fn label(p: &Palette, text: impl Into<SharedString>) -> Div {
-    div().text_size(px(size::META)).text_color(p.muted).child(sel(text))
-}
-
-#[track_caller]
-pub fn muted(p: &Palette, text: impl Into<SharedString>) -> Div {
-    div().text_color(p.muted).child(sel(text))
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -123,7 +81,7 @@ pub fn pill(p: &Palette, text: impl Into<SharedString>, tone: Tone) -> Div {
         .rounded(px(RADIUS_CHIP))
         .bg(bg)
         .text_color(fg)
-        .text_size(px(size::META))
+        .typeset(text::CAPTION)
         .font_weight(FontWeight::MEDIUM)
         .whitespace_nowrap()
         .child(text.into())
@@ -180,15 +138,15 @@ pub fn empty_state(p: &Palette, icon_name: IconName, title: &str, body: &str, ac
         .py(px(40.))
         .px(px(space::XL))
         .child(h_flex().size(px(40.)).rounded_full().bg(p.neutral_tint).justify_center().child(icon(icon_name, p.muted, 18.)))
-        .child(div().pt(px(4.)).text_size(px(size::SECTION)).font_weight(FontWeight::MEDIUM).text_color(p.text).child(title.to_string()))
+        .child(div().pt(px(4.)).typeset(text::HEADING).font_weight(FontWeight::MEDIUM).text_color(p.text).child(title.to_string()))
         .child(div().max_w(px(380.)).text_center().text_color(p.muted).child(body.to_string()))
         .children(action.map(|a| div().pt(px(space::S)).child(a)))
 }
 
 /// Table header cell / row helpers. Columns are given fixed or flex widths
 /// by the caller; numbers are right-aligned.
-pub fn th(p: &Palette, text: &str) -> Div {
-    div().text_size(px(size::META)).text_color(p.muted).whitespace_nowrap().child(text.to_string())
+pub fn th(p: &Palette, label: &str) -> Div {
+    div().typeset(text::CAPTION).text_color(p.muted).whitespace_nowrap().child(label.to_string())
 }
 
 pub fn table_header(p: &Palette) -> Div {
@@ -223,6 +181,7 @@ pub fn kv(p: &Palette, key: impl Into<SharedString>, value: impl IntoElement) ->
 #[track_caller]
 pub fn page_header(p: &Palette, title: impl Into<SharedString>, subtitle: Option<AnyElement>, actions: Vec<AnyElement>) -> Div {
     h_flex()
+        .flex_wrap()
         .justify_between()
         .items_end()
         .gap(px(space::L))
@@ -231,14 +190,7 @@ pub fn page_header(p: &Palette, title: impl Into<SharedString>, subtitle: Option
             v_flex()
                 .gap(px(6.))
                 .min_w_0()
-                .child(
-                    div()
-                        .text_size(px(size::TITLE))
-                        .line_height(px(28.))
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .text_color(p.text)
-                        .child(sel(title)),
-                )
+                .child(div().typeset(text::TITLE).text_color(p.text).child(sel(title)))
                 .children(subtitle.map(|s| div().text_color(p.muted).child(s))),
         )
         .child(h_flex().gap(px(space::S)).flex_none().children(actions))
@@ -249,10 +201,6 @@ pub fn vrule(p: &Palette) -> Div {
     div().w(px(1.)).self_stretch().my(px(space::L)).bg(p.border)
 }
 
-pub fn small_icon_button_style(p: &Palette) -> (Hsla, Hsla) {
-    (p.hover, p.muted)
-}
-
 /// Keyboard hint chip ("Ctrl P").
 pub fn kbd(p: &Palette, keys: &str) -> Div {
     h_flex()
@@ -261,11 +209,8 @@ pub fn kbd(p: &Palette, keys: &str) -> Div {
         .rounded(px(4.))
         .border_1()
         .border_color(p.border)
-        .text_size(px(11.))
+        .typeset(text::MICRO)
+        .font_weight(FontWeight::NORMAL)
         .text_color(p.faint)
         .child(keys.to_string())
-}
-
-pub fn theme_palette(cx: &App) -> Palette {
-    theme::palette(cx)
 }

@@ -6,7 +6,7 @@ use gpui_kit::*;
 
 use super::nice_ticks;
 use crate::domain::money::{Cents, MoneyFormat};
-use crate::ui::theme::{Palette, size, tabular};
+use crate::ui::theme::{Elevation, Palette, RADIUS_CONTROL, Typeset as _, elevation, tabular, text};
 
 #[derive(Clone)]
 pub struct Series {
@@ -152,7 +152,9 @@ impl LineChart {
                 .top(px(top))
                 .w(px(Y_LANE - 12.0))
                 .text_right()
+                .typeset(text::CAPTION)
                 .text_size(px(11.5))
+                .whitespace_nowrap()
                 .text_color(p.faint)
                 .font_features(tabular())
                 .child(self.money.format_compact(*t))
@@ -170,7 +172,7 @@ impl LineChart {
         let x_labels = picks.into_iter().map(|i| {
             let frac = if n <= 1 { 0.5 } else { i as f32 / (n - 1) as f32 };
             let text = self.labels.get(i).cloned().unwrap_or_default();
-            let el = div().absolute().bottom_0().w(px(90.)).text_size(px(11.5)).text_color(p.faint).child(text);
+            let el = div().absolute().bottom_0().w(px(90.)).typeset(text::CAPTION).text_color(p.faint).child(text);
             if frac <= 0.0 {
                 el.left_0().text_left()
             } else if frac >= 1.0 {
@@ -202,12 +204,13 @@ impl LineChart {
                 .p(px(10.))
                 .gap(px(4.))
                 .bg(p.surface)
-                .rounded(px(8.))
+                .rounded(px(RADIUS_CONTROL))
                 .border_1()
                 .border_color(p.border)
-                .shadow(vec![BoxShadow::new(px(0.), px(6.), p.shadow).blur_radius(px(20.))])
-                .text_size(px(size::META))
+                .shadow(elevation(p, Elevation::Floating))
+                .typeset(text::CAPTION)
                 .child(
+                    // Caption at 500, as in pills.
                     div().text_color(p.text).font_weight(FontWeight::MEDIUM).child(self.hover_labels.get(i).cloned().unwrap_or_default()),
                 )
                 .children(rows);

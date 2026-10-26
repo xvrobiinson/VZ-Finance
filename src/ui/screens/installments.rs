@@ -1,7 +1,6 @@
 //! The installment table and late fees on an installment loan's page.
 
-use gpui_kit::component::button::{Button, ButtonVariants as _};
-use gpui_kit::component::{Sizable as _, h_flex, v_flex};
+use gpui_kit::component::h_flex;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
@@ -10,16 +9,21 @@ use crate::app::VzApp;
 use crate::domain::installments::{InstallmentStatus, PlanState};
 use crate::i18n::t;
 use crate::tr;
-use crate::ui::components::{Tone, card, card_header, pill, sel, table_header, th};
+use crate::ui::components::{Tone, pill, sel, table_header, th};
 use crate::ui::forms::reason::ReasonKind;
-use crate::ui::theme::{Palette, size, space, tabular};
+use crate::ui::kit::{Button, Card, ListRow};
+use crate::ui::theme::{Palette, Typeset as _, Width, space, tabular, text};
 
 impl VzApp {
     /// Every installment with what it owes, what was paid and its status;
-    /// overdue and partly paid ones are highlighted.
-    pub(crate) fn installments_card(&self, p: &Palette, state: &PlanState, today: chrono::NaiveDate) -> AnyElement {
+    /// overdue and partly paid ones are highlighted. Medium drops the
+    /// capital/interest split; Compact keeps only due date, total,
+    /// outstanding and status.
+    pub(crate) fn installments_card(&self, p: &Palette, state: &PlanState, today: chrono::NaiveDate, w: Width) -> AnyElement {
         let money = self.settings().money();
         let ds = self.settings().date_style;
+        let split = w >= Width::Wide;
+        let detail = w > Width::Compact;
         let total_interest = state.interest_total();
         let total = state.principal + total_interest + state.fees_assessed();
         let rows = state.installments.iter().map(|x| {
@@ -47,40 +51,41 @@ impl VzApp {
                 .font_features(tabular())
                 .when_some(tint, |d, c| d.bg(c))
                 .when(st == InstallmentStatus::Paid, |d| d.text_color(p.muted))
-                .child(div().w(px(24.)).text_color(p.faint).child(sel(x.seq.to_string())))
+                .child(div().w(px(24.)).flex_none().text_color(p.faint).child(sel(x.seq.to_string())))
                 .child(div().flex_1().min_w(px(90.)).truncate().child(sel(ds.format(x.due))))
-                .child(ncolumn(100.).child(sel(money.format(x.principal))))
-                .child(ncolumn(90.).child(sel(money.format(x.interest))))
-                .child(ncolumn(80.).text_color(if x.fee > 0 { p.negative } else { p.faint }).child(sel(fee_text)))
-                .child(ncolumn(100.).font_weight(FontWeight::MEDIUM).child(sel(money.format(x.total_due()))))
-                .child(ncolumn(100.).text_color(p.muted).child(sel(money.format(x.paid()))))
+                .when(split, |d| {
+                    d.child(ncolumn(100.).child(sel(money.format(x.principal)))).child(ncolumn(90.).child(sel(money.format(x.interest))))
+                })
+                .when(detail, |d| d.child(ncolumn(80.).text_color(if x.fee > 0 { p.negative } else { p.faint }).child(sel(fee_text))))
+                .child(ncolumn(100.).typeset(text::BODY_STRONG).child(sel(money.format(x.total_due()))))
+                .when(detail, |d| d.child(ncolumn(100.).text_color(p.muted).child(sel(money.format(x.paid())))))
                 .child(ncolumn(100.).child(sel(money.format(x.remaining().max(0)))))
-                .child(div().w(px(96.)).flex().justify_end().child(pill(p, st.label(), tone)))
+                .child(div().w(px(96.)).flex_none().flex().justify_end().child(pill(p, st.label(), tone)))
         });
         let (i, tot) = (money.format(total_interest), money.format(total));
-        card(p)
+        Card::new()
             .overflow_hidden()
-            .child(card_header(
-                p,
-                t("Installments", "Cuotas"),
-                Some(
-                    div()
-                        .text_size(px(size::META))
-                        .text_color(p.muted)
-                        .child(sel(tr!("Interest {i} · total {tot}", "Interés {i} · total {tot}")))
-                        .into_any_element(),
-                ),
-            ))
+            .title(t("Installments", "Cuotas"))
+            .action(
+                div()
+                    .typeset(text::CAPTION)
+                    .text_color(p.muted)
+                    .font_features(tabular())
+                    .whitespace_nowrap()
+                    .child(sel(tr!("Interest {i} · total {tot}", "Interés {i} · total {tot}"))),
+            )
             .child(
                 table_header(p)
                     .gap(px(space::M))
-                    .child(div().w(px(24.)).child(th(p, "#")))
+                    .child(div().w(px(24.)).flex_none().child(th(p, "#")))
                     .child(div().flex_1().min_w(px(90.)).child(th(p, t("Due date", "Vence"))))
-                    .child(ncolumn(100.).child(th(p, t("Capital", "Capital"))))
-                    .child(ncolumn(90.).child(th(p, t("Interest", "Interés"))))
-                    .child(ncolumn(80.).child(th(p, t("Late fee", "Mora"))))
+                    .when(split, |d| {
+                        d.child(ncolumn(100.).child(th(p, t("Capital", "Capital"))))
+                            .child(ncolumn(90.).child(th(p, t("Interest", "Interés"))))
+                    })
+                    .when(detail, |d| d.child(ncolumn(80.).child(th(p, t("Late fee", "Mora")))))
                     .child(ncolumn(100.).child(th(p, t("Total due", "Total"))))
-                    .child(ncolumn(100.).child(th(p, t("Paid", "Pagado"))))
+                    .when(detail, |d| d.child(ncolumn(100.).child(th(p, t("Paid", "Pagado")))))
                     .child(ncolumn(100.).child(th(p, t("Outstanding", "Pendiente"))))
                     .child(ncolumn(96.).child(th(p, t("Status", "Estado")))),
             )
@@ -126,39 +131,33 @@ impl VzApp {
                     .label(t("Waive", "Perdonar"))
                     .on_click(cx.listener(move |this, _, w, cx| this.open_reason_form(ReasonKind::WaiveFee(loan_id, seq), w, cx)))
             };
-            h_flex()
-                .min_h(px(44.))
-                .px(px(space::XL))
-                .gap(px(space::L))
-                .border_b_1()
-                .border_color(p.rule)
-                .font_features(tabular())
-                .py(px(space::S))
-                .child(v_flex().flex_1().min_w_0().child(sel(tr!("Installment {seq}", "Cuota {seq}"))).child(
-                    div().text_size(px(size::META)).text_color(p.muted).child(sel({
-                        let when = ds.format(f.assessed_on);
-                        format!("{when} · {detail}")
-                    })),
-                ))
-                .child(ncolumn(110.).when(f.is_waived(), |d| d.line_through().text_color(p.muted)).child(sel(money.format(f.amount))))
-                .child(div().w(px(100.)).flex().justify_end().child(pill(p, status, tone)))
-                .child(div().w(px(90.)).flex().justify_end().child(action))
+            ListRow::new(("late-fee", seq as u64))
+                .title(tr!("Installment {seq}", "Cuota {seq}"))
+                .subtitle({
+                    let when = ds.format(f.assessed_on);
+                    format!("{when} · {detail}")
+                })
+                .trailing(
+                    ncolumn(110.)
+                        .typeset(text::BODY_STRONG)
+                        .text_color(if f.is_waived() { p.muted } else { p.text })
+                        .when(f.is_waived(), |d| d.line_through())
+                        .child(sel(money.format(f.amount))),
+                )
+                .trailing(div().w(px(100.)).flex_none().flex().justify_end().child(pill(p, status, tone)))
+                .trailing(div().w(px(90.)).flex_none().flex().justify_end().child(action))
         });
         Some(
-            card(p)
+            Card::new()
                 .overflow_hidden()
-                .child(card_header(
-                    p,
-                    t("Late fees", "Cargos por mora"),
-                    Some(
-                        div()
-                            .text_size(px(size::META))
-                            .text_color(p.muted)
-                            .child(t("Charged once per overdue installment", "Una vez por cuota atrasada"))
-                            .into_any_element(),
-                    ),
-                ))
-                .child(v_flex().children(rows))
+                .title(t("Late fees", "Cargos por mora"))
+                .action(
+                    div()
+                        .typeset(text::CAPTION)
+                        .text_color(p.muted)
+                        .child(t("Charged once per overdue installment", "Una vez por cuota atrasada")),
+                )
+                .child(div().pb(px(space::S)).children(rows))
                 .into_any_element(),
         )
     }
