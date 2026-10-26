@@ -8,7 +8,7 @@ fn d(y: i32, m: u32, day: u32) -> NaiveDate {
 }
 
 fn terms(principal: Cents, start: NaiveDate) -> LoanTerms {
-    LoanTerms { principal, rate: Rate(100_000), frequency: Frequency::Monthly, start_date: start }
+    LoanTerms::interest_only(principal, Rate(100_000), Frequency::Monthly, start)
 }
 
 fn client(store: &mut Store) -> i64 {
@@ -52,7 +52,7 @@ fn full_lifecycle_through_the_database() {
 fn editing_a_loan_splits_its_payments_again_and_is_logged() {
     let today = d(2026, 6, 1);
     let (mut s, cid, lid, pid) = lent(today);
-    s.update_loan(lid, cid, &terms(200_000, d(2026, 1, 1)), "", "Typo in amount", today).unwrap();
+    s.update_loan(lid, cid, &terms(200_000, d(2026, 1, 1)), None, "", "Typo in amount", today).unwrap();
     assert_eq!(split(&s, pid), (20_000, 40_000));
     let snap = s.snapshot().unwrap();
     let change = &snap.changes[0];
@@ -60,7 +60,7 @@ fn editing_a_loan_splits_its_payments_again_and_is_logged() {
     assert_eq!(change.reason, "Typo in amount");
     assert_eq!(change.fields, vec![FieldChange { field: "principal".into(), old: "100000".into(), new: "200000".into() }]);
     // Saving without changes records nothing.
-    s.update_loan(lid, cid, &terms(200_000, d(2026, 1, 1)), "", "", today).unwrap();
+    s.update_loan(lid, cid, &terms(200_000, d(2026, 1, 1)), None, "", "", today).unwrap();
     assert_eq!(s.snapshot().unwrap().changes.len(), 1);
 }
 
@@ -69,7 +69,7 @@ fn an_edit_that_breaks_a_payment_is_refused_and_nothing_changes() {
     let today = d(2026, 6, 1);
     let (mut s, cid, lid, pid) = lent(today);
     // 400 lent: the 600 payment would be more than the 440 owed.
-    let err = s.update_loan(lid, cid, &terms(40_000, d(2026, 1, 1)), "", "", today).unwrap_err();
+    let err = s.update_loan(lid, cid, &terms(40_000, d(2026, 1, 1)), None, "", "", today).unwrap_err();
     assert!(err.downcast_ref::<Invalid>().unwrap().0.contains("more than the client owed"));
     assert_eq!(s.snapshot().unwrap().loan(lid).unwrap().terms.principal, 100_000);
     assert_eq!(split(&s, pid), (10_000, 50_000));
@@ -240,13 +240,13 @@ fn settings_round_trip() {
     let mut st = s.snapshot().unwrap().settings;
     assert_eq!(st, Settings::default());
     st.currency_code = "USD".into();
-    st.business_name = "Préstamos Valdez".into();
+    st.receipt_name = "Préstamos Valdez".into();
     st.language = crate::i18n::Lang::Es;
     st.default_rate = Rate(150_000);
     st.sidebar_collapsed = true;
     s.save_settings(&st).unwrap();
     assert_eq!(s.snapshot().unwrap().settings, st);
-    st.business_name = "   ".into();
+    st.receipt_name = "x".repeat(61);
     assert!(s.save_settings(&st).is_err());
 }
 
@@ -270,9 +270,9 @@ fn writes_a_loan_receipt() {
     let snap = s.snapshot().unwrap();
     let r = receipt::loan_data(&snap, lid).unwrap();
     assert_eq!((r.principal, r.interest_per_period, r.payoff_at_first_due()), (100_000, 10_000, 110_000));
-    assert_eq!(r.schedule.len(), 6);
-    assert_eq!(r.schedule[0], (1, d(2026, 2, 1), 10_000));
-    assert_eq!(r.schedule[5].1, d(2026, 7, 1));
+    assert_eq!(r.upcoming.len(), 6);
+    assert_eq!(r.upcoming[0], (1, d(2026, 2, 1), 10_000));
+    assert_eq!(r.upcoming[5].1, d(2026, 7, 1));
     let dir = tempfile::tempdir().unwrap();
     let html = std::fs::read_to_string(receipt::write_loan(&snap, lid, dir.path()).unwrap()).unwrap();
     assert!(html.contains("Marta Quiroga") && html.contains("Loan receipt"));

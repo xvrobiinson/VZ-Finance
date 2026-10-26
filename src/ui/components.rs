@@ -1,13 +1,48 @@
 //! Small reusable pieces: cards, figures, pills, avatars, table rows,
 //! empty states. All styling comes from `ui::theme`.
 
+use std::cell::RefCell;
+use std::collections::HashMap;
+use std::panic::Location;
+
 use gpui_kit::assets::IconName;
+use gpui_kit::base::SelectableText;
 use gpui_kit::component::{Icon, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use crate::domain::ledger::DisplayStatus;
 use crate::ui::theme::{self, Palette, RADIUS_CARD, RADIUS_CHIP, card_shadow, size, space, tabular};
+
+thread_local! {
+    /// How many times each `sel` call site has run in the frame being built.
+    static SEL_SEEN: RefCell<HashMap<&'static Location<'static>, u64>> = RefCell::new(HashMap::new());
+}
+
+/// Starts a new frame of selectable text ids. Call once at the top of the
+/// window's render, before any `sel`.
+pub fn begin_selectable_frame() {
+    SEL_SEEN.with(|seen| seen.borrow_mut().clear());
+}
+
+/// Text the user can select with the mouse and copy with Ctrl+C. It takes
+/// its look from the parent like a plain string child does.
+///
+/// Every piece of selectable text needs a stable id of its own. The call
+/// site plus how many times it ran this frame gives one, also for rows
+/// built in a loop.
+#[track_caller]
+pub fn sel(text: impl Into<SharedString>) -> SelectableText {
+    let at = Location::caller();
+    let nth = SEL_SEEN.with(|seen| {
+        let mut seen = seen.borrow_mut();
+        let n = seen.entry(at).or_default();
+        *n += 1;
+        *n
+    });
+    let id = ElementId::NamedChild(std::sync::Arc::new(ElementId::CodeLocation(*at)), nth.to_string().into());
+    SelectableText::new(id, text)
+}
 
 pub fn icon(name: IconName, color: Hsla, size_px: f32) -> Icon {
     Icon::new(name).text_color(color).size(px(size_px))
@@ -19,6 +54,7 @@ pub fn card(p: &Palette) -> Div {
 }
 
 /// Card header: title on the left, optional element on the right.
+#[track_caller]
 pub fn card_header(p: &Palette, title: impl Into<SharedString>, right: Option<AnyElement>) -> Div {
     h_flex()
         .justify_between()
@@ -27,11 +63,12 @@ pub fn card_header(p: &Palette, title: impl Into<SharedString>, right: Option<An
         .px(px(space::XL))
         .pt(px(space::L + 4.))
         .pb(px(space::M))
-        .child(div().text_size(px(size::SECTION)).font_weight(FontWeight::SEMIBOLD).text_color(p.text).child(title.into()))
+        .child(div().text_size(px(size::SECTION)).font_weight(FontWeight::SEMIBOLD).text_color(p.text).child(sel(title)))
         .children(right)
 }
 
 /// Tabular figure for money and counts.
+#[track_caller]
 pub fn figure(p: &Palette, text: impl Into<SharedString>, px_size: f32) -> Div {
     div()
         .font_features(tabular())
@@ -40,19 +77,22 @@ pub fn figure(p: &Palette, text: impl Into<SharedString>, px_size: f32) -> Div {
         .font_weight(if px_size >= size::FIGURE { FontWeight::MEDIUM } else { FontWeight::NORMAL })
         .text_color(p.text)
         .whitespace_nowrap()
-        .child(text.into())
+        .child(sel(text))
 }
 
+#[track_caller]
 pub fn num(text: impl Into<SharedString>) -> Div {
-    div().font_features(tabular()).whitespace_nowrap().child(text.into())
+    div().font_features(tabular()).whitespace_nowrap().child(sel(text))
 }
 
+#[track_caller]
 pub fn label(p: &Palette, text: impl Into<SharedString>) -> Div {
-    div().text_size(px(size::META)).text_color(p.muted).child(text.into())
+    div().text_size(px(size::META)).text_color(p.muted).child(sel(text))
 }
 
+#[track_caller]
 pub fn muted(p: &Palette, text: impl Into<SharedString>) -> Div {
-    div().text_color(p.muted).child(text.into())
+    div().text_color(p.muted).child(sel(text))
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -167,17 +207,20 @@ pub fn table_row(p: &Palette, id: impl Into<ElementId>, clickable: bool) -> Stat
         .when(clickable, |d| d.cursor_pointer().hover(move |s| s.bg(hover)))
 }
 
-/// A key/value line inside a card ("Maturity    Jan 1, 2027").
+/// A key/value line inside a card ("Maturity    Jan 1, 2027"). Wrap a text
+/// value in `sel` to make it copyable.
+#[track_caller]
 pub fn kv(p: &Palette, key: impl Into<SharedString>, value: impl IntoElement) -> Div {
     h_flex()
         .justify_between()
         .gap(px(space::L))
         .min_h(px(30.))
-        .child(div().text_color(p.muted).child(key.into()))
+        .child(div().text_color(p.muted).child(sel(key)))
         .child(div().font_features(tabular()).text_color(p.text).child(value))
 }
 
 /// Page header: title, one-line finding, actions.
+#[track_caller]
 pub fn page_header(p: &Palette, title: impl Into<SharedString>, subtitle: Option<AnyElement>, actions: Vec<AnyElement>) -> Div {
     h_flex()
         .justify_between()
@@ -194,7 +237,7 @@ pub fn page_header(p: &Palette, title: impl Into<SharedString>, subtitle: Option
                         .line_height(px(28.))
                         .font_weight(FontWeight::SEMIBOLD)
                         .text_color(p.text)
-                        .child(title.into()),
+                        .child(sel(title)),
                 )
                 .children(subtitle.map(|s| div().text_color(p.muted).child(s))),
         )

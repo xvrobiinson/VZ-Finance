@@ -15,7 +15,7 @@ use crate::domain::portfolio::{CapitalKind, EntryKind, HistoryPoint, Summary};
 use crate::i18n::{count, t};
 use crate::services::settings::ChartRange;
 use crate::tr;
-use crate::ui::components::{avatar, card, card_header, empty_state, figure, icon, kbd, vrule};
+use crate::ui::components::{avatar, card, card_header, empty_state, figure, icon, kbd, sel, vrule};
 use crate::ui::theme::{Palette, palette, size, space, tabular};
 use crate::utils::dates::short_month_year;
 
@@ -39,30 +39,30 @@ impl VzApp {
         let finding: AnyElement = if s.overdue_loans > 0 {
             h_flex()
                 .gap(px(4.))
-                .child({
+                .child(sel({
                     let n = s.overdue_loans;
                     if n == 1 {
                         t("1 loan overdue ·", "1 préstamo atrasado ·").to_string()
                     } else {
                         tr!("{n} loans overdue ·", "{n} préstamos atrasados ·")
                     }
-                })
-                .child(div().text_color(p.negative).font_features(tabular()).child({
+                }))
+                .child(div().text_color(p.negative).font_features(tabular()).child(sel({
                     let amount = money.format(s.overdue_amount);
                     tr!("{amount} past due", "{amount} vencido")
-                }))
+                })))
                 .into_any_element()
         } else if s.due_soon_loans > 0 {
-            {
+            sel({
                 let n = count(s.due_soon_loans, "payment", "payments", "pago", "pagos");
                 tr!("{n} due in the next few days", "{n} por vencer en los próximos días")
-            }
+            })
             .into_any_element()
         } else if s.active_loans > 0 {
-            {
+            sel({
                 let n = count(s.active_loans, "active loan", "active loans", "préstamo activo", "préstamos activos");
                 tr!("All current: {n}", "Todo al día: {n}")
-            }
+            })
             .into_any_element()
         } else {
             t("Your lending portfolio at a glance", "Tu cartera de préstamos de un vistazo").into_any_element()
@@ -255,7 +255,7 @@ impl VzApp {
                     h_flex()
                         .gap(px(6.))
                         .child(icon(icon_name, p.faint, 14.))
-                        .child(div().text_size(px(size::META + 0.5)).text_color(p.muted).min_w_0().truncate().child(label.to_string()))
+                        .child(div().text_size(px(size::META + 0.5)).text_color(p.muted).min_w_0().truncate().child(sel(label.to_string())))
                         .when(lead, |d| d.children(adjust.take())),
                 )
                 .child(figure(p, value, if lead { size::LEAD } else { size::FIGURE }).text_color(value_color))
@@ -272,16 +272,16 @@ impl VzApp {
             };
             h_flex()
                 .gap(px(4.))
-                .child(div().text_color(c).font_features(tabular()).child(format!(
+                .child(div().text_color(c).font_features(tabular()).child(sel(format!(
                     "{} ({}{})",
                     money.format_signed(gain),
                     if gain > 0 { "+" } else { "" },
                     pct
-                )))
-                .child(div().font_features(tabular()).child({
+                ))))
+                .child(div().font_features(tabular()).child(sel({
                     let inv = money.format(invested);
                     tr!("on {inv} invested", "sobre {inv} invertido")
-                }))
+                })))
                 .into_any_element()
         } else {
             t("No capital recorded yet", "Aún no hay capital registrado").into_any_element()
@@ -325,10 +325,10 @@ impl VzApp {
                 t("Capital lent out", "Capital prestado"),
                 money.format(s.outstanding_principal),
                 p.text,
-                {
+                sel({
                     let n = count(s.active_loans, "active loan", "active loans", "préstamo activo", "préstamos activos");
                     tr!("across {n}", "en {n}")
-                }
+                })
                 .into_any_element(),
                 false,
             ),
@@ -337,7 +337,7 @@ impl VzApp {
                 t("Interest earned", "Interés cobrado"),
                 money.format(s.interest_collected),
                 p.text,
-                fees_sub.into_any_element(),
+                sel(fees_sub).into_any_element(),
                 false,
             ),
             cell(
@@ -345,7 +345,7 @@ impl VzApp {
                 t("Available capital", "Capital disponible"),
                 money.format(s.available_capital),
                 p.text,
-                cash_sub.into_any_element(),
+                sel(cash_sub).into_any_element(),
                 false,
             ),
             cell(
@@ -353,7 +353,7 @@ impl VzApp {
                 t("Available interest", "Interés disponible"),
                 money.format(s.available_interest),
                 p.text,
-                interest_sub.into_any_element(),
+                sel(interest_sub).into_any_element(),
                 false,
             ),
             cell(
@@ -361,7 +361,7 @@ impl VzApp {
                 t("Overdue amount", "Monto atrasado"),
                 money.format(s.overdue_amount),
                 if s.overdue_amount > 0 { p.negative } else { p.text },
-                overdue_sub.into_any_element(),
+                sel(overdue_sub).into_any_element(),
                 false,
             ),
         ];
@@ -524,12 +524,12 @@ impl VzApp {
                                 .gap(px(4.))
                                 .text_color(p.muted)
                                 .child(t("Gain", "Ganancia"))
-                                .child(div().text_color(gain_color).font_features(tabular()).child(money.format_signed(gain_change)))
+                                .child(div().text_color(gain_color).font_features(tabular()).child(sel(money.format_signed(gain_change))))
                                 .child(format!("{period} ·"))
-                                .child(div().font_features(tabular()).child({
+                                .child(div().font_features(tabular()).child(sel({
                                     let i = money.format(interest_change);
                                     tr!("{i} interest received", "{i} de interés cobrado")
-                                })),
+                                }))),
                         )
                         .child(legend),
                 )
@@ -568,7 +568,7 @@ impl VzApp {
                 .min_h(px(36.))
                 .gap(px(10.))
                 .child(div().size(px(8.)).rounded(px(2.)).bg(*c))
-                .child(div().flex_1().min_w_0().truncate().text_color(p.muted).child(label.to_string()))
+                .child(div().flex_1().min_w_0().truncate().text_color(p.muted).child(sel(label.to_string())))
                 .child(
                     div()
                         .w(px(52.))
@@ -576,9 +576,9 @@ impl VzApp {
                         .text_size(px(size::META))
                         .text_color(p.faint)
                         .font_features(tabular())
-                        .child(percent_label(*v, total).filter(|_| total > 0).unwrap_or_else(|| "—".into())),
+                        .child(sel(percent_label(*v, total).filter(|_| total > 0).unwrap_or_else(|| "—".into()))),
                 )
-                .child(div().w(px(110.)).text_right().font_features(tabular()).text_color(p.text).child(money.format(*v)))
+                .child(div().w(px(110.)).text_right().font_features(tabular()).text_color(p.text).child(sel(money.format(*v))))
         });
         card(p)
             .when(!full_width, |d| d.w(px(390.)).flex_none())
@@ -591,13 +591,13 @@ impl VzApp {
                     .child(bar)
                     .child(v_flex().children(rows))
                     .child(div().h(px(1.)).bg(p.border))
-                    .child(crate::ui::components::kv(p, t("Expected interest per month", "Interés esperado por mes"), money.format(s.expected_monthly_interest)))
+                    .child(crate::ui::components::kv(p, t("Expected interest per month", "Interés esperado por mes"), sel(money.format(s.expected_monthly_interest))))
                     .when(s.defaulted_principal > 0, |d| {
                         d.child(
                             h_flex()
                                 .justify_between()
                                 .child(div().text_color(p.negative).child(t("Defaulted, excluded", "Incobrable, excluido")))
-                                .child(div().text_color(p.negative).font_features(tabular()).child(money.format(s.defaulted_principal + s.defaulted_interest))),
+                                .child(div().text_color(p.negative).font_features(tabular()).child(sel(money.format(s.defaulted_principal + s.defaulted_interest)))),
                         )
                     })
                     .child(
@@ -661,19 +661,19 @@ impl VzApp {
                 .cursor_pointer()
                 .hover(|s| s.bg(p.hover))
                 .child(avatar(p, &name, client_id, 32.))
-                .child(v_flex().flex_1().min_w_0().child(div().text_color(p.text).truncate().child(name)).child(
-                    div().text_size(px(size::META)).text_color(p.muted).child({
+                .child(v_flex().flex_1().min_w_0().child(div().text_color(p.text).truncate().child(sel(name))).child(
+                    div().text_size(px(size::META)).text_color(p.muted).child(sel({
                         let (when, id) = (ds.format_short(pay.paid_on, self.today), pay.loan_id);
                         tr!("{when} · Loan #{id}", "{when} · Préstamo #{id}")
-                    }),
+                    })),
                 ))
                 .child(
                     v_flex()
                         .items_end()
-                        .child(div().font_features(tabular()).text_color(p.positive).child(format!("+{}", money.format(pay.amount))))
-                        .child(div().text_size(px(size::META)).font_features(tabular()).text_color(p.muted).child(split)),
+                        .child(div().font_features(tabular()).text_color(p.positive).child(sel(format!("+{}", money.format(pay.amount)))))
+                        .child(div().text_size(px(size::META)).font_features(tabular()).text_color(p.muted).child(sel(split))),
                 )
-                .on_click(cx.listener(move |this, _, w, cx| this.navigate(Route::Loan(loan_id), w, cx)))
+                .on_click(cx.listener(move |this, _, w, cx| this.open_row(Route::Loan(loan_id), w, cx)))
         });
         let body = if recent.is_empty() {
             empty_state(
@@ -753,13 +753,13 @@ impl VzApp {
                 .hover(|s| s.bg(p.hover))
                 .child(avatar(p, &name, l.client_id, 32.))
                 .child(
-                    v_flex().flex_1().min_w_0().child(div().text_color(p.text).truncate().child(name)).child(
+                    v_flex().flex_1().min_w_0().child(div().text_color(p.text).truncate().child(sel(name))).child(
                         div()
                             .text_size(px(size::META))
                             .text_color(p.muted)
                             .font_features(tabular())
                             .truncate()
-                            .child(format!("{due_text} · {amount_line}")),
+                            .child(sel(format!("{due_text} · {amount_line}"))),
                     ),
                 )
                 .child(
@@ -767,7 +767,7 @@ impl VzApp {
                         .items_end()
                         .gap(px(3.))
                         .flex_none()
-                        .child(div().font_features(tabular()).text_color(p.text).child(money.format(pos.payoff())))
+                        .child(div().font_features(tabular()).text_color(p.text).child(sel(money.format(pos.payoff()))))
                         .child(status_detail_pill(p, *st, q, self.today).h(px(20.))),
                 )
                 .child(Button::new(("attn-pay", loan_id as u64)).ghost().small().label(t("Record", "Cobrar")).on_click(cx.listener(
@@ -776,7 +776,7 @@ impl VzApp {
                         this.open_payment_form(Some(loan_id), w, cx)
                     },
                 )))
-                .on_click(cx.listener(move |this, _, w, cx| this.navigate(Route::Loan(loan_id), w, cx)))
+                .on_click(cx.listener(move |this, _, w, cx| this.open_row(Route::Loan(loan_id), w, cx)))
         });
         let body = if count == 0 {
             empty_state(

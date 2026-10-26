@@ -35,7 +35,9 @@ pub fn currency(code: &str) -> Currency {
     CURRENCIES.iter().copied().find(|c| c.code == code).unwrap_or(CURRENCIES[0])
 }
 
-pub const DEFAULT_BUSINESS_NAME: &str = "VZ Finance";
+/// Receipt name used before this setting existed (the old app name); read as
+/// "not set".
+const OLD_DEFAULT_NAME: &str = "VZ Finance";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum ThemePref {
@@ -101,13 +103,17 @@ impl ChartRange {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Settings {
     pub language: Lang,
-    /// Shown in the sidebar, the window title and on receipts.
-    pub business_name: String,
+    /// The business name printed on receipts. Empty: the app name. The app
+    /// itself is always called Acervus Finance.
+    pub receipt_name: String,
     pub currency_code: String,
     pub number_style: NumberStyle,
     pub date_style: DateStyle,
     pub default_rate: Rate,
     pub default_frequency: Frequency,
+    /// Late fee for new installment loans, charged once on what is unpaid
+    /// when an installment becomes overdue.
+    pub late_fee_rate: Rate,
     /// Open a printable receipt right after recording a payment.
     pub receipt_after_payment: bool,
     /// Open the printable loan receipt right after creating a loan.
@@ -124,12 +130,13 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             language: Lang::En,
-            business_name: DEFAULT_BUSINESS_NAME.into(),
+            receipt_name: String::new(),
             currency_code: "DOP".into(),
             number_style: NumberStyle::CommaDot,
             date_style: DateStyle::Medium,
             default_rate: Rate(100_000),
             default_frequency: Frequency::Monthly,
+            late_fee_rate: Rate(50_000),
             receipt_after_payment: true,
             receipt_after_loan: true,
             theme: ThemePref::Light,
@@ -148,7 +155,8 @@ impl Settings {
         let flag = |k: &str, default: bool| get(k).map(|v| v == "1").unwrap_or(default);
         Settings {
             language: get("language").map(Lang::from_key).unwrap_or(d.language),
-            business_name: get("business_name").map(str::trim).filter(|s| !s.is_empty()).map(str::to_string).unwrap_or(d.business_name),
+            // Stored under its original key so older backups keep it.
+            receipt_name: get("business_name").map(str::trim).filter(|s| *s != OLD_DEFAULT_NAME).unwrap_or_default().to_string(),
             currency_code: get("currency").map(|c| currency(c).code.to_string()).unwrap_or(d.currency_code),
             number_style: get("number_style").map(NumberStyle::from_key).unwrap_or(d.number_style),
             date_style: get("date_style").map(DateStyle::from_key).unwrap_or(d.date_style),
@@ -158,6 +166,11 @@ impl Settings {
                 .filter(|r| r.0 >= 0 && r.0 <= 1_000_000)
                 .unwrap_or(d.default_rate),
             default_frequency: get("default_frequency").and_then(Frequency::from_key).unwrap_or(d.default_frequency),
+            late_fee_rate: get("late_fee_rate")
+                .and_then(|v| v.parse().ok())
+                .map(Rate)
+                .filter(|r| r.0 >= 0 && r.0 <= 1_000_000)
+                .unwrap_or(d.late_fee_rate),
             receipt_after_payment: flag("receipt_after_payment", d.receipt_after_payment),
             receipt_after_loan: flag("receipt_after_loan", d.receipt_after_loan),
             theme: match get("theme") {
@@ -175,12 +188,13 @@ impl Settings {
         let b = |v: bool| if v { "1" } else { "0" }.to_string();
         vec![
             ("language", self.language.key().into()),
-            ("business_name", self.business_name.trim().to_string()),
+            ("business_name", self.receipt_name.trim().to_string()),
             ("currency", self.currency_code.clone()),
             ("number_style", self.number_style.key().into()),
             ("date_style", self.date_style.key().into()),
             ("default_rate", self.default_rate.0.to_string()),
             ("default_frequency", self.default_frequency.key().into()),
+            ("late_fee_rate", self.late_fee_rate.0.to_string()),
             ("receipt_after_payment", b(self.receipt_after_payment)),
             ("receipt_after_loan", b(self.receipt_after_loan)),
             ("theme", self.theme.key().into()),
@@ -188,6 +202,12 @@ impl Settings {
             ("show_interest_line", b(self.show_interest_line)),
             ("sidebar_collapsed", b(self.sidebar_collapsed)),
         ]
+    }
+
+    /// The name printed on receipts.
+    pub fn receipt_title(&self) -> String {
+        let name = self.receipt_name.trim();
+        if name.is_empty() { crate::APP_NAME.to_string() } else { name.to_string() }
     }
 
     pub fn money(&self) -> MoneyFormat {

@@ -117,6 +117,33 @@ fn init_logging() {
     }
 }
 
+/// A crash leaves its place in the log, so it can be explained afterwards.
+fn log_panics() {
+    let default = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let at = info.location().map(|l| format!("{}:{}", l.file(), l.line())).unwrap_or_default();
+        let what =
+            info.payload().downcast_ref::<&str>().map(|s| s.to_string()).or_else(|| info.payload().downcast_ref::<String>().cloned());
+        log::error!("crashed at {at}: {}", what.unwrap_or_default());
+        log::logger().flush();
+        default(info);
+    }));
+}
+
+/// Facts about this computer that explain most "works on mine, not on
+/// theirs" problems. No financial data.
+fn log_environment(db: &std::path::Path) {
+    log::info!("{}", vz_finance::diagnostics::windows_version().unwrap_or_else(|| "unknown Windows version".into()));
+    let data_dir = db.parent().map(|d| d.to_path_buf()).unwrap_or_default();
+    let backups = data_dir.parent().map(|d| d.join("backups")).unwrap_or_default();
+    for check in vz_finance::diagnostics::check_folders(&[("data", data_dir), ("backups", backups)]) {
+        match check.result {
+            Ok(()) => log::info!("{} folder is writable", check.label),
+            Err(e) => log::error!("{} folder can't be written: {e}", check.label),
+        }
+    }
+}
+
 /// Shown instead of the app when the database cannot be opened.
 struct StartupError {
     message: String,
@@ -126,6 +153,7 @@ struct StartupError {
 impl Render for StartupError {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let p = ui::theme::palette(cx);
+        ui::components::begin_selectable_frame();
         div()
             .size_full()
             .flex()
@@ -138,9 +166,9 @@ impl Render for StartupError {
                     .w(px(560.))
                     .p(px(32.))
                     .gap(px(12.))
-                    .child(div().text_size(px(18.)).font_weight(FontWeight::SEMIBOLD).text_color(p.text).child("VZ Finance could not open your data / No se pudieron abrir tus datos"))
-                    .child(div().text_color(p.muted).child(self.message.clone()))
-                    .child(div().text_size(px(12.)).text_color(p.faint).child(format!("Database: {}", self.path)))
+                    .child(div().text_size(px(18.)).font_weight(FontWeight::SEMIBOLD).text_color(p.text).child("Acervus Finance could not open your data / No se pudieron abrir tus datos"))
+                    .child(div().text_color(p.muted).child(ui::components::sel(self.message.clone())))
+                    .child(div().text_size(px(12.)).text_color(p.faint).child(ui::components::sel(format!("Database: {}", self.path))))
                     .child(div().text_color(p.muted).child(
                         "Nothing was changed. If you have a backup, you can copy it over this file after closing the app. / No se cambió nada. Si tienes una copia, puedes reemplazar este archivo con ella después de cerrar la app.",
                     )),
@@ -157,7 +185,7 @@ fn window_options(cx: &mut App) -> WindowOptions {
     }
     WindowOptions {
         window_bounds: Some(WindowBounds::Windowed(Bounds::centered(None, size_wanted, cx))),
-        titlebar: Some(TitlebarOptions { title: Some("VZ Finance".into()), ..Default::default() }),
+        titlebar: Some(TitlebarOptions { title: Some(vz_finance::APP_NAME.into()), ..Default::default() }),
         window_min_size: Some(size(px(1080.), px(680.))),
         app_id: Some("VZFinance".into()),
         ..Default::default()
@@ -166,8 +194,12 @@ fn window_options(cx: &mut App) -> WindowOptions {
 
 fn main() {
     init_logging();
-    log::info!("starting VZ Finance {}", env!("CARGO_PKG_VERSION"));
+    log_panics();
+    log::info!("starting {} {}", vz_finance::APP_NAME, env!("CARGO_PKG_VERSION"));
     let path = database::default_db_path();
+    if let Ok(p) = &path {
+        log_environment(p);
+    }
     let store = path.as_ref().map_err(|e| format!("{e:#}")).and_then(|p| Store::open(p.clone()).map_err(|e| format!("{e:#}")));
     let theme_pref = store.as_ref().ok().and_then(|s| s.snapshot().ok()).map(|s| s.settings.theme).unwrap_or_default();
     let path_text = path.as_ref().map(|p| p.display().to_string()).unwrap_or_default();

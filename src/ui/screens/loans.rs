@@ -7,12 +7,12 @@ use gpui_kit::*;
 use super::{crumb, ncolumn, row_icon_button, segmented, status_detail_pill};
 use crate::app::{LoanFilter, Route, VzApp};
 use crate::domain::ledger::{ContractStatus, DisplayStatus, PeriodState, owed_at_payment, period_states};
-use crate::domain::loans::period_interest;
 use crate::domain::money::percent_label;
 use crate::i18n::{count, t};
 use crate::tr;
 use crate::ui::components::{
-    Tone, avatar, card, card_header, empty_state, figure, kv, label, page_header, pill, progress_bar, table_header, table_row, th, vrule,
+    Tone, avatar, card, card_header, empty_state, figure, kv, label, page_header, pill, progress_bar, sel, table_header, table_row, th,
+    vrule,
 };
 use crate::ui::forms::reason::ReasonKind;
 use crate::ui::theme::{palette, size, space, tabular};
@@ -76,7 +76,17 @@ impl VzApp {
             let pos = l.position(today);
             let q = l.delinquency(today);
             let name = self.snap.client_name(l.client_id).to_string();
-            let desc = format!("#{lid} · {} {}", l.facts.rate.percent_label(), l.facts.frequency.per());
+            let desc = match self.snap.loan(lid) {
+                Some(loan) => match loan.terms.installments {
+                    Some(n) => {
+                        let rate = loan.terms.rate_line();
+                        let every = loan.terms.frequency.label().to_lowercase();
+                        tr!("#{lid} · {rate} · {n} installments, {every}", "#{lid} · {rate} · {n} cuotas, {every}")
+                    }
+                    None => format!("#{lid} · {}", loan.terms.rate_line()),
+                },
+                None => format!("#{lid}"),
+            };
             let ratio = if l.facts.principal > 0 { pos.principal_paid as f32 / l.facts.principal as f32 } else { 0.0 };
             let next = match (q.next_due, st) {
                 (_, DisplayStatus::PaidOff | DisplayStatus::Defaulted) => "—".to_string(),
@@ -88,15 +98,15 @@ impl VzApp {
                     h_flex().flex_1().min_w(px(200.)).gap(px(space::M)).child(avatar(&p, &name, l.client_id, 32.)).child(
                         v_flex()
                             .min_w_0()
-                            .child(div().truncate().child(name))
-                            .child(div().text_size(px(size::META)).text_color(p.muted).truncate().child(desc)),
+                            .child(div().truncate().child(sel(name)))
+                            .child(div().text_size(px(size::META)).text_color(p.muted).truncate().child(sel(desc))),
                     ),
                 )
                 .when(!narrow, |d| {
-                    d.child(ncolumn(130.).font_features(tabular()).text_color(p.muted).child(money.format(l.facts.principal)))
+                    d.child(ncolumn(130.).font_features(tabular()).text_color(p.muted).child(sel(money.format(l.facts.principal))))
                 })
-                .child(ncolumn(130.).font_features(tabular()).child(money.format(pos.payoff())))
-                .child(v_flex().w(px(130.)).items_end().child(div().child(next)).when(
+                .child(ncolumn(130.).font_features(tabular()).child(sel(money.format(pos.payoff()))))
+                .child(v_flex().w(px(130.)).items_end().child(div().child(sel(next))).when(
                     q.next_due_amount > 0 && l.facts.status == ContractStatus::Active,
                     |d| {
                         d.child(
@@ -104,20 +114,20 @@ impl VzApp {
                                 .text_size(px(size::META))
                                 .text_color(p.muted)
                                 .font_features(tabular())
-                                .child(money.format(q.next_due_amount)),
+                                .child(sel(money.format(q.next_due_amount))),
                         )
                     },
                 ))
                 .when(!narrow, |d| {
                     d.child(v_flex().w(px(120.)).gap(px(4.)).child(progress_bar(&p, ratio, p.accent)).child(
-                        div().text_size(px(size::META)).text_color(p.muted).font_features(tabular()).child({
+                        div().text_size(px(size::META)).text_color(p.muted).font_features(tabular()).child(sel({
                             let pct = percent_label(pos.principal_paid, l.facts.principal).unwrap_or_default();
                             tr!("{pct} repaid", "{pct} pagado")
-                        }),
+                        })),
                     ))
                 })
                 .child(div().w(px(130.)).flex().justify_end().child(status_detail_pill(&p, *st, &q, today)))
-                .on_click(cx.listener(move |this, _, w, cx| this.navigate(Route::Loan(lid), w, cx)))
+                .on_click(cx.listener(move |this, _, w, cx| this.open_row(Route::Loan(lid), w, cx)))
         });
 
         let body = if self.snap.loans.is_empty() {
@@ -179,7 +189,11 @@ impl VzApp {
         let ds = self.settings().date_style;
         let today = self.today;
         let pos = book.position(today);
-        let owed_now = owed_at_payment(&book.facts, &book.payments, today);
+        let plan_state = book.plan_state(today);
+        let owed_now = match &plan_state {
+            Some(s) => s.position(),
+            None => owed_at_payment(&book.facts, &book.payments, today),
+        };
         let q = book.delinquency(today);
         let status = book.display_status(today);
         let client_name = self.snap.client_name(loan.client_id).to_string();
@@ -234,7 +248,7 @@ impl VzApp {
             _ => {}
         }
 
-        let rate_line = format!("{} {}", terms.rate.percent_label(), terms.frequency.per());
+        let rate_line = terms.rate_line();
         let since = ds.format(terms.start_date);
         let lent = money.format(terms.principal);
         let subtitle = h_flex()
@@ -248,7 +262,7 @@ impl VzApp {
                     .child(client_name.clone())
                     .on_click(cx.listener(move |this, _, w, cx| this.navigate(Route::Client(client_id), w, cx))),
             )
-            .child(tr!("·  {lent} at {rate_line}  ·  since {since}", "·  {lent} al {rate_line}  ·  desde {since}"));
+            .child(sel(tr!("·  {lent} at {rate_line}  ·  since {since}", "·  {lent} al {rate_line}  ·  desde {since}")));
         let header = h_flex()
             .justify_between()
             .items_end()
@@ -261,7 +275,7 @@ impl VzApp {
                             .gap(px(space::M))
                             .text_size(px(size::TITLE))
                             .font_weight(FontWeight::SEMIBOLD)
-                            .child(tr!("Loan #{id}", "Préstamo #{id}"))
+                            .child(sel(tr!("Loan #{id}", "Préstamo #{id}")))
                             .child(status_detail_pill(&p, status, &q, today)),
                     )
                     .child(div().text_color(p.muted).child(subtitle)),
@@ -292,20 +306,58 @@ impl VzApp {
                     )
                     .text_color(color),
                 )
-                .child(div().text_size(px(size::META)).text_color(p.muted).truncate().child(sub))
+                .child(div().text_size(px(size::META)).text_color(p.muted).truncate().child(sel(sub)))
         };
         let owes_label = match loan.status {
             ContractStatus::PaidOff => t("Paid off", "Saldado"),
             ContractStatus::Defaulted => t("Balance at default", "Saldo al marcarlo"),
             _ => t("Owes today", "Debe hoy"),
         };
-        let interest_now = period_interest(owed_now.principal_outstanding, terms.rate);
+        let interest_now = book.facts.rate.interest(owed_now.principal_outstanding);
+        let installment_loan = plan_state.is_some();
+        let third = if installment_loan {
+            let fees_due = owed_now.fees_outstanding;
+            cell(
+                t("Overdue now", "Atrasado ahora"),
+                money.format(q.overdue_amount),
+                match (q.overdue_since, fees_due) {
+                    (Some(_), f) if f > 0 => {
+                        let f = money.format(f);
+                        tr!("includes {f} late fees", "incluye {f} de mora")
+                    }
+                    (Some(d), _) => {
+                        let when = ds.format_short(d, today);
+                        tr!("since {when}", "desde el {when}")
+                    }
+                    _ => t("Up to date", "Al día").to_string(),
+                },
+                false,
+                if q.overdue_amount > 0 { p.negative } else { p.text },
+            )
+        } else {
+            cell(
+                t("Interest due", "Interés por pagar"),
+                money.format(owed_now.interest_outstanding),
+                if q.overdue_amount > 0 {
+                    let a = money.format(q.overdue_amount);
+                    tr!("{a} overdue", "{a} atrasado")
+                } else {
+                    t("Up to date", "Al día").to_string()
+                },
+                false,
+                if q.overdue_amount > 0 { p.negative } else { p.text },
+            )
+        };
         let strip = card(&p)
             .flex_row()
             .child(cell(
                 owes_label,
                 money.format(owed_now.payoff()),
-                t("Capital plus interest due", "Capital más interés por pagar").into(),
+                if installment_loan {
+                    t("Capital, interest and late fees due", "Capital, interés y mora por pagar").into()
+                } else {
+                    t("Capital plus interest due", "Capital más interés por pagar").into()
+                },
                 true,
                 p.text,
             ))
@@ -318,18 +370,7 @@ impl VzApp {
                 p.text,
             ))
             .child(vrule(&p))
-            .child(cell(
-                t("Interest due", "Interés por pagar"),
-                money.format(owed_now.interest_outstanding),
-                if q.overdue_amount > 0 {
-                    let a = money.format(q.overdue_amount);
-                    tr!("{a} overdue", "{a} atrasado")
-                } else {
-                    t("Up to date", "Al día").to_string()
-                },
-                false,
-                if q.overdue_amount > 0 { p.negative } else { p.text },
-            ))
+            .child(third)
             .child(vrule(&p))
             .child(cell(
                 t("Interest paid", "Interés pagado"),
@@ -370,42 +411,62 @@ impl VzApp {
                                 .text_size(px(size::META))
                                 .text_color(p.muted)
                                 .font_features(tabular())
-                                .child({
+                                .child(sel({
                                     let pct = percent_label(pos.principal_paid, terms.principal).unwrap_or_default();
                                     tr!("{pct} of capital repaid", "{pct} del capital pagado")
-                                })
-                                .child({
+                                }))
+                                .child(sel({
                                     let left = money.format(pos.principal_outstanding);
                                     tr!("{left} left", "faltan {left}")
-                                }),
+                                })),
                         ),
                 )
                 .child(
                     v_flex()
-                        .child(kv(&p, t("Amount lent", "Monto prestado"), money.format(terms.principal)))
-                        .child(kv(&p, t("Interest rate", "Tasa de interés"), rate_line.clone()))
-                        .child(kv(&p, t("Interest per period now", "Interés por período ahora"), money.format(interest_now)))
-                        .child(kv(&p, t("Next payment", "Próximo pago"), next_line))
+                        .child(kv(&p, t("Amount lent", "Monto prestado"), sel(money.format(terms.principal))))
+                        .child(kv(&p, t("Loan type", "Tipo de préstamo"), sel(terms.method.short_label())))
+                        .child(kv(&p, t("Interest rate", "Tasa de interés"), sel(rate_line.clone())))
+                        .when_some(terms.period_rate().conversion_note(), |d, note| {
+                            d.child(kv(&p, t("Per payment", "Por pago"), sel(note)))
+                        })
+                        .when_some(terms.installments, |d, n| {
+                            let every = terms.frequency.label().to_lowercase();
+                            d.child(kv(&p, t("Installments", "Cuotas"), sel(format!("{n} · {every}"))))
+                                .when(terms.late_fee_rate.0 > 0, |d| {
+                                    d.child(kv(&p, t("Late fee", "Cargo por mora"), sel(terms.late_fee_rate.percent_label())))
+                                })
+                                .when(loan.schedule_edited, |d| {
+                                    d.child(kv(&p, t("Schedule", "Calendario"), sel(t("Set by hand", "Fijado a mano"))))
+                                })
+                        })
+                        .when(!installment_loan, |d| {
+                            d.child(kv(&p, t("Interest per period now", "Interés por período ahora"), sel(money.format(interest_now))))
+                        })
+                        .child(kv(&p, t("Next payment", "Próximo pago"), sel(next_line)))
                         .when(q.overdue_amount > 0, |d| {
                             d.child(kv(
                                 &p,
                                 t("Overdue", "Atrasado"),
-                                div().text_color(p.negative).child({
+                                div().text_color(p.negative).child(sel({
                                     let (a, days) = (money.format(q.overdue_amount), q.days_overdue);
                                     tr!("{a} · {days} days", "{a} · {days} días")
-                                }),
+                                })),
                             ))
                         })
                         .child(kv(
                             &p,
                             t("Total interest charged so far", "Interés generado hasta hoy"),
-                            money.format(pos.interest_charged_total),
+                            sel(money.format(pos.interest_charged_total)),
                         ))
-                        .child(kv(&p, t("Loan date", "Fecha del préstamo"), ds.format(terms.start_date))),
+                        .child(kv(&p, t("Loan date", "Fecha del préstamo"), sel(ds.format(terms.start_date)))),
                 )
                 .when(!loan.notes.is_empty(), |d| {
                     d.child(
-                        v_flex().gap(px(4.)).pt(px(space::S)).child(label(&p, t("Notes", "Notas"))).child(div().child(loan.notes.clone())),
+                        v_flex()
+                            .gap(px(4.))
+                            .pt(px(space::S))
+                            .child(label(&p, t("Notes", "Notas")))
+                            .child(div().child(sel(loan.notes.clone()))),
                     )
                 }),
         );
@@ -430,11 +491,11 @@ impl VzApp {
                     .border_b_1()
                     .border_color(p.rule)
                     .font_features(tabular())
-                    .child(div().w(px(28.)).text_color(p.faint).child(period.seq.to_string()))
-                    .child(div().flex_1().min_w_0().truncate().child(ds.format(period.due)))
-                    .child(ncolumn(130.).text_color(p.muted).child(money.format(period.balance)))
-                    .child(ncolumn(110.).child(money.format(period.interest)))
-                    .child(ncolumn(110.).text_color(p.muted).child(money.format(*paid)))
+                    .child(div().w(px(28.)).text_color(p.faint).child(sel(period.seq.to_string())))
+                    .child(div().flex_1().min_w_0().truncate().child(sel(ds.format(period.due))))
+                    .child(ncolumn(130.).text_color(p.muted).child(sel(money.format(period.balance))))
+                    .child(ncolumn(110.).child(sel(money.format(period.interest))))
+                    .child(ncolumn(110.).text_color(p.muted).child(sel(money.format(*paid))))
                     .child(div().w(px(110.)).flex().justify_end().child(pill(&p, text, tone)))
                     .into_any_element()
             })
@@ -453,10 +514,10 @@ impl VzApp {
                     .border_color(p.rule)
                     .font_features(tabular())
                     .text_color(p.muted)
-                    .child(div().w(px(28.)).text_color(p.faint).child(next_seq.to_string()))
-                    .child(div().flex_1().min_w_0().truncate().child(ds.format(due)))
-                    .child(ncolumn(130.).child(money.format(pos.principal_outstanding)))
-                    .child(ncolumn(110.).child(money.format(interest_now)))
+                    .child(div().w(px(28.)).text_color(p.faint).child(sel(next_seq.to_string())))
+                    .child(div().flex_1().min_w_0().truncate().child(sel(ds.format(due))))
+                    .child(ncolumn(130.).child(sel(money.format(pos.principal_outstanding))))
+                    .child(ncolumn(110.).child(sel(money.format(interest_now))))
                     .child(ncolumn(110.).child("—"))
                     .child(div().w(px(110.)).flex().justify_end().child(pill(&p, t("Upcoming", "Próximo"), Tone::Neutral)))
                     .into_any_element(),
@@ -488,6 +549,11 @@ impl VzApp {
                     .child(ncolumn(110.).child(th(&p, t("Status", "Estado")))),
             )
             .child(div().id("periods-scroll").max_h(px(440.)).overflow_y_scroll().children(period_rows));
+        let periods_card = match &plan_state {
+            Some(state) => self.installments_card(&p, state, today),
+            None => periods_card.into_any_element(),
+        };
+        let fees_card = plan_state.as_ref().and_then(|_| self.late_fees_card(&p, id, cx));
 
         // Transactions, newest first.
         let payments: Vec<_> = self.snap.payments_for_loan(id).cloned().collect();
@@ -504,22 +570,34 @@ impl VzApp {
                 .child(
                     v_flex()
                         .w(px(150.))
-                        .child(div().text_color(if reversed { p.muted } else { p.text }).child(ds.format(x.paid_on)))
-                        .child(div().text_size(px(size::META)).text_color(p.faint).child(tr!("Receipt #{pid}", "Recibo #{pid}"))),
+                        .child(div().text_color(if reversed { p.muted } else { p.text }).child(sel(ds.format(x.paid_on))))
+                        .child(div().text_size(px(size::META)).text_color(p.faint).child(sel(tr!("Receipt #{pid}", "Recibo #{pid}")))),
                 )
-                .child(div().flex_1().min_w_0().text_size(px(size::META + 0.5)).text_color(p.muted).truncate().child(if reversed {
+                .child(div().flex_1().min_w_0().text_size(px(size::META + 0.5)).text_color(p.muted).truncate().child(sel(if reversed {
                     let why = x.reversal_reason.clone().unwrap_or_default();
                     tr!("Reversed — {why}", "Anulado — {why}")
+                } else if installment_loan {
+                    let to: Vec<String> = x.applied.iter().map(|a| format!("#{}", a.seq)).collect();
+                    let to = to.join(", ");
+                    let mut line = if to.is_empty() { String::new() } else { tr!("To installment {to}", "A la cuota {to}") };
+                    if x.fee > 0 {
+                        let f = money.format(x.fee);
+                        line = tr!("{line} · late fee {f}", "{line} · mora {f}");
+                    }
+                    if !x.notes.is_empty() {
+                        line = format!("{line} · {}", x.notes);
+                    }
+                    line
                 } else {
                     x.notes.clone()
-                }))
-                .child(ncolumn(110.).text_color(p.muted).when(reversed, |d| d.line_through()).child(money.format(x.interest)))
-                .child(ncolumn(110.).text_color(p.muted).when(reversed, |d| d.line_through()).child(money.format(x.principal)))
+                })))
+                .child(ncolumn(110.).text_color(p.muted).when(reversed, |d| d.line_through()).child(sel(money.format(x.interest))))
+                .child(ncolumn(110.).text_color(p.muted).when(reversed, |d| d.line_through()).child(sel(money.format(x.principal))))
                 .child(
                     ncolumn(120.)
                         .text_color(if reversed { p.muted } else { p.text })
                         .when(reversed, |d| d.line_through())
-                        .child(money.format(x.amount)),
+                        .child(sel(money.format(x.amount))),
                 )
                 .child(
                     h_flex()
@@ -593,7 +671,25 @@ impl VzApp {
                 v_flex()
                     .gap(px(space::XL))
                     .child(strip)
-                    .child(if narrow {
+                    .child(if installment_loan {
+                        // The installment table needs the full width; the summary
+                        // sits next to the late fees.
+                        let side = |d: AnyElement| v_flex().flex_1().min_w_0().child(d);
+                        v_flex()
+                            .gap(px(space::XL))
+                            .child(periods_card)
+                            .child(if narrow {
+                                v_flex().gap(px(space::XL)).child(details).children(fees_card).into_any_element()
+                            } else {
+                                h_flex()
+                                    .items_start()
+                                    .gap(px(space::XL))
+                                    .child(v_flex().w(px(380.)).flex_none().child(details))
+                                    .children(fees_card.map(side))
+                                    .into_any_element()
+                            })
+                            .into_any_element()
+                    } else if narrow {
                         v_flex().gap(px(space::XL)).child(details).child(periods_card).into_any_element()
                     } else {
                         h_flex()

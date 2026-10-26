@@ -21,6 +21,8 @@ pub enum ReasonKind {
     DeleteCapital(i64),
     DeleteEntry(i64),
     DeleteClient(i64),
+    /// Loan id and installment number.
+    WaiveFee(i64, u32),
 }
 
 impl ReasonKind {
@@ -32,6 +34,7 @@ impl ReasonKind {
             ReasonKind::DeleteCapital(_) => t("Delete capital entry", "Eliminar movimiento de capital"),
             ReasonKind::DeleteEntry(_) => t("Delete entry", "Eliminar movimiento"),
             ReasonKind::DeleteClient(_) => t("Delete client", "Eliminar cliente"),
+            ReasonKind::WaiveFee(..) => t("Waive late fee", "Perdonar cargo por mora"),
         }
     }
 
@@ -57,12 +60,17 @@ impl ReasonKind {
                 "The client is removed. What their details were is kept in the change history.",
                 "Se elimina el cliente. Sus datos quedan en el historial de cambios.",
             ),
+            ReasonKind::WaiveFee(..) => t(
+                "The late fee no longer counts and the loan's payments are worked out again. It stays in the list, marked as waived, and can be restored.",
+                "El cargo por mora deja de contar y los pagos del préstamo se recalculan. Queda en la lista marcado como perdonado y se puede restaurar.",
+            ),
         }
     }
 
     fn confirm_label(self) -> &'static str {
         match self {
             ReasonKind::MarkDefaulted(_) => t("Mark as defaulted", "Marcar incobrable"),
+            ReasonKind::WaiveFee(..) => t("Waive", "Perdonar"),
             _ => t("Delete", "Eliminar"),
         }
     }
@@ -79,6 +87,7 @@ impl ReasonKind {
             }
             ReasonKind::DeleteCapital(_) | ReasonKind::DeleteEntry(_) => t("Movement deleted", "Movimiento eliminado"),
             ReasonKind::DeleteClient(_) => t("Client deleted", "Cliente eliminado"),
+            ReasonKind::WaiveFee(..) => t("Late fee waived", "Cargo por mora perdonado"),
         }
     }
 }
@@ -127,6 +136,7 @@ impl ReasonForm {
                 ReasonKind::DeleteCapital(id) => app.store.delete_capital(id, &reason),
                 ReasonKind::DeleteEntry(id) => app.store.delete_entry(id, &reason),
                 ReasonKind::DeleteClient(id) => app.store.delete_client(id, &reason),
+                ReasonKind::WaiveFee(loan, seq) => app.store.set_late_fee_waived(loan, seq, true, &reason, today),
             };
             match r {
                 Ok(()) => {

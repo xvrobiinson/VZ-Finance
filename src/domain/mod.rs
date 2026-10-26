@@ -1,5 +1,6 @@
 //! Financial business logic. No UI or database dependencies.
 
+pub mod installments;
 pub mod ledger;
 pub mod loans;
 pub mod money;

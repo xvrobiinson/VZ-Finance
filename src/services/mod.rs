@@ -2,6 +2,7 @@
 //! the accounting rules and committed atomically in one SQLite transaction.
 
 pub mod export;
+mod lending;
 pub mod logo;
 pub mod receipt;
 mod records;
@@ -10,7 +11,7 @@ pub mod settings;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use anyhow::{Result, anyhow};
+use anyhow::{Context as _, Result, anyhow};
 use chrono::NaiveDate;
 use rusqlite::{Connection, TransactionBehavior};
 
@@ -20,11 +21,13 @@ use crate::database::repositories::{
     changes::{self, Action, Change, Entity, FieldChange},
     clients::{self, Client, ClientInput},
     entries::{self, CashEntry},
+    late_fees::{self, LateFee},
     loans::{self, Loan},
     payments::{self, Payment},
     settings as settings_repo,
 };
 use crate::database::{self, BackupInfo};
+use crate::domain::installments::{self, Applied, Instruction, Plan, PlanError, PlanPayment, PlanState};
 use crate::domain::ledger::{Allocation, ContractStatus, LoanFacts, PaymentError, PaymentFact, allocate};
 use crate::domain::money::Cents;
 use crate::domain::portfolio::{Account, Book, LoanBook, Shortfall};
@@ -67,6 +70,8 @@ pub struct Snapshot {
     pub entries: Vec<CashEntry>,
     /// Edits and deletions, newest first.
     pub changes: Vec<Change>,
+    /// Late fees assessed on overdue installments.
+    pub late_fees: Vec<LateFee>,
     /// The business logo as PNG.
     pub logo: Option<Arc<[u8]>>,
     pub book: Book,
@@ -125,7 +130,7 @@ pub enum Record {
 pub fn loan_facts(loan: &Loan) -> LoanFacts {
     LoanFacts {
         principal: loan.terms.principal,
-        rate: loan.terms.rate,
+        rate: loan.terms.period_rate(),
         frequency: loan.terms.frequency,
         start_date: loan.terms.start_date,
         status: loan.status,
@@ -136,7 +141,28 @@ pub fn loan_facts(loan: &Loan) -> LoanFacts {
     }
 }
 
-fn build_book(loans: &[Loan], payments: &[Payment], capital: &[CapitalTx], entries: &[CashEntry]) -> Book {
+/// An installment loan's schedule and payments, with `payments` applied as
+/// `instruction` says (stored splits when building the ledger).
+fn plan_for(loan: &Loan, fees: &[LateFee], payments: Vec<PlanPayment>) -> Option<Plan> {
+    loan.terms.method.has_installments().then(|| Plan {
+        method: loan.terms.method,
+        schedule: loan.schedule.clone(),
+        edited: loan.schedule_edited,
+        fee_rate: loan.terms.late_fee_rate,
+        waived: fees.iter().filter(|f| f.loan_id == loan.id && f.is_waived()).map(|f| f.seq).collect(),
+        payments,
+    })
+}
+
+fn stored_plan_payments(loan_id: i64, payments: &[Payment]) -> Vec<PlanPayment> {
+    payments
+        .iter()
+        .filter(|p| p.loan_id == loan_id && !p.is_reversed())
+        .map(|p| PlanPayment { paid_on: p.paid_on, amount: p.amount, instruction: Instruction::Fixed(p.applied.clone()) })
+        .collect()
+}
+
+fn build_book(loans: &[Loan], payments: &[Payment], capital: &[CapitalTx], entries: &[CashEntry], fees: &[LateFee]) -> Book {
     Book {
         loans: loans
             .iter()
@@ -145,6 +171,7 @@ fn build_book(loans: &[Loan], payments: &[Payment], capital: &[CapitalTx], entri
                 client_id: l.client_id,
                 facts: loan_facts(l),
                 payments: payments.iter().filter(|p| p.loan_id == l.id && !p.is_reversed()).map(Payment::fact).collect(),
+                plan: plan_for(l, fees, stored_plan_payments(l.id, payments)),
             })
             .collect(),
         capital: capital.iter().map(CapitalTx::fact).collect(),
@@ -153,7 +180,7 @@ fn build_book(loans: &[Loan], payments: &[Payment], capital: &[CapitalTx], entri
 }
 
 fn load_book(conn: &Connection) -> Result<Book> {
-    Ok(build_book(&loans::list(conn)?, &payments::list(conn)?, &capital::list(conn)?, &entries::list(conn)?))
+    Ok(build_book(&loans::list(conn)?, &payments::list(conn)?, &capital::list(conn)?, &entries::list(conn)?, &late_fees::list(conn)?))
 }
 
 /// Refuses a write that leaves an account below zero at any point.
@@ -226,6 +253,24 @@ impl Store {
         self.app_dir().join("receipts")
     }
 
+    /// Where CSV exports go when no folder can be chosen.
+    pub fn exports_dir(&self) -> PathBuf {
+        self.app_dir().join("exports")
+    }
+
+    /// Backups in the backups folder, newest first, with when they were made.
+    pub fn list_backups(&self) -> Vec<(PathBuf, std::time::SystemTime)> {
+        let Ok(dir) = std::fs::read_dir(self.backups_dir()) else { return Vec::new() };
+        let mut out: Vec<_> = dir
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| p.extension().is_some_and(|x| x.eq_ignore_ascii_case("db")))
+            .filter_map(|p| std::fs::metadata(&p).and_then(|m| m.modified()).ok().map(|t| (p, t)))
+            .collect();
+        out.sort_by_key(|x| std::cmp::Reverse(x.1));
+        out
+    }
+
     pub fn snapshot(&self) -> Result<Snapshot> {
         let c = &self.conn;
         let clients = clients::list(c)?;
@@ -233,11 +278,61 @@ impl Store {
         let payments = payments::list(c)?;
         let capital = capital::list(c)?;
         let entries = entries::list(c)?;
-        let book = build_book(&loans, &payments, &capital, &entries);
+        let late_fees = late_fees::list(c)?;
+        let book = build_book(&loans, &payments, &capital, &entries, &late_fees);
         let settings = Settings::from_map(&settings_repo::all(c)?);
         let changes = changes::list(c)?;
         let logo = assets::get(c, assets::LOGO)?.map(Arc::from);
-        Ok(Snapshot { clients, loans, payments, capital, entries, changes, logo, book, settings })
+        Ok(Snapshot { clients, loans, payments, capital, entries, changes, late_fees, logo, book, settings })
+    }
+
+    /// Records late fees that have fallen due since the last check, keeping
+    /// one per overdue installment. Safe to run any number of times.
+    pub fn refresh(&mut self, today: NaiveDate) -> Result<usize> {
+        let snap = self.snapshot()?;
+        let mut changes = 0;
+        for loan in snap.loans.iter().filter(|l| l.terms.method.has_installments()) {
+            let Some(state) = snap.book_loan(loan.id).and_then(|b| b.plan_state(today)) else { continue };
+            changes += lending::fee_changes(&snap, loan, &state).len();
+        }
+        if changes == 0 {
+            return Ok(0);
+        }
+        self.write(|c| {
+            let mut n = 0;
+            for loan in loans::list(c)?.iter().filter(|l| l.terms.method.has_installments()) {
+                n += lending::sync_late_fees(c, loan.id, today)?;
+            }
+            Ok(n)
+        })
+    }
+
+    /// Deletes every client, loan, payment and money movement, keeping
+    /// settings and the logo. A copy of everything is saved first and its
+    /// path returned.
+    pub fn reset_all_data(&mut self) -> Result<PathBuf> {
+        let stamp = chrono::Local::now().format("%Y%m%d-%H%M%S");
+        let copy = self.backups_dir().join(format!("before-reset-{stamp}.db"));
+        database::backup_to(&self.conn, &copy).context("Could not save a copy of your data before resetting it")?;
+        self.write(|c| {
+            c.execute_batch(
+                "DELETE FROM installment_allocations;
+                 DELETE FROM payment_targets;
+                 DELETE FROM payment_allocations;
+                 DELETE FROM payments;
+                 DELETE FROM late_fees;
+                 DELETE FROM loan_installments;
+                 DELETE FROM loan_status_events;
+                 DELETE FROM loans;
+                 DELETE FROM clients;
+                 DELETE FROM capital_transactions;
+                 DELETE FROM cash_entries;
+                 DELETE FROM change_log;",
+            )?;
+            Ok(())
+        })?;
+        log::info!("all data reset; copy saved first");
+        Ok(copy)
     }
 
     fn write<T>(&mut self, f: impl FnOnce(&Connection) -> Result<T>) -> Result<T> {
@@ -250,11 +345,14 @@ impl Store {
     // ----- settings -------------------------------------------------------
 
     pub fn save_settings(&mut self, s: &Settings) -> Result<()> {
-        if s.business_name.trim().is_empty() {
-            return invalid(t("Enter a business name", "Escribe el nombre del negocio"));
-        }
-        if s.business_name.trim().chars().count() > 60 {
+        if s.receipt_name.trim().chars().count() > 60 {
             return invalid(t("The name is too long (60 characters at most)", "El nombre es muy largo (máximo 60 caracteres)"));
+        }
+        if s.receipt_name.chars().any(char::is_control) {
+            return invalid(t("The name can't contain line breaks or tabs", "El nombre no puede tener saltos de línea ni tabulaciones"));
+        }
+        if s.late_fee_rate.0 < 0 || s.late_fee_rate > crate::domain::loans::MAX_PERIOD_RATE {
+            return invalid(t("The late fee must be between 0% and 100%", "El cargo por mora debe estar entre 0% y 100%"));
         }
         self.write(|c| {
             for (k, v) in s.to_pairs() {
@@ -427,5 +525,61 @@ pub fn preview_payment(
     Some(allocate(&facts, &payments_before(snap, loan_id, editing, on), amount, fee, on, today))
 }
 
+/// An installment loan as it stands right before a payment dated `on` (or
+/// before payment `editing`, moved to `on`).
+pub fn installment_state_before(snap: &Snapshot, loan_id: i64, editing: Option<i64>, on: NaiveDate, today: NaiveDate) -> Option<PlanState> {
+    let loan = snap.loan(loan_id)?;
+    let key = (on, editing.unwrap_or(i64::MAX));
+    let before: Vec<Payment> =
+        snap.payments.iter().filter(|p| p.loan_id == loan_id && Some(p.id) != editing && (p.paid_on, p.id) < key).cloned().collect();
+    let plan = plan_for(loan, &snap.late_fees, Vec::new())?;
+    let mut facts = loan_facts(loan);
+    if editing.is_some() {
+        facts.status = ContractStatus::Active;
+    }
+    // Interest of a period that begins on the payment date is charged after
+    // it, so look at the day as the payment sees it.
+    let mut state = installments::run(&facts, &plan, &stored_plan_payments(loan_id, &before), on, today.max(on)).ok()?;
+    for x in state.installments.iter_mut().filter(|x| x.seq > 1 && x.starts == on && x.paid() == 0) {
+        x.charged = false;
+    }
+    Some(state)
+}
+
+/// How a payment on an installment loan would be applied if recorded now
+/// (or, when `editing`, if that payment were changed), and the loan right
+/// after it. Payments dated after it are split again on save.
+#[allow(clippy::too_many_arguments)]
+pub fn preview_installment_payment(
+    snap: &Snapshot,
+    loan_id: i64,
+    editing: Option<i64>,
+    amount: Cents,
+    on: NaiveDate,
+    instruction: Instruction,
+    today: NaiveDate,
+) -> Option<Result<(Vec<Applied>, PlanState), PlanError>> {
+    let loan = snap.loan(loan_id)?;
+    let key = (on, editing.unwrap_or(i64::MAX));
+    let before: Vec<Payment> =
+        snap.payments.iter().filter(|p| p.loan_id == loan_id && Some(p.id) != editing && (p.paid_on, p.id) < key).cloned().collect();
+    let mut payments = stored_plan_payments(loan_id, &before);
+    payments.push(PlanPayment { paid_on: on, amount, instruction });
+    let plan = plan_for(loan, &snap.late_fees, Vec::new())?;
+    let mut facts = loan_facts(loan);
+    if editing.is_some() {
+        facts.status = ContractStatus::Active;
+    }
+    Some(match installments::run(&facts, &plan, &payments, on, today) {
+        Ok(state) => {
+            let applied = state.payments.last().cloned().unwrap_or_default();
+            Ok((applied, state))
+        }
+        Err((_, e)) => Err(e),
+    })
+}
+
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_installments;

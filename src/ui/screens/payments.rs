@@ -9,7 +9,7 @@ use super::{ncolumn, row_icon_button};
 use crate::app::{Route, VzApp};
 use crate::i18n::{count, t};
 use crate::tr;
-use crate::ui::components::{Tone, avatar, card, empty_state, icon, page_header, pill, table_header, table_row, th};
+use crate::ui::components::{Tone, avatar, card, empty_state, icon, page_header, pill, sel, table_header, table_row, th};
 use crate::ui::forms::reason::ReasonKind;
 use crate::ui::theme::{palette, size, space, tabular};
 
@@ -47,9 +47,9 @@ impl VzApp {
                 h_flex()
                     .gap(px(4.))
                     .font_features(tabular())
-                    .child(tr!("{n} · {received} received, of which", "{n} · {received} recibido, de los cuales"))
-                    .child(div().text_color(p.positive).child(money.format(income)))
-                    .child(t("is interest", "son interés"))
+                    .child(sel(tr!("{n} · {received} received, of which", "{n} · {received} recibido, de los cuales")))
+                    .child(div().text_color(p.positive).child(sel(money.format(income))))
+                    .child(sel(t("is interest", "son interés")))
                     .into_any_element(),
             ),
             vec![
@@ -110,21 +110,25 @@ impl VzApp {
                 };
                 table_row(&p, ("payrow", pid as u64), true)
                     .font_features(tabular())
-                    .child(div().w(px(120.)).text_color(if rev { p.muted } else { p.text }).child(ds.format(x.paid_on)))
+                    .child(div().w(px(120.)).text_color(if rev { p.muted } else { p.text }).child(sel(ds.format(x.paid_on))))
                     .child(
                         h_flex().flex_1().min_w(px(180.)).gap(px(space::M)).child(avatar(&p, &name, cid, 28.)).child(
                             v_flex()
                                 .min_w_0()
-                                .child(div().truncate().child(name))
-                                .child(div().text_size(px(size::META)).text_color(p.muted).truncate().child(sub)),
+                                .child(div().truncate().child(sel(name)))
+                                .child(div().text_size(px(size::META)).text_color(p.muted).truncate().child(sel(sub))),
                         ),
                     )
-                    .child(dim(ncolumn(110.).text_color(p.muted)).child(money.format(x.interest)))
-                    .child(dim(ncolumn(120.).text_color(p.muted)).child(money.format(x.principal)))
+                    .child(dim(ncolumn(110.).text_color(p.muted)).child(sel(money.format(x.interest))))
+                    .child(dim(ncolumn(120.).text_color(p.muted)).child(sel(money.format(x.principal))))
                     .when(!narrow, |d| {
-                        d.child(dim(ncolumn(90.).text_color(p.muted)).child(if x.fee > 0 { money.format(x.fee) } else { "—".into() }))
+                        d.child(dim(ncolumn(90.).text_color(p.muted)).child(sel(if x.fee > 0 {
+                            money.format(x.fee)
+                        } else {
+                            "—".into()
+                        })))
                     })
-                    .child(dim(ncolumn(130.)).child(money.format(x.amount)))
+                    .child(dim(ncolumn(130.)).child(sel(money.format(x.amount))))
                     .child(
                         h_flex()
                             .w(px(if narrow { 150. } else { 240. }))
@@ -160,7 +164,7 @@ impl VzApp {
                                 move |this, w, cx| this.open_reason_form(ReasonKind::DeletePayment(pid), w, cx),
                             )),
                     )
-                    .on_click(cx.listener(move |this, _, w, cx| this.navigate(Route::Loan(lid), w, cx)))
+                    .on_click(cx.listener(move |this, _, w, cx| this.open_row(Route::Loan(lid), w, cx)))
             });
             v_flex()
                 .child(

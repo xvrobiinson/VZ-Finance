@@ -5,7 +5,7 @@ $root = Split-Path -Parent $PSScriptRoot
 Set-Location $root
 
 $version = (Select-String -Path Cargo.toml -Pattern '^version = "(.+)"' | Select-Object -First 1).Matches[0].Groups[1].Value
-Write-Host "VZ Finance $version"
+Write-Host "Acervus Finance $version"
 
 cargo test --release
 if ($LASTEXITCODE -ne 0) { throw "tests failed" }
@@ -21,4 +21,4 @@ if (-not $iscc) { throw "Inno Setup 6 not found. Install it with: winget install
 
 & $iscc "/DAppVersion=$version" installer\vz-finance.iss
 if ($LASTEXITCODE -ne 0) { throw "installer build failed" }
-Get-Item "dist\VZFinance-Setup-$version.exe" | Select-Object FullName, Length
+Get-Item "dist\AcervusFinance-Setup-$version.exe" | Select-Object FullName, Length

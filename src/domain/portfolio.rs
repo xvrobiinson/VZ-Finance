@@ -21,10 +21,11 @@ use std::collections::BTreeMap;
 
 use chrono::NaiveDate;
 
+use crate::domain::installments::{self, Plan, PlanState};
 use crate::domain::ledger::{
     ContractStatus, Delinquency, DisplayStatus, LoanFacts, PaymentFact, Position, delinquency, display_status, position,
 };
-use crate::domain::loans::period_interest;
+use crate::domain::loans::{Frequency, Method, convert_per_period};
 use crate::domain::money::Cents;
 use crate::i18n::t;
 use crate::utils::dates::{add_months, month_start};
@@ -156,15 +157,44 @@ pub struct LoanBook {
     pub id: i64,
     pub client_id: i64,
     pub facts: LoanFacts,
+    /// Payment totals (capital, interest, fees) in ledger order.
     pub payments: Vec<PaymentFact>,
+    /// The installment schedule and stored splits; `None` for interest-only
+    /// loans.
+    pub plan: Option<Plan>,
 }
 
 impl LoanBook {
+    /// The installment loan replayed to the end of `as_of`.
+    pub fn plan_state(&self, as_of: NaiveDate) -> Option<PlanState> {
+        let plan = self.plan.as_ref()?;
+        match installments::run(&self.facts, plan, &plan.payments, as_of, NaiveDate::MAX) {
+            Ok(s) => Some(s),
+            Err((i, e)) => {
+                log::error!("loan {} could not be replayed at payment {i}: {e:?}", self.id);
+                None
+            }
+        }
+    }
     pub fn position(&self, as_of: NaiveDate) -> Position {
+        if self.plan.is_some() {
+            return self.plan_state(as_of).map(|s| s.position()).unwrap_or_default();
+        }
         position(&self.facts, &self.payments, as_of)
     }
     pub fn delinquency(&self, today: NaiveDate) -> Delinquency {
+        if self.plan.is_some() {
+            return self.plan_state(today).map(|s| s.delinquency(self.facts.status, today)).unwrap_or_default();
+        }
         delinquency(&self.facts, &self.payments, today)
+    }
+    /// The interest the loan produces per month at its current capital.
+    pub fn monthly_interest(&self, pos: &Position) -> Cents {
+        let per_period = match &self.plan {
+            Some(p) if p.method == Method::Flat && pos.principal_outstanding > 0 => self.facts.rate.interest(self.facts.principal),
+            _ => self.facts.rate.interest(pos.principal_outstanding),
+        };
+        convert_per_period(per_period, self.facts.frequency, Frequency::Monthly)
     }
     pub fn display_status(&self, today: NaiveDate) -> DisplayStatus {
         display_status(&self.facts, &self.delinquency(today), today)
@@ -258,6 +288,8 @@ pub struct Summary {
     pub outstanding_principal: Cents,
     /// Earned, uncollected interest on performing loans.
     pub interest_receivable: Cents,
+    /// Late fees assessed and not yet collected on performing loans.
+    pub fees_receivable: Cents,
     pub defaulted_principal: Cents,
     pub defaulted_interest: Cents,
     pub portfolio_value: Cents,
@@ -422,6 +454,7 @@ impl Book {
             if loan.performing_on(as_of) {
                 s.outstanding_principal += pos.principal_outstanding;
                 s.interest_receivable += loan.interest_receivable(&pos, as_of);
+                s.fees_receivable += pos.fees_outstanding;
             } else {
                 s.defaulted_principal += pos.principal_outstanding;
                 s.defaulted_interest += loan.interest_receivable(&pos, as_of);
@@ -436,15 +469,14 @@ impl Book {
                     DisplayStatus::DueSoon => s.due_soon_loans += 1,
                     _ => {}
                 }
-                s.expected_monthly_interest +=
-                    period_interest(pos.principal_outstanding, loan.facts.rate) * loan.facts.frequency.periods_per_month();
+                s.expected_monthly_interest += loan.monthly_interest(&pos);
             }
         }
         let b = self.balances_on(as_of);
         s.available_capital = b.capital;
         s.available_interest = b.interest;
         s.available_cash = b.total();
-        s.portfolio_value = s.available_cash + s.outstanding_principal + s.interest_receivable;
+        s.portfolio_value = s.available_cash + s.outstanding_principal + s.interest_receivable + s.fees_receivable;
         s
     }
 
@@ -580,7 +612,7 @@ impl MonthFlow {
 mod tests {
     use super::*;
     use crate::domain::ledger::allocate;
-    use crate::domain::loans::Frequency;
+    use crate::domain::loans::PeriodRate;
     use crate::domain::money::Rate;
 
     fn d(y: i32, m: u32, day: u32) -> NaiveDate {
@@ -601,13 +633,14 @@ mod tests {
             client_id: 1,
             facts: LoanFacts {
                 principal,
-                rate: Rate(100_000),
+                rate: PeriodRate::new(Rate(100_000), Frequency::Monthly, Frequency::Monthly),
                 frequency: Frequency::Monthly,
                 start_date: start,
                 status: ContractStatus::Active,
                 closed_on: None,
             },
             payments: Vec::new(),
+            plan: None,
         }
     }
 

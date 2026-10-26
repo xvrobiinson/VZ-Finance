@@ -13,7 +13,7 @@ use crate::domain::money::Cents;
 use crate::i18n::{count, t};
 use crate::tr;
 use crate::ui::components::{
-    Tone, avatar, card, card_header, empty_state, figure, icon, label, page_header, pill, table_header, table_row, th, vrule,
+    Tone, avatar, card, card_header, empty_state, figure, icon, label, page_header, pill, sel, table_header, table_row, th, vrule,
 };
 use crate::ui::forms::reason::ReasonKind;
 use crate::ui::theme::{Palette, palette, size, space, tabular};
@@ -99,7 +99,7 @@ impl VzApp {
         let header = page_header(
             &p,
             t("Clients", "Clientes"),
-            Some(subtitle.into_any_element()),
+            Some(sel(subtitle).into_any_element()),
             vec![
                 Button::new("new-client")
                     .primary()
@@ -172,23 +172,28 @@ impl VzApp {
                             v_flex()
                                 .min_w_0()
                                 .child(
-                                    div().text_color(if c.is_archived() { p.muted } else { p.text }).truncate().child(c.full_name.clone()),
+                                    div()
+                                        .text_color(if c.is_archived() { p.muted } else { p.text })
+                                        .truncate()
+                                        .child(sel(c.full_name.clone())),
                                 )
-                                .child(div().text_size(px(size::META)).text_color(p.muted).truncate().child(if contact.is_empty() {
+                                .child(div().text_size(px(size::META)).text_color(p.muted).truncate().child(sel(if contact.is_empty() {
                                     t("No contact details", "Sin datos de contacto").to_string()
                                 } else {
                                     contact
-                                })),
+                                }))),
                         ),
                     )
-                    .child(ncolumn(90.).font_features(tabular()).child(st.active_loans.to_string()))
-                    .when(!narrow, |d| d.child(ncolumn(140.).font_features(tabular()).text_color(p.muted).child(money.format(st.borrowed))))
-                    .child(ncolumn(140.).font_features(tabular()).child(money.format(st.outstanding)))
+                    .child(ncolumn(90.).font_features(tabular()).child(sel(st.active_loans.to_string())))
                     .when(!narrow, |d| {
-                        d.child(ncolumn(130.).font_features(tabular()).text_color(p.muted).child(money.format(st.interest_paid)))
+                        d.child(ncolumn(140.).font_features(tabular()).text_color(p.muted).child(sel(money.format(st.borrowed))))
+                    })
+                    .child(ncolumn(140.).font_features(tabular()).child(sel(money.format(st.outstanding))))
+                    .when(!narrow, |d| {
+                        d.child(ncolumn(130.).font_features(tabular()).text_color(p.muted).child(sel(money.format(st.interest_paid))))
                     })
                     .child(div().w(px(130.)).flex().justify_end().child(self.client_status_pill(&p, c, st)))
-                    .on_click(cx.listener(move |this, _, w, cx| this.navigate(Route::Client(id), w, cx)))
+                    .on_click(cx.listener(move |this, _, w, cx| this.open_row(Route::Client(id), w, cx)))
             });
             v_flex()
                 .child(
@@ -201,10 +206,10 @@ impl VzApp {
                         .child(ncolumn(130.).child(th(&p, t("Status", "Estado")))),
                 )
                 .children(rows)
-                .child(div().px(px(space::XL)).py(px(space::M)).text_size(px(size::META)).text_color(p.faint).child({
+                .child(div().px(px(space::XL)).py(px(space::M)).text_size(px(size::META)).text_color(p.faint).child(sel({
                     let n = visible.len();
                     tr!("{n} shown", "{n} en la lista")
-                }))
+                })))
                 .into_any_element()
         };
 
@@ -289,7 +294,7 @@ impl VzApp {
         let title = h_flex()
             .gap(px(space::M))
             .child(avatar(&p, &client.full_name, client.id, 40.))
-            .child(client.full_name.clone())
+            .child(sel(client.full_name.clone()))
             .child(self.client_status_pill(&p, &client, &st));
         let header = h_flex()
             .justify_between()
@@ -297,11 +302,11 @@ impl VzApp {
             .gap(px(space::L))
             .pb(px(space::XL))
             .child(v_flex().gap(px(8.)).child(div().text_size(px(size::TITLE)).font_weight(FontWeight::SEMIBOLD).child(title)).child(
-                div().pl(px(52.)).text_color(p.muted).child(if contact.is_empty() {
+                div().pl(px(52.)).text_color(p.muted).child(sel(if contact.is_empty() {
                     t("No contact details", "Sin datos de contacto").to_string()
                 } else {
                     contact
-                }),
+                })),
             ))
             .child(h_flex().gap(px(space::S)).children(actions));
 
@@ -315,7 +320,7 @@ impl VzApp {
                 .gap(px(6.))
                 .child(label(&p, label_text.to_string()).truncate())
                 .child(figure(&p, value, size::FIGURE))
-                .child(div().text_size(px(size::META)).text_color(p.muted).truncate().child(sub))
+                .child(div().text_size(px(size::META)).text_color(p.muted).truncate().child(sel(sub)))
         };
         let strip = card(&p)
             .flex_row()
@@ -351,26 +356,24 @@ impl VzApp {
             let q = l.delinquency(self.today);
             let status = l.display_status(self.today);
             let terms = self.snap.loan(lid).map(|x| x.terms.clone());
-            let desc = terms
-                .map(|lt| format!("{} {} · {}", lt.rate.percent_label(), lt.frequency.per(), ds.format(lt.start_date)))
-                .unwrap_or_default();
+            let desc = terms.map(|lt| format!("{} · {}", lt.rate_line(), ds.format(lt.start_date))).unwrap_or_default();
             table_row(&p, ("cl-loan", lid as u64), true)
                 .child(
                     v_flex()
                         .flex_1()
                         .min_w_0()
-                        .child(div().child(tr!("Loan #{lid}", "Préstamo #{lid}")))
-                        .child(div().text_size(px(size::META)).text_color(p.muted).truncate().child(desc)),
+                        .child(div().child(sel(tr!("Loan #{lid}", "Préstamo #{lid}"))))
+                        .child(div().text_size(px(size::META)).text_color(p.muted).truncate().child(sel(desc))),
                 )
-                .child(ncolumn(130.).font_features(tabular()).text_color(p.muted).child(money.format(l.facts.principal)))
-                .child(ncolumn(130.).font_features(tabular()).child(money.format(pos.payoff())))
+                .child(ncolumn(130.).font_features(tabular()).text_color(p.muted).child(sel(money.format(l.facts.principal))))
+                .child(ncolumn(130.).font_features(tabular()).child(sel(money.format(pos.payoff()))))
                 .child(
                     ncolumn(120.)
                         .text_color(p.muted)
-                        .child(q.next_due.map(|d| ds.format_short(d, self.today)).unwrap_or_else(|| "—".into())),
+                        .child(sel(q.next_due.map(|d| ds.format_short(d, self.today)).unwrap_or_else(|| "—".into()))),
                 )
                 .child(div().w(px(130.)).flex().justify_end().child(status_detail_pill(&p, status, &q, self.today)))
-                .on_click(cx.listener(move |this, _, w, cx| this.navigate(Route::Loan(lid), w, cx)))
+                .on_click(cx.listener(move |this, _, w, cx| this.open_row(Route::Loan(lid), w, cx)))
         });
         let loans_card = card(&p).overflow_hidden().child(card_header(&p, t("Loans", "Préstamos"), None)).child(if loans.is_empty() {
             empty_state(
@@ -417,11 +420,11 @@ impl VzApp {
                     v_flex()
                         .flex_1()
                         .min_w_0()
-                        .child(div().text_color(if reversed { p.muted } else { p.text }).child({
+                        .child(div().text_color(if reversed { p.muted } else { p.text }).child(sel({
                             let (when, lid) = (ds.format(x.paid_on), x.loan_id);
                             tr!("{when} · Loan #{lid}", "{when} · Préstamo #{lid}")
-                        }))
-                        .child(div().text_size(px(size::META)).text_color(p.muted).truncate().child(if reversed {
+                        })))
+                        .child(div().text_size(px(size::META)).text_color(p.muted).truncate().child(sel(if reversed {
                             {
                                 let why = x.reversal_reason.clone().unwrap_or_default();
                                 tr!("Reversed: {why}", "Anulado: {why}")
@@ -431,14 +434,14 @@ impl VzApp {
                                 let (i, c) = (money.format(x.interest), money.format(x.principal));
                                 tr!("Interest {i} · Capital {c}", "Interés {i} · Capital {c}")
                             }
-                        })),
+                        }))),
                 )
                 .child(
                     div()
                         .font_features(tabular())
                         .text_color(if reversed { p.muted } else { p.positive })
                         .when(reversed, |d| d.line_through())
-                        .child(format!("+{}", money.format(x.amount))),
+                        .child(sel(format!("+{}", money.format(x.amount)))),
                 )
         });
         let timeline_card =
@@ -458,26 +461,25 @@ impl VzApp {
                 v_flex().children(timeline).into_any_element()
             });
 
-        let notes_card = card(&p)
-            .child(card_header(
-                &p,
-                t("Notes", "Notas"),
-                Some(
-                    Button::new("edit-notes")
-                        .ghost()
-                        .small()
-                        .label(t("Edit", "Editar"))
-                        .on_click(cx.listener(move |this, _, w, cx| this.open_client_form(Some(id), w, cx)))
-                        .into_any_element(),
-                ),
-            ))
-            .child(
-                div()
-                    .px(px(space::XL))
-                    .pb(px(space::XL))
-                    .text_color(if client.notes.is_empty() { p.muted } else { p.text })
-                    .child(if client.notes.is_empty() { t("No notes yet.", "Sin notas.").to_string() } else { client.notes.clone() }),
-            );
+        let notes_card =
+            card(&p)
+                .child(card_header(
+                    &p,
+                    t("Notes", "Notas"),
+                    Some(
+                        Button::new("edit-notes")
+                            .ghost()
+                            .small()
+                            .label(t("Edit", "Editar"))
+                            .on_click(cx.listener(move |this, _, w, cx| this.open_client_form(Some(id), w, cx)))
+                            .into_any_element(),
+                    ),
+                ))
+                .child(
+                    div().px(px(space::XL)).pb(px(space::XL)).text_color(if client.notes.is_empty() { p.muted } else { p.text }).child(
+                        sel(if client.notes.is_empty() { t("No notes yet.", "Sin notas.").to_string() } else { client.notes.clone() }),
+                    ),
+                );
 
         v_flex()
             .child(crumb(&p, t("Clients", "Clientes"), Route::Clients, cx))

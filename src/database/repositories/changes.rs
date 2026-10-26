@@ -12,6 +12,9 @@ pub enum Entity {
     Payment,
     Capital,
     Entry,
+    /// A late fee, identified by its installment number (`entity_id`) and
+    /// `loan_id`.
+    LateFee,
 }
 
 impl Entity {
@@ -22,6 +25,7 @@ impl Entity {
             Entity::Payment => "payment",
             Entity::Capital => "capital",
             Entity::Entry => "entry",
+            Entity::LateFee => "late_fee",
         }
     }
     pub fn from_key(key: &str) -> Option<Self> {
@@ -31,6 +35,7 @@ impl Entity {
             "payment" => Some(Entity::Payment),
             "capital" => Some(Entity::Capital),
             "entry" => Some(Entity::Entry),
+            "late_fee" => Some(Entity::LateFee),
             _ => None,
         }
     }

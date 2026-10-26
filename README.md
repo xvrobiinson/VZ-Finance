@@ -1,4 +1,8 @@
-# VZ Finance
+# Acervus Finance
+
+Developed by VZ Finance. (Called "VZ Finance" before version 0.4; the program
+file, data folder and installer ID kept their old names so upgrades keep your
+data.)
 
 A private, offline Windows desktop app for running a personal lending
 portfolio: clients, loans, interest, repayments and the growth of your capital.
@@ -8,11 +12,28 @@ Built in Rust with [GPUI](https://gpui.rs) and SQLite.
 
 ## What it does
 
-- **Loans at a rate per period**: lend at 5%, 10%, 15% or any rate, paid
-  monthly or every 15 days. Each period's interest is the rate times the
-  capital still owed; paying more than the interest lowers the capital and so
-  the next interest (1,000 at 10% is 100; paying 600 leaves 500, so next time
-  it is 50).
+- **Three kinds of loans**:
+  - *Installments, declining balance* (the default): the capital is split into
+    equal installments and each installment's interest is charged on the
+    capital still owed. 10,000 at 10% a month in 5 installments is 3,000,
+    2,800, 2,600, 2,400 and 2,200: 13,000 in total.
+  - *Flat installments*: interest on the amount lent every period
+    (10,000 at 10% in 5 is 3,000 each).
+  - *Interest only*: interest each period, capital paid whenever (1,000 at 10%
+    is 100; paying 600 leaves 500, so next time it is 50).
+- **Any schedule**: payments daily, weekly, every 15 days or monthly, with the
+  interest rate quoted per day, week, 15 days or month independently (10% a
+  month paid weekly is 2.33% a payment, on a 30-day month). Any number of
+  installments. The schedule can be edited before saving (due date, capital,
+  interest or total of each installment); edited rows are marked.
+- **Late fees**: a configurable percentage (5% by default) of what is still
+  unpaid on an installment, charged once, the day after it falls due. Each fee
+  is listed on the loan with its base, and can be waived with a reason and
+  restored.
+- **Three ways to take a partial payment** on an installment loan: against one
+  installment, spread over installments (oldest first, or amounts you choose),
+  or a custom split between late fees, interest and capital. The app shows
+  where every peso goes before you save.
 - **Overview**: portfolio value, capital lent out, interest earned, available
   capital, active loans and overdue amount, with a growth chart, where your
   money is, recent payments and loans needing attention.
@@ -33,10 +54,14 @@ Built in Rust with [GPUI](https://gpui.rs) and SQLite.
   your logo.
 - **Portfolio Analytics**: returns, capital ledger, monthly interest, capital
   lent out, loans by status and a monthly cash-flow table.
-- **Settings**: business name and logo (shown in the app and on receipts), English or
-  Spanish, currency (Dominican peso by default), number and date formats,
-  default rate and payment frequency, light and dark theme, verified backup
-  and restore, CSV export.
+- **Settings**: the name printed on receipts (left empty, receipts say
+  "Acervus Finance") and a logo (button or drag and drop), English or Spanish,
+  currency (Dominican peso by default), number and date formats, default rate,
+  payment frequency and late fee, light and dark theme, verified backup and
+  restore (with a list of recent backups), CSV export, a "Reset all data"
+  button that saves a copy first, and a Diagnostics section showing the
+  Windows version and whether the data, backups and receipts folders can be
+  written.
 
 Every figure is derived from recorded transactions. The rules (interest,
 rounding, payment order, overdue logic, portfolio value) are written down in
@@ -45,6 +70,33 @@ rounding, payment order, overdue logic, portfolio value) are written down in
 ![Loan detail](docs/screenshots/loan.png)
 
 ![Receipt](docs/screenshots/receipt.png)
+
+## Installing on another PC
+
+Requirements: Windows 10 version 1809 (October 2018) or later, or Windows 11,
+64-bit. Nothing else is needed: the C runtime is built in, and the app falls
+back to software rendering on PCs without a DirectX 11 graphics driver.
+
+1. Download `AcervusFinance-Setup-<version>.exe` from the latest
+   [GitHub Release](https://github.com/xvrobiinson/VZ-Finance/releases).
+2. Run it. It installs for the current user without asking for admin rights.
+   The app isn't code-signed yet, so SmartScreen may warn: choose
+   *More info* → *Run anyway*.
+3. Open **Acervus Finance** from the Start menu.
+
+To move your data, use Settings → Back up to… on the old PC, copy the `.db`
+file over, and use Settings → Restore from a file… on the new one.
+
+If a button seems to do nothing, open Settings → Diagnostics. It shows whether
+the folders can be written and links to the log
+(`%LOCALAPPDATA%\VZFinance\logs\vz-finance.log`), which records errors such as
+a file window that couldn't open, never names or amounts. Backups also work
+without the file window (Save in backups folder), and a logo can be dragged
+onto the logo box.
+
+Tested on Windows 11 Home (build 26300) only. Windows 10 hasn't been tested;
+the 1809 minimum follows from what the app needs (DirectX 11 with DXGI 1.6,
+available from Windows 10 1803).
 
 ## Privacy
 
@@ -81,7 +133,7 @@ powershell -ExecutionPolicy Bypass -File scripts\build-installer.ps1
 ```
 
 The installer script runs the tests, builds the release binary (static C
-runtime, no console window) and produces `dist\VZFinance-Setup-<version>.exe`
+runtime, no console window) and produces `dist\AcervusFinance-Setup-<version>.exe`
 with [Inno Setup 6](https://jrsoftware.org/isinfo.php)
 (`winget install JRSoftware.InnoSetup`).
 
@@ -105,7 +157,7 @@ contains `[skip ci]`, don't release.
 Versions: `Cargo.toml` sets `MAJOR.MINOR`; CI picks the next free patch from the
 `v*` tags (0.2.0, 0.2.1, …) and stamps it into the build. Nothing is committed
 back. To start a new line, raise the version in `Cargo.toml` (for example to
-`0.3.0`).
+`0.5.0`).
 
 Code signing is optional: add the repository secrets `WINDOWS_SIGNING_CERT`
 (the `.pfx` file, base64-encoded) and `WINDOWS_SIGNING_PASSWORD`, and both the

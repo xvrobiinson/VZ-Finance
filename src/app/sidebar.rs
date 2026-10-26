@@ -49,7 +49,7 @@ impl VzApp {
         let summary = self.snap.book.summary(self.today);
         let overdue = summary.overdue_loans;
 
-        let business = self.settings().business_name.clone();
+        let business = crate::APP_NAME;
         let items = nav();
         let nav = items.iter().map(|(route, icon_name, label, keys)| {
             let active = section == *route;

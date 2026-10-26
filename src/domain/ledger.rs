@@ -14,8 +14,8 @@
 
 use chrono::NaiveDate;
 
-use crate::domain::loans::{Frequency, period_interest};
-use crate::domain::money::{Cents, Rate};
+use crate::domain::loans::{Frequency, PeriodRate};
+use crate::domain::money::Cents;
 use crate::i18n::t;
 use crate::utils::dates::days_between;
 
@@ -78,7 +78,9 @@ pub const DUE_SOON_DAYS: i64 = 5;
 #[derive(Clone, Debug)]
 pub struct LoanFacts {
     pub principal: Cents,
-    pub rate: Rate,
+    /// The quoted rate and its conversion to the repayment period.
+    pub rate: PeriodRate,
+    /// How often payments fall due (each period's length).
     pub frequency: Frequency,
     pub start_date: NaiveDate,
     pub status: ContractStatus,
@@ -121,6 +123,8 @@ pub struct Position {
     pub interest_paid: Cents,
     pub principal_paid: Cents,
     pub fees_paid: Cents,
+    /// Late fees assessed and not yet paid (installment loans).
+    pub fees_outstanding: Cents,
     pub paid_total: Cents,
     pub last_event: Option<NaiveDate>,
     pub periods: Vec<Period>,
@@ -128,7 +132,7 @@ pub struct Position {
 
 impl Position {
     pub fn payoff(&self) -> Cents {
-        self.principal_outstanding + self.interest_outstanding
+        self.principal_outstanding + self.interest_outstanding + self.fees_outstanding
     }
 }
 
@@ -167,7 +171,7 @@ impl Replay<'_> {
             if !started || starts > self.charge_until || self.pos.principal_outstanding <= 0 {
                 break;
             }
-            let interest = period_interest(self.pos.principal_outstanding, self.loan.rate);
+            let interest = self.loan.rate.interest(self.pos.principal_outstanding);
             self.pos.periods.push(Period {
                 seq: k,
                 starts,
@@ -399,7 +403,7 @@ pub fn delinquency(loan: &LoanFacts, payments: &[PaymentFact], today: NaiveDate)
         // the next payment is the next period's interest plus anything overdue.
         let k = pos.periods.last().map(|p| p.seq + 1).unwrap_or(1);
         result.next_due = Some(loan.frequency.due_date(loan.start_date, k));
-        result.next_due_amount = (cumulative - pos.interest_paid).max(0) + period_interest(pos.principal_outstanding, loan.rate);
+        result.next_due_amount = (cumulative - pos.interest_paid).max(0) + loan.rate.interest(pos.principal_outstanding);
     }
     result
 }
@@ -462,7 +466,25 @@ mod tests {
     }
 
     fn loan(principal: Cents, pct: i64, frequency: Frequency, start: NaiveDate) -> LoanFacts {
-        LoanFacts { principal, rate: Rate(pct * 10_000), frequency, start_date: start, status: ContractStatus::Active, closed_on: None }
+        LoanFacts {
+            principal,
+            rate: PeriodRate::new(crate::domain::money::Rate(pct * 10_000), frequency, frequency),
+            frequency,
+            start_date: start,
+            status: ContractStatus::Active,
+            closed_on: None,
+        }
+    }
+
+    #[test]
+    fn weekly_payments_on_a_monthly_rate() {
+        // 10,000 at 10% a month, paid weekly: 7/30 of 1,000 each week.
+        let mut l = loan(1_000_000, 10, Frequency::Weekly, d(2026, 1, 1));
+        l.rate = PeriodRate::new(crate::domain::money::Rate(100_000), Frequency::Monthly, Frequency::Weekly);
+        let pos = position(&l, &[], d(2026, 1, 8));
+        assert_eq!(pos.periods.len(), 2);
+        assert_eq!(pos.periods[0].interest, 23_333);
+        assert_eq!(pos.periods[1].due, d(2026, 1, 15));
     }
 
     fn pay(l: &LoanFacts, history: &mut Vec<PaymentFact>, amount: Cents, on: NaiveDate) -> Allocation {

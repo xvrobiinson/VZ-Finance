@@ -3,7 +3,7 @@
 use chrono::{DateTime, Local, Utc};
 
 use crate::database::repositories::changes::{Action, Change, Entity};
-use crate::domain::loans::Frequency;
+use crate::domain::loans::{Frequency, Method};
 use crate::domain::money::Rate;
 use crate::domain::portfolio::{Account, CapitalKind, EntryKind};
 use crate::i18n::t;
@@ -39,6 +39,15 @@ fn field_label(field: &str) -> &'static str {
         "email" => t("Email", "Correo"),
         "payments" => t("Payments recorded", "Pagos registrados"),
         "received" => t("Received", "Recibido"),
+        "interest_period" => t("Interest period", "Período del interés"),
+        "method" => t("Loan type", "Tipo de préstamo"),
+        "installments" => t("Installments", "Cuotas"),
+        "late_fee_rate" => t("Late fee", "Cargo por mora"),
+        "schedule" => t("Schedule", "Calendario"),
+        "schedule_edited" => t("Schedule edited by hand", "Calendario editado a mano"),
+        "allocation" => t("Applied", "Aplicado"),
+        "fee_base" => t("Unpaid when assessed", "Pendiente al calcularlo"),
+        "waived" => t("Waived", "Perdonado"),
         _ => t("Notes", "Notas"),
     }
 }
@@ -49,9 +58,26 @@ fn field_value(field: &str, raw: &str, snap: &Snapshot) -> String {
     }
     let money = snap.settings.money();
     match field {
-        "principal" | "amount" | "fee" | "interest" | "received" => raw.parse().map(|c| money.format(c)).unwrap_or_else(|_| raw.into()),
-        "rate" => raw.parse().map(|ppm| Rate(ppm).percent_label()).unwrap_or_else(|_| raw.into()),
-        "frequency" => Frequency::from_key(raw).map(|f| f.label().to_string()).unwrap_or_else(|| raw.into()),
+        "principal" | "amount" | "fee" | "interest" | "received" | "fee_base" => {
+            raw.parse().map(|c| money.format(c)).unwrap_or_else(|_| raw.into())
+        }
+        "rate" | "late_fee_rate" => raw.parse().map(|ppm| Rate(ppm).percent_label()).unwrap_or_else(|_| raw.into()),
+        "frequency" | "interest_period" => Frequency::from_key(raw).map(|f| f.label().to_string()).unwrap_or_else(|| raw.into()),
+        "method" => Method::from_key(raw).map(|m| m.short_label().to_string()).unwrap_or_else(|| raw.into()),
+        "schedule" => match raw.split_once('|') {
+            Some((n, total)) => {
+                let total = total.parse().map(|c| money.format(c)).unwrap_or_default();
+                crate::tr!("{n} installments · {total}", "{n} cuotas · {total}")
+            }
+            None => raw.into(),
+        },
+        "schedule_edited" | "waived" => if raw == "true" { t("Yes", "Sí") } else { t("No", "No") }.into(),
+        "allocation" => match raw.split_once(' ') {
+            Some(("installment", seq)) => crate::tr!("to installment {seq}", "a la cuota {seq}"),
+            Some(("spread", _)) => t("spread over installments", "repartido entre cuotas").into(),
+            Some(("custom", _)) => t("custom split", "reparto personalizado").into(),
+            _ => t("oldest first", "lo más antiguo primero").into(),
+        },
         "start_date" | "paid_on" | "occurred_on" => {
             parse_iso(raw).map(|d| snap.settings.date_style.format(d)).unwrap_or_else(|| raw.into())
         }
@@ -86,6 +112,17 @@ pub fn describe(c: &Change, snap: &Snapshot) -> Described {
                 tr!("Payment #{id} on loan #{loan} edited", "Pago #{id} del préstamo #{loan} editado")
             } else {
                 tr!("Payment #{id} on loan #{loan} deleted", "Pago #{id} del préstamo #{loan} eliminado")
+            }
+        }
+        Entity::LateFee => {
+            let loan = c.loan_id.unwrap_or_default();
+            if edited {
+                tr!("Late fee on installment {id} of loan #{loan} changed", "Cargo por mora de la cuota {id} del préstamo #{loan} cambiado")
+            } else {
+                tr!(
+                    "Late fee on installment {id} of loan #{loan} removed",
+                    "Cargo por mora de la cuota {id} del préstamo #{loan} eliminado"
+                )
             }
         }
         Entity::Capital if edited => t("Capital entry edited", "Movimiento de capital editado").into(),

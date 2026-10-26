@@ -43,7 +43,7 @@ macro_rules! submit_impl {
     )*};
 }
 
-submit_impl!(ClientForm, LoanForm, PaymentForm, CapitalForm, ReasonForm, EntryForm, AdjustForm);
+submit_impl!(ClientForm, LoanForm, PaymentForm, CapitalForm, ReasonForm, EntryForm, AdjustForm, crate::ui::forms::reset::ResetForm);
 
 impl VzApp {
     pub fn open_client_form(&mut self, client_id: Option<i64>, window: &mut Window, cx: &mut Context<Self>) {
@@ -79,7 +79,7 @@ impl VzApp {
         window.open_dialog(cx, move |dialog, window, cx| {
             let handle = form.read(cx).first_focus(cx);
             focus_once(&first, &handle, window, cx);
-            dialog.title(title.clone()).w(px(920.)).child(form.clone()).on_ok(confirm(&form))
+            dialog.title(title.clone()).w(px(1120.)).child(form.clone()).on_ok(confirm(&form))
         });
     }
 
@@ -248,8 +248,12 @@ impl VzApp {
 
     // ----- files ----------------------------------------------------------
 
-    /// Picks a picture to use as the business logo.
+    /// Picks a picture to use as the business logo. If the Open window can't
+    /// open, says so; a picture can also be dragged onto the logo box.
     pub fn choose_logo(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.begin_file_dialog("logo", window, cx) {
+            return;
+        }
         let rx = cx.prompt_for_paths(PathPromptOptions {
             files: true,
             directories: false,
@@ -257,30 +261,51 @@ impl VzApp {
             prompt: Some(t("Use as logo", "Usar como logo").into()),
         });
         cx.spawn_in(window, async move |this, cx| {
-            let Ok(Ok(Some(paths))) = rx.await else { return };
-            let Some(path) = paths.into_iter().next() else { return };
-            let _ = this.update_in(cx, |app, window, cx| {
-                let result = std::fs::read(&path).map_err(anyhow::Error::from).and_then(|bytes| app.store.set_logo(&bytes));
-                match result {
-                    Ok(()) => {
-                        app.reload(cx);
-                        app.notify_success(
-                            t(
-                                "Logo saved. It now appears in the app and on receipts.",
-                                "Logo guardado. Ahora aparece en la app y en los recibos.",
-                            ),
-                            window,
-                            cx,
-                        );
-                    }
-                    Err(e) => {
-                        let m = app.error_message(&e);
-                        app.notify_error(m, window, cx);
+            let result = rx.await;
+            let _ = this.update_in(cx, |app, window, cx| match app.end_file_dialog("logo", result) {
+                Ok(Some(paths)) => {
+                    if let Some(path) = paths.into_iter().next() {
+                        app.use_logo_file(&path, window, cx);
                     }
                 }
+                Ok(None) => {}
+                Err(why) => app.notify_error(
+                    tr!(
+                        "The Open window couldn't open ({why}). Drag the picture onto the logo box in Settings instead.",
+                        "La ventana Abrir no se pudo abrir ({why}). Arrastra la imagen al cuadro del logo en Configuración."
+                    ),
+                    window,
+                    cx,
+                ),
             });
         })
         .detach();
+    }
+
+    /// Reads a picture file and saves it as the logo.
+    pub fn use_logo_file(&mut self, path: &std::path::Path, window: &mut Window, cx: &mut Context<Self>) {
+        let result = std::fs::read(path)
+            .map_err(|e| anyhow::Error::from(e).context(tr!("Could not read the file", "No se pudo leer el archivo")))
+            .and_then(|bytes| self.store.set_logo(&bytes));
+        match result {
+            Ok(()) => {
+                log::info!("logo saved");
+                self.reload(cx);
+                self.notify_success(
+                    t("Logo saved. It now appears in the app and on receipts.", "Logo guardado. Ahora aparece en la app y en los recibos."),
+                    window,
+                    cx,
+                );
+            }
+            Err(e) => {
+                log::warn!("logo not saved: {e:#}");
+                let m = match e.downcast_ref::<crate::services::Invalid>() {
+                    Some(v) => v.0.clone(),
+                    None => format!("{e:#}"),
+                };
+                self.notify_error(m, window, cx);
+            }
+        }
     }
 
     pub fn remove_logo(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -297,6 +322,9 @@ impl VzApp {
     }
 
     pub fn choose_restore(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.begin_file_dialog("restore", window, cx) {
+            return;
+        }
         let rx = cx.prompt_for_paths(PathPromptOptions {
             files: true,
             directories: false,
@@ -304,14 +332,28 @@ impl VzApp {
             prompt: Some(t("Restore", "Restaurar").into()),
         });
         cx.spawn_in(window, async move |this, cx| {
-            let Ok(Ok(Some(paths))) = rx.await else { return };
-            let Some(path) = paths.into_iter().next() else { return };
-            let _ = this.update_in(cx, |app, window, cx| app.confirm_restore(path, window, cx));
+            let result = rx.await;
+            let _ = this.update_in(cx, |app, window, cx| match app.end_file_dialog("restore", result) {
+                Ok(Some(paths)) => {
+                    if let Some(path) = paths.into_iter().next() {
+                        app.confirm_restore(path, window, cx);
+                    }
+                }
+                Ok(None) => {}
+                Err(why) => app.notify_error(
+                    tr!(
+                        "The Open window couldn't open ({why}). Pick one of the backups listed in Settings → Data instead.",
+                        "La ventana Abrir no se pudo abrir ({why}). Elige una de las copias listadas en Configuración → Datos."
+                    ),
+                    window,
+                    cx,
+                ),
+            });
         })
         .detach();
     }
 
-    fn confirm_restore(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn confirm_restore(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
         let info = match Store::inspect_backup(&path) {
             Ok(i) => i,
             Err(e) => {
@@ -366,6 +408,9 @@ impl VzApp {
     }
 
     pub fn choose_export(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.begin_file_dialog("export", window, cx) {
+            return;
+        }
         let rx = cx.prompt_for_paths(PathPromptOptions {
             files: false,
             directories: true,
@@ -373,17 +418,56 @@ impl VzApp {
             prompt: Some(t("Export here", "Exportar aquí").into()),
         });
         cx.spawn_in(window, async move |this, cx| {
-            let Ok(Ok(Some(paths))) = rx.await else { return };
-            let Some(dir) = paths.into_iter().next() else { return };
-            let _ = this.update_in(cx, |app, window, cx| match app.store.export_csv(&dir) {
-                Ok(files) => {
-                    let (n, shown) = (files.len(), dir.display().to_string());
-                    app.notify_success(tr!("Exported {n} CSV files to {shown}", "Se exportaron {n} archivos CSV a {shown}"), window, cx);
-                    cx.reveal_path(&dir);
+            let result = rx.await;
+            let _ = this.update_in(cx, |app, window, cx| match app.end_file_dialog("export", result) {
+                Ok(Some(paths)) => {
+                    if let Some(dir) = paths.into_iter().next() {
+                        app.export_to(dir, window, cx);
+                    }
                 }
-                Err(e) => app.notify_error(tr!("Export failed: {e:#}", "La exportación falló: {e:#}"), window, cx),
+                Ok(None) => {}
+                Err(why) => {
+                    let dir = app.store.exports_dir();
+                    let shown = dir.display().to_string();
+                    app.notify_error(
+                        tr!(
+                            "The folder window couldn't open ({why}). Exporting to {shown} instead.",
+                            "La ventana de carpetas no se pudo abrir ({why}). Se exporta a {shown}."
+                        ),
+                        window,
+                        cx,
+                    );
+                    app.export_to(dir, window, cx);
+                }
             });
         })
         .detach();
+    }
+
+    fn export_to(&mut self, dir: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
+        match self.store.export_csv(&dir) {
+            Ok(files) => {
+                let (n, shown) = (files.len(), dir.display().to_string());
+                self.notify_success(tr!("Exported {n} CSV files to {shown}", "Se exportaron {n} archivos CSV a {shown}"), window, cx);
+                cx.reveal_path(&dir);
+            }
+            Err(e) => {
+                log::error!("export failed: {e:#}");
+                self.notify_error(tr!("Export failed: {e:#}", "La exportación falló: {e:#}"), window, cx)
+            }
+        }
+    }
+
+    /// Asks for a typed confirmation, saves a copy and deletes every client,
+    /// loan, payment and money movement.
+    pub fn open_reset_form(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let app = cx.entity().downgrade();
+        let form = cx.new(|cx| crate::ui::forms::reset::ResetForm::new(app, window, cx));
+        let first = Cell::new(true);
+        window.open_dialog(cx, move |dialog, window, cx| {
+            let handle = form.read(cx).confirm.focus_handle(cx);
+            focus_once(&first, &handle, window, cx);
+            dialog.title(t("Reset all data", "Borrar todos los datos")).w(px(520.)).child(form.clone()).on_ok(confirm(&form))
+        });
     }
 }

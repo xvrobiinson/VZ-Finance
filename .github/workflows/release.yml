@@ -57,7 +57,7 @@ jobs:
           EXISTS: ${{ steps.next.outputs.exists }}
         run: |
           {
-            echo "### VZ Finance ${VERSION}"
+            echo "### Acervus Finance ${VERSION}"
             echo "Previous release: ${PREVIOUS:-none}"
             if [[ "$EXISTS" == "true" ]]; then echo "This commit is already released; build and publish are skipped."; fi
           } >> "$GITHUB_STEP_SUMMARY"
@@ -159,20 +159,20 @@ jobs:
         env:
           WINDOWS_SIGNING_CERT: ${{ secrets.WINDOWS_SIGNING_CERT }}
           WINDOWS_SIGNING_PASSWORD: ${{ secrets.WINDOWS_SIGNING_PASSWORD }}
-        run: ./scripts/ci/sign.ps1 "dist\VZFinance-Setup-$env:VERSION.exe"
+        run: ./scripts/ci/sign.ps1 "dist\AcervusFinance-Setup-$env:VERSION.exe"
 
       - name: Checksum
         working-directory: dist
         run: |
-          $name = "VZFinance-Setup-$env:VERSION.exe"
+          $name = "AcervusFinance-Setup-$env:VERSION.exe"
           "$((Get-FileHash $name -Algorithm SHA256).Hash.ToLower())  $name" | Set-Content SHA256SUMS.txt -Encoding utf8NoBOM
           Get-Content SHA256SUMS.txt
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: vz-finance-${{ env.VERSION }}-windows-x64
+          name: acervus-finance-${{ env.VERSION }}-windows-x64
           path: |
-            dist/VZFinance-Setup-${{ env.VERSION }}.exe
+            dist/AcervusFinance-Setup-${{ env.VERSION }}.exe
             dist/SHA256SUMS.txt
           if-no-files-found: error
           retention-days: 30
@@ -197,13 +197,13 @@ jobs:
 
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          name: vz-finance-${{ env.VERSION }}-windows-x64
+          name: acervus-finance-${{ env.VERSION }}-windows-x64
           path: dist
 
       - name: Write release notes
         run: |
           {
-            echo "## VZ Finance ${VERSION}"
+            echo "## Acervus Finance ${VERSION}"
             echo
             if [[ -n "$PREVIOUS_TAG" ]]; then
               echo "Changes since ${PREVIOUS_TAG}:"
@@ -215,7 +215,7 @@ jobs:
             echo
             echo "### Install"
             echo
-            echo "Download \`VZFinance-Setup-${VERSION}.exe\` and run it. Upgrades keep your data in \`%LOCALAPPDATA%\\VZFinance\`."
+            echo "Download \`AcervusFinance-Setup-${VERSION}.exe\` and run it. Works on Windows 10 (version 1809 or later) and Windows 11, 64-bit. Upgrades from VZ Finance keep your data in \`%LOCALAPPDATA%\\VZFinance\`."
             echo
             echo "SHA-256: \`$(cut -d' ' -f1 dist/SHA256SUMS.txt)\`"
           } > "$RUNNER_TEMP/notes.md"
@@ -235,10 +235,10 @@ jobs:
           else
             gh release create "$TAG" dist/* \
               --target "$GITHUB_SHA" \
-              --title "VZ Finance ${VERSION}" \
+              --title "Acervus Finance ${VERSION}" \
               --notes-file "$RUNNER_TEMP/notes.md" \
               --latest
           fi
           url="$(gh release view "$TAG" --json url --jq .url)"
           echo "url=$url" >> "$GITHUB_OUTPUT"
-          echo "Released [VZ Finance ${VERSION}](${url})" >> "$GITHUB_STEP_SUMMARY"
+          echo "Released [Acervus Finance ${VERSION}](${url})" >> "$GITHUB_STEP_SUMMARY"

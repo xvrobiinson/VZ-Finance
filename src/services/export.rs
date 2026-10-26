@@ -18,7 +18,7 @@ pub fn export_all(snap: &Snapshot, dir: &Path) -> Result<Vec<PathBuf>> {
     let stamp = chrono::Local::now().format("%Y%m%d");
     let mut written = Vec::new();
     let file = |name: &str| -> Result<(csv::Writer<std::fs::File>, PathBuf)> {
-        let path = dir.join(format!("vz-finance-{name}-{stamp}.csv"));
+        let path = dir.join(format!("acervus-finance-{name}-{stamp}.csv"));
         Ok((csv::Writer::from_path(&path)?, path))
     };
 
@@ -39,7 +39,22 @@ pub fn export_all(snap: &Snapshot, dir: &Path) -> Result<Vec<PathBuf>> {
     written.push(path);
 
     let (mut w, path) = file("loans")?;
-    w.write_record(["id", "client_id", "client", "principal", "rate_percent_per_period", "frequency", "start_date", "status", "notes"])?;
+    w.write_record([
+        "id",
+        "client_id",
+        "client",
+        "principal",
+        "rate_percent",
+        "interest_period",
+        "payment_frequency",
+        "method",
+        "installments",
+        "late_fee_percent",
+        "schedule_edited",
+        "start_date",
+        "status",
+        "notes",
+    ])?;
     for l in &snap.loans {
         w.write_record([
             l.id.to_string(),
@@ -47,10 +62,70 @@ pub fn export_all(snap: &Snapshot, dir: &Path) -> Result<Vec<PathBuf>> {
             snap.client_name(l.client_id).to_string(),
             amount(l.terms.principal),
             l.terms.rate.percent_label().trim_end_matches('%').to_string(),
+            l.terms.interest_period.key().to_string(),
             l.terms.frequency.key().to_string(),
+            l.terms.method.key().to_string(),
+            l.terms.installments.map(|n| n.to_string()).unwrap_or_default(),
+            l.terms.late_fee_rate.percent_label().trim_end_matches('%').to_string(),
+            l.schedule_edited.to_string(),
             to_iso(l.terms.start_date),
             l.status.key().to_string(),
             l.notes.clone(),
+        ])?;
+    }
+    w.flush()?;
+    written.push(path);
+
+    // The stored schedule of every installment loan.
+    let (mut w, path) = file("installments")?;
+    w.write_record(["loan_id", "installment", "due_date", "principal", "interest", "total"])?;
+    for l in &snap.loans {
+        for x in &l.schedule {
+            w.write_record([
+                l.id.to_string(),
+                x.seq.to_string(),
+                to_iso(x.due),
+                amount(x.principal),
+                amount(x.interest),
+                amount(x.total()),
+            ])?;
+        }
+    }
+    w.flush()?;
+    written.push(path);
+
+    // How each payment on an installment loan was applied.
+    let (mut w, path) = file("payment-splits")?;
+    w.write_record(["payment_id", "loan_id", "paid_on", "allocation", "installment", "principal", "interest", "late_fee"])?;
+    for p in snap.payments.iter().filter(|p| !p.applied.is_empty()) {
+        for a in &p.applied {
+            w.write_record([
+                p.id.to_string(),
+                p.loan_id.to_string(),
+                to_iso(p.paid_on),
+                p.mode.key().to_string(),
+                a.seq.to_string(),
+                amount(a.principal),
+                amount(a.interest),
+                amount(a.fee),
+            ])?;
+        }
+    }
+    w.flush()?;
+    written.push(path);
+
+    let (mut w, path) = file("late-fees")?;
+    w.write_record(["loan_id", "installment", "assessed_on", "unpaid_base", "rate_percent", "amount", "waived_at", "waive_reason"])?;
+    for f in &snap.late_fees {
+        w.write_record([
+            f.loan_id.to_string(),
+            f.seq.to_string(),
+            to_iso(f.assessed_on),
+            amount(f.base_amount),
+            f.rate.percent_label().trim_end_matches('%').to_string(),
+            amount(f.amount),
+            f.waived_at.clone().unwrap_or_default(),
+            f.waive_reason.clone(),
         ])?;
     }
     w.flush()?;

@@ -8,8 +8,9 @@
 use anyhow::{Result, bail};
 use chrono::{Duration, NaiveDate};
 use vz_finance::database::repositories::clients::ClientInput;
-use vz_finance::domain::ledger::{delinquency, owed_at_payment};
-use vz_finance::domain::loans::{Frequency, LoanTerms};
+use vz_finance::domain::installments::Instruction;
+use vz_finance::domain::ledger::owed_at_payment;
+use vz_finance::domain::loans::{Frequency, LoanTerms, Method};
 use vz_finance::domain::money::{Cents, Rate};
 use vz_finance::domain::portfolio::{Account, CapitalKind};
 use vz_finance::i18n::Lang;
@@ -21,7 +22,7 @@ fn client(s: &mut Store, name: &str, phone: &str, notes: &str) -> Result<i64> {
 }
 
 fn loan(s: &mut Store, client: i64, principal: Cents, pct: i64, frequency: Frequency, start: NaiveDate) -> Result<i64> {
-    let terms = LoanTerms { principal, rate: Rate(pct * 10_000), frequency, start_date: start };
+    let terms = LoanTerms::interest_only(principal, Rate(pct * 10_000), frequency, start);
     s.create_loan(client, &terms, "", today())
 }
 
@@ -57,7 +58,7 @@ fn main() -> Result<()> {
     let ago = |d: i64| t - Duration::days(d);
 
     let mut settings = s.snapshot()?.settings;
-    settings.business_name = "Préstamos Valdez".into();
+    settings.receipt_name = "Préstamos Valdez".into();
     settings.currency_code = "DOP".into();
     if spanish {
         settings.language = Lang::Es;
@@ -72,7 +73,7 @@ fn main() -> Result<()> {
     let priya = client(&mut s, "Priya Raman", "849-555-0163", "")?;
     let tomas = client(&mut s, "Tomás Herrera", "809-555-0119", "Pagó parcial en septiembre.")?;
     let grace = client(&mut s, "Grace Lindqvist", "829-555-0190", "")?;
-    client(&mut s, "Samuel Mensah", "809-555-0101", "Preguntó por un préstamo para equipo.")?;
+    let samuel = client(&mut s, "Samuel Mensah", "809-555-0101", "Préstamo para equipo, en cuotas.")?;
 
     // 50,000 at 10% monthly; pays interest plus 5,000 of capital each month.
     let a = loan(&mut s, marta, 5_000_000, 10, Frequency::Monthly, ago(185))?;
@@ -109,6 +110,42 @@ fn main() -> Result<()> {
     let f = loan(&mut s, priya, 2_500_000, 10, Frequency::Monthly, ago(40))?;
     pay_periods(&mut s, f, |_| Some(250_000))?;
 
+    // 30,000 at 10% a month in 6 declining installments: two paid on time,
+    // the third paid short (so it is overdue with a 5% late fee).
+    let inst = LoanTerms {
+        principal: 3_000_000,
+        rate: Rate(100_000),
+        interest_period: Frequency::Monthly,
+        frequency: Frequency::Monthly,
+        start_date: ago(100),
+        method: Method::Declining,
+        installments: Some(6),
+        late_fee_rate: Rate(50_000),
+    };
+    let g = s.create_loan(samuel, &inst, "Equipo de cocina", t)?;
+    let schedule = s.snapshot()?.loan(g).unwrap().schedule.clone();
+    for x in schedule.iter().take(2) {
+        s.record_installment_payment(g, x.total(), x.due, "", &Instruction::Auto, t)?;
+    }
+    if let Some(x) = schedule.get(2).filter(|x| x.due < t) {
+        s.record_installment_payment(g, 300_000, x.due, "Pago parcial", &Instruction::Installment(3), t)?;
+    }
+
+    // 8,000 flat at 5% a week in 8 weekly installments, recent.
+    let weekly = LoanTerms {
+        principal: 800_000,
+        rate: Rate(50_000),
+        interest_period: Frequency::Weekly,
+        frequency: Frequency::Weekly,
+        start_date: ago(17),
+        method: Method::Flat,
+        installments: Some(8),
+        late_fee_rate: Rate(50_000),
+    };
+    let w = s.create_loan(grace, &weekly, "", t)?;
+    let first = s.snapshot()?.loan(w).unwrap().schedule[0].clone();
+    s.record_installment_payment(w, first.total(), first.due, "", &Instruction::Auto, t)?;
+
     s.add_capital(CapitalKind::Withdrawal, 2_000_000, ago(30), "Gasto personal", t)?;
 
     // Interest put back to work, an expense paid from interest, and a
@@ -117,13 +154,13 @@ fn main() -> Result<()> {
     s.add_expense(Account::Interest, 350_000, ago(6), "Reparación del carro", t)?;
     let snap = s.snapshot()?;
     let fl = snap.loan(f).unwrap();
-    s.update_loan(f, fl.client_id, &fl.terms.clone(), "Para inventario de la tienda", "Faltaba el motivo", t)?;
+    s.update_loan(f, fl.client_id, &fl.terms.clone(), None, "Para inventario de la tienda", "Faltaba el motivo", t)?;
 
+    s.refresh(t)?;
     let snap = s.snapshot()?;
     let sum = snap.book.summary(t);
     let m = snap.settings.money();
-    let overdue: Vec<_> =
-        snap.book.loans.iter().filter(|l| delinquency(&l.facts, &l.payments, t).overdue_amount > 0).map(|l| l.id).collect();
+    let overdue: Vec<_> = snap.book.loans.iter().filter(|l| l.delinquency(t).overdue_amount > 0).map(|l| l.id).collect();
     println!(
         "Seeded {}: {} clients, {} loans, {} payments. Value {} / cash {} / overdue {} (loans {:?})",
         path.display(),

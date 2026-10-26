@@ -13,12 +13,13 @@ const MIGRATIONS: &[(i64, &str)] = &[
     (1, include_str!("migrations/0001_init.sql")),
     (2, include_str!("migrations/0002_period_rate_loans.sql")),
     (3, include_str!("migrations/0003_editable_records.sql")),
+    (4, include_str!("migrations/0004_installment_loans.sql")),
 ];
 
 /// Migrations that rebuild tables and must run with foreign keys disabled.
-const REBUILDS: &[i64] = &[2];
+const REBUILDS: &[i64] = &[2, 4];
 
-pub const SCHEMA_VERSION: i64 = 3;
+pub const SCHEMA_VERSION: i64 = 4;
 
 /// The tables every VZ Finance database has had since version 1 (backups
 /// from older versions are upgraded after they are restored).
@@ -242,17 +243,58 @@ mod tests {
         let conn = open_in_memory().unwrap();
         assert!(conn.execute("INSERT INTO clients (full_name, created_at) VALUES ('  ', 'x')", []).is_err());
         conn.execute("INSERT INTO clients (full_name, created_at) VALUES ('Ana Ruiz', 'x')", []).unwrap();
-        let insert = |client: i64, rate: i64, freq: &str| {
+        let insert = |client: i64, rate: i64, freq: &str, method: &str, installments: Option<i64>| {
             conn.execute(
-                "INSERT INTO loans (client_id, principal, period_rate, frequency, start_date, created_at)
-                 VALUES (?1, 100000, ?2, ?3, '2026-01-01', 'x')",
-                params![client, rate, freq],
+                "INSERT INTO loans (client_id, principal, period_rate, interest_period, frequency, method, installments, start_date, created_at)
+                 VALUES (?1, 100000, ?2, 'monthly', ?3, ?4, ?5, '2026-01-01', 'x')",
+                params![client, rate, freq, method, installments],
             )
         };
-        assert!(insert(1, 100_000, "monthly").is_ok());
-        assert!(insert(1, 2_000_000, "monthly").is_err(), "rate above 100%");
-        assert!(insert(1, 100_000, "weekly").is_err(), "unknown frequency");
-        assert!(insert(42, 100_000, "monthly").is_err(), "foreign keys are enforced");
+        assert!(insert(1, 100_000, "monthly", "interest_only", None).is_ok());
+        assert!(insert(1, 100_000, "weekly", "declining", Some(5)).is_ok());
+        assert!(insert(1, 2_000_000, "monthly", "interest_only", None).is_err(), "rate above 100%");
+        assert!(insert(1, 100_000, "yearly", "interest_only", None).is_err(), "unknown frequency");
+        assert!(insert(1, 100_000, "monthly", "declining", None).is_err(), "installment loans need a count");
+        assert!(insert(1, 100_000, "monthly", "interest_only", Some(5)).is_err(), "interest-only loans have no count");
+        assert!(insert(42, 100_000, "monthly", "interest_only", None).is_err(), "foreign keys are enforced");
+        // One late fee per installment.
+        conn.execute("INSERT INTO late_fees VALUES (1, 1, '2026-02-02', 100, 50000, 5, NULL, '', 'x', 'x')", []).unwrap();
+        assert!(conn.execute("INSERT INTO late_fees VALUES (1, 1, '2026-02-02', 100, 50000, 5, NULL, '', 'x', 'x')", []).is_err());
+    }
+
+    #[test]
+    fn upgrades_a_version_3_database_with_loans_and_payments() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        conn.pragma_update(None, "foreign_keys", "ON").unwrap();
+        conn.execute_batch("CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY NOT NULL, applied_at TEXT NOT NULL) STRICT;")
+            .unwrap();
+        for (v, sql) in &MIGRATIONS[..3] {
+            conn.execute_batch(sql).unwrap();
+            conn.execute("INSERT INTO schema_migrations VALUES (?1, 'x')", [v]).unwrap();
+        }
+        conn.execute_batch(
+            "INSERT INTO clients (full_name, created_at) VALUES ('Ana Ruiz', 'x');
+             INSERT INTO loans (client_id, principal, period_rate, frequency, start_date, created_at)
+               VALUES (1, 100000, 100000, 'biweekly', '2026-01-01', 'x');
+             INSERT INTO payments (loan_id, paid_on, amount, created_at) VALUES (1, '2026-01-16', 10000, 'x');
+             INSERT INTO payment_allocations (payment_id, principal, interest, fee) VALUES (1, 0, 10000, 0);
+             INSERT INTO change_log (entity, entity_id, action, created_at) VALUES ('loan', 1, 'update', 'x');",
+        )
+        .unwrap();
+        migrate(&mut conn).unwrap();
+        assert_eq!(schema_version(&conn).unwrap(), SCHEMA_VERSION);
+        let row: (String, String, String, Option<i64>) = conn
+            .query_row("SELECT interest_period, frequency, method, installments FROM loans WHERE id = 1", [], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
+            })
+            .unwrap();
+        assert_eq!(row, ("biweekly".into(), "biweekly".into(), "interest_only".into(), None));
+        let mode: String = conn.query_row("SELECT allocation_mode FROM payments WHERE id = 1", [], |r| r.get(0)).unwrap();
+        assert_eq!(mode, "auto");
+        let changes: i64 = conn.query_row("SELECT COUNT(*) FROM change_log", [], |r| r.get(0)).unwrap();
+        assert_eq!(changes, 1);
+        let broken: i64 = conn.query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |r| r.get(0)).unwrap();
+        assert_eq!(broken, 0);
     }
 
     #[test]

@@ -31,11 +31,11 @@ BEGIN
     BLOCK "040904B0"
     BEGIN
       VALUE "CompanyName", "VZ Finance"
-      VALUE "FileDescription", "VZ Finance"
+      VALUE "FileDescription", "Acervus Finance"
       VALUE "FileVersion", "{version}"
       VALUE "InternalName", "vz-finance"
       VALUE "OriginalFilename", "vz-finance.exe"
-      VALUE "ProductName", "VZ Finance"
+      VALUE "ProductName", "Acervus Finance"
       VALUE "ProductVersion", "{version}"
     END
   END

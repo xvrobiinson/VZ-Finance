@@ -2,6 +2,7 @@
 
 pub mod analytics;
 pub mod clients;
+mod installments;
 pub mod loans;
 pub mod overview;
 pub mod payments;

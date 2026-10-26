@@ -12,7 +12,7 @@ use crate::domain::portfolio::{Account, CapitalKind, EntryKind};
 use crate::i18n::t;
 use crate::services::settings::ChartRange;
 use crate::tr;
-use crate::ui::components::{card, card_header, empty_state, figure, kv, label, page_header, table_header, th, vrule};
+use crate::ui::components::{card, card_header, empty_state, figure, kv, label, page_header, sel, table_header, th, vrule};
 use crate::ui::forms::reason::ReasonKind;
 use crate::ui::theme::{Palette, palette, size, space, tabular};
 use crate::utils::dates::{month_year, short_month, short_month_year};
@@ -68,7 +68,7 @@ impl VzApp {
                 .gap(px(6.))
                 .child(label(&p, l.to_string()).truncate())
                 .child(figure(&p, v, size::FIGURE).text_color(color))
-                .child(div().text_size(px(size::META)).text_color(p.muted).truncate().child(sub))
+                .child(div().text_size(px(size::META)).text_color(p.muted).truncate().child(sel(sub)))
         };
         let gain_color = match gain.signum() {
             1 => p.positive,
@@ -210,11 +210,11 @@ impl VzApp {
                     .gap(px(space::L))
                     .child(column_chart(&p, &labels, &values, true, &money, 260.))
                     .child(div().h(px(1.)).bg(p.border))
-                    .child(kv(&p, t("Last 12 months", "Últimos 12 meses"), money.format(values.iter().sum::<i64>())))
+                    .child(kv(&p, t("Last 12 months", "Últimos 12 meses"), sel(money.format(values.iter().sum::<i64>()))))
                     .child(kv(
                         &p,
                         t("Monthly average", "Promedio mensual"),
-                        money.format(values.iter().sum::<i64>() / values.len().max(1) as i64),
+                        sel(money.format(values.iter().sum::<i64>() / values.len().max(1) as i64)),
                     ))
                     .into_any_element()
             });
@@ -231,23 +231,23 @@ impl VzApp {
                 .border_b_1()
                 .border_color(p.rule)
                 .font_features(tabular())
-                .child(div().flex_1().flex_basis(px(0.)).min_w(px(96.)).child(if narrow {
+                .child(div().flex_1().flex_basis(px(0.)).min_w(px(96.)).child(sel(if narrow {
                     short_month_year(f.month)
                 } else {
                     month_year(f.month)
-                }))
-                .child(fcol().text_color(p.muted).child(dash(&money, f.contributions)))
-                .child(fcol().text_color(p.muted).child(dash_neg(&money, f.withdrawals)))
-                .child(fcol().text_color(p.muted).child(dash_neg(&money, f.disbursed)))
-                .child(fcol().text_color(p.muted).child(dash(&money, f.principal_returned)))
+                })))
+                .child(fcol().text_color(p.muted).child(sel(dash(&money, f.contributions))))
+                .child(fcol().text_color(p.muted).child(sel(dash_neg(&money, f.withdrawals))))
+                .child(fcol().text_color(p.muted).child(sel(dash_neg(&money, f.disbursed))))
+                .child(fcol().text_color(p.muted).child(sel(dash(&money, f.principal_returned))))
                 .child(
                     fcol()
                         .text_color(if f.interest_received + f.fees_received > 0 { p.positive } else { p.muted })
-                        .child(dash(&money, f.interest_received + f.fees_received)),
+                        .child(sel(dash(&money, f.interest_received + f.fees_received))),
                 )
-                .child(fcol().text_color(p.muted).child(dash_neg(&money, f.expenses)))
-                .child(fcol().child(money.format_signed(net)))
-                .child(fcol().child(money.format(f.ending_cash)))
+                .child(fcol().text_color(p.muted).child(sel(dash_neg(&money, f.expenses))))
+                .child(fcol().child(sel(money.format_signed(net))))
+                .child(fcol().child(sel(money.format(f.ending_cash))))
         });
         let flow_card = card(&p).overflow_hidden().child(card_header(&p, t("Monthly cash flow", "Flujo de efectivo mensual"), None)).child(
             if flows.is_empty() {
@@ -354,16 +354,16 @@ impl VzApp {
                         .gap(px(space::L))
                         .border_b_1()
                         .border_color(p.rule)
-                        .child(div().w(px(120.)).flex_none().font_features(tabular()).child(ds.format(*date)))
+                        .child(div().w(px(120.)).flex_none().font_features(tabular()).child(sel(ds.format(*date))))
                         .child(
                             v_flex()
                                 .w(px(220.))
                                 .flex_none()
-                                .child(div().truncate().child(kind))
-                                .child(div().text_size(px(size::META)).text_color(p.muted).truncate().child(detail)),
+                                .child(div().truncate().child(sel(kind)))
+                                .child(div().text_size(px(size::META)).text_color(p.muted).truncate().child(sel(detail))),
                         )
-                        .child(div().flex_1().min_w_0().truncate().text_color(p.muted).child(note))
-                        .child(ncolumn(140.).font_features(tabular()).text_color(color).child(amount_text))
+                        .child(div().flex_1().min_w_0().truncate().text_color(p.muted).child(sel(note)))
+                        .child(ncolumn(140.).font_features(tabular()).text_color(color).child(sel(amount_text)))
                         .child(
                             h_flex()
                                 .w(px(64.))
@@ -490,8 +490,8 @@ impl VzApp {
                 .min_h(px(30.))
                 .gap(px(10.))
                 .child(div().size(px(8.)).rounded(px(2.)).bg(colors(*st)))
-                .child(div().flex_1().text_color(p.muted).child(st.label()))
-                .child(div().font_features(tabular()).child(n.to_string()))
+                .child(div().flex_1().text_color(p.muted).child(sel(st.label())))
+                .child(div().font_features(tabular()).child(sel(n.to_string())))
         });
         card(p).flex_1().flex_basis(px(0.)).min_w_0().child(card_header(p, t("Capital lent out", "Capital en la calle"), None)).child(
             v_flex()
@@ -509,13 +509,13 @@ impl VzApp {
                                 size::FIGURE,
                             )),
                         )
-                        .child(div().text_color(p.muted).font_features(tabular()).child({
+                        .child(div().text_color(p.muted).font_features(tabular()).child(sel({
                             let (a, b) = (money.format(deployed), money.format(pool));
                             tr!("{a} of {b}", "{a} de {b}")
-                        })),
+                        }))),
                 )
                 .child(crate::ui::components::progress_bar(p, ratio, p.accent))
-                .child(kv(p, t("Available to lend", "Disponible para prestar"), money.format(s.available_cash)))
+                .child(kv(p, t("Available to lend", "Disponible para prestar"), sel(money.format(s.available_cash))))
                 .child(div().h(px(1.)).bg(p.border))
                 .child(
                     div()

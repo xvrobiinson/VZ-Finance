@@ -102,13 +102,19 @@ pub struct VzApp {
     pub(crate) store: Store,
     pub(crate) snap: Rc<Snapshot>,
     pub(crate) today: NaiveDate,
+    /// Late fees were last brought up to date on this day.
+    refreshed_on: NaiveDate,
+    /// A Windows file window this app opened and is waiting on, if any.
+    pub(crate) file_dialog: Option<&'static str>,
+    /// Disk facts shown in Settings (backups, folder checks).
+    pub(crate) settings_facts: Option<crate::ui::screens::settings::SettingsFacts>,
     pub(crate) route: Route,
     history: Vec<Route>,
     pub(crate) focus: FocusHandle,
     pub(crate) client_search: Entity<InputState>,
     pub(crate) payment_search: Entity<InputState>,
     pub(crate) currency_select: Entity<SelectState<Vec<Choice>>>,
-    pub(crate) business_name_input: Entity<InputState>,
+    pub(crate) receipt_name_input: Entity<InputState>,
     pub(crate) loan_filter: LoanFilter,
     pub(crate) show_archived: bool,
     pub(crate) chart_hover: Option<usize>,
@@ -135,16 +141,25 @@ fn currency_choices() -> Vec<Choice> {
 }
 
 impl VzApp {
-    pub fn new(store: Store, window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(mut store: Store, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let today = today();
+        match store.refresh(today) {
+            Ok(0) => {}
+            Ok(n) => log::info!("recorded {n} late fee changes at startup"),
+            Err(e) => log::error!("could not bring late fees up to date: {e:#}"),
+        }
         let (snap, load_error) = match store.snapshot() {
             Ok(s) => (s, None),
-            Err(e) => (Snapshot::default(), Some(format!("{e:#}"))),
+            Err(e) => {
+                log::error!("could not load data: {e:#}");
+                (Snapshot::default(), Some(format!("{e:#}")))
+            }
         };
         i18n::set(snap.settings.language);
-        window.set_window_title(&snap.settings.business_name);
+        window.set_window_title(crate::APP_NAME);
         let client_search = cx.new(|cx| InputState::new(window, cx));
         let payment_search = cx.new(|cx| InputState::new(window, cx));
-        let business_name_input = cx.new(|cx| InputState::new(window, cx).default_value(snap.settings.business_name.clone()));
+        let receipt_name_input = cx.new(|cx| InputState::new(window, cx).default_value(snap.settings.receipt_name.clone()));
         let selected = CURRENCIES.iter().position(|c| c.code == snap.settings.currency_code).map(IndexPath::new);
         let currency_select = cx.new(|cx| SelectState::new(currency_choices(), selected, window, cx));
         let subs = vec![
@@ -154,8 +169,8 @@ impl VzApp {
                     this.update_settings(|s| s.currency_code = code, window, cx);
                 }
             }),
-            cx.subscribe_in(&business_name_input, window, |this, _, ev: &InputEvent, window, cx| match ev {
-                InputEvent::PressEnter { .. } | InputEvent::Blur => this.save_business_name(window, cx),
+            cx.subscribe_in(&receipt_name_input, window, |this, _, ev: &InputEvent, window, cx| match ev {
+                InputEvent::PressEnter { .. } | InputEvent::Blur => this.save_receipt_name(window, cx),
                 InputEvent::Change => cx.notify(),
                 _ => {}
             }),
@@ -176,14 +191,17 @@ impl VzApp {
         let mut app = Self {
             store,
             snap: Rc::new(snap),
-            today: today(),
+            today,
+            refreshed_on: today,
+            file_dialog: None,
+            settings_facts: None,
             route: Route::Overview,
             history: Vec::new(),
             focus,
             client_search,
             payment_search,
             currency_select,
-            business_name_input,
+            receipt_name_input,
             loan_filter: LoanFilter::default(),
             show_archived: false,
             chart_hover: None,
@@ -193,6 +211,22 @@ impl VzApp {
             _subscriptions: subs,
         };
         app.apply_language(window, cx);
+        // Left open past midnight: what is overdue and the late fees change
+        // with the date, so bring everything up to date when it does.
+        cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor().timer(std::time::Duration::from_secs(60)).await;
+                let alive = this.update(cx, |app, cx| {
+                    if crate::utils::dates::today() != app.today {
+                        app.reload(cx);
+                    }
+                });
+                if alive.is_err() {
+                    break;
+                }
+            }
+        })
+        .detach();
         app
     }
 
@@ -219,6 +253,13 @@ impl VzApp {
 
     pub fn reload(&mut self, cx: &mut Context<Self>) {
         self.today = today();
+        if self.refreshed_on != self.today {
+            // A new day: installments may have become overdue.
+            if let Err(e) = self.store.refresh(self.today) {
+                log::error!("could not bring late fees up to date: {e:#}");
+            }
+            self.refreshed_on = self.today;
+        }
         match self.store.snapshot() {
             Ok(s) => {
                 self.logo = logo_image(&s, self.logo.take());
@@ -261,6 +302,15 @@ impl VzApp {
             }
             _ => None,
         }
+    }
+
+    /// Opens the record behind a clicked table row. A click that ends a drag
+    /// selecting text in the row is left alone so the text can be copied.
+    pub fn open_row(&mut self, route: Route, window: &mut Window, cx: &mut Context<Self>) {
+        if !gpui_kit::base::TextSelection::selected_text(window, cx).trim().is_empty() {
+            return;
+        }
+        self.navigate(route, window, cx);
     }
 
     pub fn navigate(&mut self, route: Route, window: &mut Window, cx: &mut Context<Self>) {
@@ -351,23 +401,23 @@ impl VzApp {
         if s.language != old.language {
             self.apply_language(window, cx);
         }
-        if s.business_name != old.business_name {
-            window.set_window_title(&s.business_name);
-        }
     }
 
-    pub fn save_business_name(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let name = self.business_name_input.read(cx).value().trim().to_string();
-        if name == self.settings().business_name {
+    /// Saves the name printed on receipts. Empty means the app name.
+    pub fn save_receipt_name(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let name = self.receipt_name_input.read(cx).value().trim().to_string();
+        if name == self.settings().receipt_name {
             return;
         }
-        if name.is_empty() {
-            let current = self.settings().business_name.clone();
-            self.business_name_input.update(cx, |s, cx| s.set_value(current, window, cx));
+        self.update_settings(|s| s.receipt_name = name.clone(), window, cx);
+        if self.settings().receipt_name != name {
+            // Refused (too long); show what is saved.
+            let current = self.settings().receipt_name.clone();
+            self.receipt_name_input.update(cx, |s, cx| s.set_value(current, window, cx));
             return;
         }
-        self.update_settings(|s| s.business_name = name, window, cx);
-        self.notify_success(t("Business name saved", "Nombre del negocio guardado"), window, cx);
+        let shown = self.settings().receipt_title();
+        self.notify_success(tr!("Receipts will show “{shown}”", "Los recibos mostrarán “{shown}”"), window, cx);
     }
 
     fn toggle_sidebar(&mut self, _: &ToggleSidebar, window: &mut Window, cx: &mut Context<Self>) {
@@ -403,18 +453,95 @@ impl VzApp {
     // ----- backup ---------------------------------------------------------
 
     pub fn default_backup_name(&self) -> String {
-        format!("vz-finance-backup-{}.db", chrono::Local::now().format("%Y-%m-%d-%H%M"))
+        format!("acervus-finance-backup-{}.db", chrono::Local::now().format("%Y-%m-%d-%H%M"))
+    }
+
+    // ----- Windows file windows -----------------------------------------
+    //
+    // Every Open/Save window goes through these so that one that can't open
+    // (or opens behind the app) is reported instead of doing nothing.
+
+    /// Starts waiting on a file window for `what`. Returns false, after
+    /// telling the user, when another one is already open.
+    pub(crate) fn begin_file_dialog(&mut self, what: &'static str, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        if self.file_dialog.is_some() {
+            log::warn!("file dialog for {what} not opened: one is already open");
+            self.notify_error(
+                t(
+                    "A file window is already open. It may be behind this window: look for it on the taskbar.",
+                    "Ya hay una ventana de archivos abierta. Puede estar detrás de esta ventana: búscala en la barra de tareas.",
+                ),
+                window,
+                cx,
+            );
+            return false;
+        }
+        log::info!("opening file dialog: {what}");
+        self.file_dialog = Some(what);
+        true
+    }
+
+    /// Ends the wait and returns the chosen path(s), or the reason the window
+    /// failed (already logged). `Ok(None)` means it was cancelled.
+    pub(crate) fn end_file_dialog<T, E>(&mut self, what: &str, result: Result<anyhow::Result<Option<T>>, E>) -> Result<Option<T>, String> {
+        self.file_dialog = None;
+        match result {
+            Ok(Ok(Some(v))) => Ok(Some(v)),
+            Ok(Ok(None)) => {
+                log::info!("file dialog for {what} cancelled");
+                Ok(None)
+            }
+            Ok(Err(e)) => {
+                log::error!("file dialog for {what} failed: {e:#}");
+                Err(format!("{e:#}"))
+            }
+            Err(_) => {
+                log::error!("file dialog for {what} closed without an answer");
+                Err(t("the window closed unexpectedly", "la ventana se cerró inesperadamente").to_string())
+            }
+        }
     }
 
     pub fn backup_now(&mut self, _: &BackupNow, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.begin_file_dialog("backup", window, cx) {
+            return;
+        }
         let dir = self.store.backups_dir();
-        let _ = std::fs::create_dir_all(&dir);
+        if let Err(e) = std::fs::create_dir_all(&dir) {
+            log::warn!("could not create the backups folder: {e}");
+        }
         let rx = cx.prompt_for_new_path(&dir, Some(&self.default_backup_name()));
         cx.spawn_in(window, async move |this, cx| {
-            let Ok(Ok(Some(path))) = rx.await else { return };
-            let _ = this.update_in(cx, |app, window, cx| app.write_backup(path, window, cx));
+            let result = rx.await;
+            let _ = this.update_in(cx, |app, window, cx| match app.end_file_dialog("backup", result) {
+                Ok(Some(path)) => app.write_backup(path, window, cx),
+                Ok(None) => {}
+                Err(why) => {
+                    // The Save window couldn't open on this computer: save
+                    // the backup where the app keeps them instead.
+                    app.backup_to_folder(Some(why), window, cx);
+                }
+            });
         })
         .detach();
+    }
+
+    /// Saves a backup in the app's backups folder without asking where.
+    /// `why` explains a Save window that failed.
+    pub fn backup_to_folder(&mut self, why: Option<String>, window: &mut Window, cx: &mut Context<Self>) {
+        let path = self.store.backups_dir().join(self.default_backup_name());
+        if let Some(why) = why {
+            let folder = self.store.backups_dir().display().to_string();
+            self.notify_error(
+                tr!(
+                    "The Save window couldn't open ({why}). The backup is being saved in {folder} instead.",
+                    "La ventana Guardar no se pudo abrir ({why}). La copia se está guardando en {folder}."
+                ),
+                window,
+                cx,
+            );
+        }
+        self.write_backup(path, window, cx);
     }
 
     pub fn write_backup(&mut self, mut path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
@@ -424,6 +551,7 @@ impl VzApp {
         }
         match self.store.backup_to(&path) {
             Ok(()) => {
+                log::info!("backup written and verified");
                 if let Err(e) = self.store.record_backup_time() {
                     log::warn!("could not record backup time: {e}");
                 }
@@ -432,6 +560,7 @@ impl VzApp {
                 self.reload(cx);
             }
             Err(e) => {
+                log::error!("backup failed: {e:#}");
                 let msg = tr!("Backup failed: {e:#}", "La copia falló: {e:#}");
                 self.notify_error(msg, window, cx);
             }
@@ -448,6 +577,7 @@ impl Focusable for VzApp {
 impl Render for VzApp {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         i18n::set(self.snap.settings.language);
+        crate::ui::components::begin_selectable_frame();
         let p = palette(cx);
         let content = match self.route {
             Route::Overview => self.render_overview(window, cx),
@@ -465,7 +595,7 @@ impl Render for VzApp {
                 .py(px(space::M))
                 .bg(p.negative_tint)
                 .text_color(p.negative)
-                .child(tr!("Your data could not be loaded: {e}", "No se pudieron cargar tus datos: {e}"))
+                .child(crate::ui::components::sel(tr!("Your data could not be loaded: {e}", "No se pudieron cargar tus datos: {e}")))
         });
         div()
             .id("vz-root")

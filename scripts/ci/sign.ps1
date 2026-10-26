@@ -13,7 +13,7 @@ $pfx = Join-Path $env:RUNNER_TEMP "signing.pfx"
 try {
     [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:WINDOWS_SIGNING_CERT))
     & $signtool.FullName sign /f $pfx /p $env:WINDOWS_SIGNING_PASSWORD /fd SHA256 `
-        /tr http://timestamp.digicert.com /td SHA256 /d "VZ Finance" $Path
+        /tr http://timestamp.digicert.com /td SHA256 /d "Acervus Finance" $Path
     if ($LASTEXITCODE -ne 0) { throw "signing failed" }
     & $signtool.FullName verify /pa $Path
     if ($LASTEXITCODE -ne 0) { throw "signature verification failed" }

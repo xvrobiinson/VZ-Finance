@@ -9,6 +9,8 @@ pub mod entry;
 pub mod loan;
 pub mod payment;
 pub mod reason;
+pub mod reset;
+pub mod schedule;
 
 use std::cell::Cell;
 

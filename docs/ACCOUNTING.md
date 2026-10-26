@@ -1,4 +1,4 @@
-# VZ Finance accounting rules
+# Acervus Finance accounting rules
 
 These are the rules the calculation engine follows. They are implemented in
 `src/domain/` and covered by unit tests with hand-checked figures.
@@ -16,16 +16,101 @@ These are the rules the calculation engine follows. They are implemented in
 
 ## Loans
 
-A loan is an amount lent on a date at a fixed rate per period, paid either
-**monthly** or **every 15 days** (quincenal). Loans have no fixed term: they
-stay open until the capital is repaid.
+A loan is an amount lent on a date at a fixed rate per **interest period**,
+repaid on a **payment frequency**. The two are chosen separately; each is
+daily, weekly, every 15 days or monthly.
 
-- Monthly periods end on the same day of each month as the loan date
+- Daily and weekly due dates are 1 and 7 days apart.
+- Monthly due dates fall on the same day of each month as the loan date
   (Jan 31 → Feb 28 → Mar 31: always counted from the loan date, never drifting).
-- Every-15-days periods end 15 days after the loan day and on the loan day of
+- Every-15-days due dates are 15 days after the loan day and on the loan day of
   each following month (Jan 5 → Jan 20 → Feb 5 → Feb 20 …).
 
-## Interest
+There are three loan types:
+
+| Type | Installments | Interest of each payment period |
+| --- | --- | --- |
+| **Installments, declining balance** (default) | yes | rate × capital still owed when the period starts |
+| **Flat installments** | yes | rate × amount lent |
+| **Interest only** | no fixed term | rate × capital still owed when the period starts |
+
+### Converting the rate
+
+When the interest period and the payment frequency differ, the rate is
+converted proportionally on a **30-day month**: a day is 1, a week 7, every 15
+days 15 and a month 30 days. Interest for a payment period =
+capital × rate × days(payment period) ÷ days(interest period), rounded half-up
+to the cent once. Example: 10% a month paid weekly is 10% × 7 ⁄ 30 ≈ 2.33% a
+week; 1% a day paid weekly is 7% a week.
+
+## Installment loans
+
+- The capital is split into the chosen number of installments (1 to 1,000) in
+  equal parts; any cents left over go on the last installment.
+- **Declining balance:** installment *k*'s interest is charged on the capital
+  still owed when its period starts (the previous due date, or the loan date).
+  10,000 at 10% a month in 5 installments: 3,000, 2,800, 2,600, 2,400 and
+  2,200, so 3,000 of interest and 13,000 in total.
+- **Flat:** every installment's interest is rate × amount lent. The same loan
+  is 3,000 five times: 5,000 of interest and 15,000 in total.
+- With declining balance the interest follows what really happens: capital
+  paid early lowers the interest of the installments that follow, and capital
+  paid late keeps it at the higher amount. No interest is charged once the
+  capital reaches zero.
+- **Edited schedules.** Before saving, every installment's due date, capital,
+  interest or total can be changed (changing the total changes the interest).
+  The app checks that due dates are after the loan date and in order, that no
+  amount is negative, and that the capital adds up to the amount lent; it
+  offers to put any difference on the last installment, never silently. An
+  edited schedule is stored as written, its interest is used as typed, and the
+  loan is marked "set by hand". An unedited schedule follows the terms as you
+  type them; once edited, changing the amount, rate, frequency, number of
+  installments or date shows a notice and recalculates the schedule only when
+  you choose to.
+
+### Late fees
+
+- An installment that is not fully paid by its due date is charged a **late
+  fee** on the next day: the loan's late-fee rate (5% by default, set per loan;
+  0% means none) × what is still unpaid on it (capital + interest).
+  10,000 in 5 at 10%: if only 1,000 of the first 3,000 is paid, the fee is
+  5% × 2,000 = 100.
+- It is charged **once per installment**, never again for the same
+  installment and never on the fee itself. The database enforces one fee per
+  installment.
+- Fees are brought up to date when the app starts, within a minute of the
+  date changing while it is open, and whenever a loan or payment changes. If an earlier payment is added
+  or edited so an installment was in fact paid on time, its fee is removed;
+  if the unpaid amount changes, the fee is recalculated. Both changes are
+  written to the change history.
+- A fee can be **waived** with a reason, and restored. A waived fee counts as
+  zero; payments are worked out again without it.
+- Unpaid late fees are part of what the client owes and of portfolio value.
+  Fees collected are income, like interest.
+- Late fees and interest rates may be limited by law where you lend. The app
+  does not check this.
+
+### Payments on installment loans
+
+A payment is applied in one of three ways, chosen when it is recorded:
+
+1. **One installment** (partial payments allowed): to that installment's late
+   fee, then its interest, then its capital. More than it owes is refused.
+2. **Spread over installments:** *oldest first* (each installment's fee,
+   interest and capital before moving to the next; anything beyond what is due
+   goes to capital of later installments, oldest first), or *amounts you
+   choose* for each installment.
+3. **Custom split:** amounts for late fees, interest and capital; each part is
+   applied to the oldest installments first. More than is owed of any part is
+   refused. Capital paid before it is due lowers the capital of later
+   installments, so with declining balance the interest that follows goes down.
+
+How each payment was applied is stored per installment, kept when other
+payments change, and shown on the loan page, the receipt and the CSV export.
+An installment is **overdue** the day after its due date while anything on it
+is unpaid; days overdue count from the oldest such due date.
+
+## Interest (interest-only loans)
 
 - **Each period's interest = rate × capital owed when the period begins.**
 - The interest is owed from the start of the period and is **due on the
@@ -41,7 +126,7 @@ pays 600 on the due date, 100 covers the interest and 500 reduces the capital to
 500, so the next month's interest is 50. Paying only 50 then keeps the capital at
 500.
 
-## Payments
+## Payments (interest-only loans)
 
 - **Order:** fee (only if entered with the payment), then interest owed (oldest
   period first), then capital.
@@ -89,7 +174,12 @@ pays 600 on the due date, 100 covers the interest and 500 reduces the capital to
   interest per payment, the next six due dates with their interest while the
   capital is unchanged, the payoff amount on the first due date, how payments
   work, and lines for both signatures.
-- Both carry the business name and logo. They are saved as HTML files in
+- For installment loans the loan receipt has the whole schedule (due date,
+  capital, interest and total of each installment), the late-fee rule and
+  whether the schedule was set by agreement; the payment receipt shows the
+  installments the payment went to, late fees, and what is still overdue.
+- Both carry the name set in Settings → Name on receipts (or "Acervus Finance"
+  when it is empty) and the logo. They are saved as HTML files in
   `%LOCALAPPDATA%\VZFinance\receipts` and open in the default browser, which
   shows the print dialog.
 
@@ -143,7 +233,8 @@ would cause it is refused and the date is named.
 | Available capital, available interest | The two cash accounts above |
 | Capital lent out | Capital still owed on performing (non-defaulted) loans |
 | Interest due, unpaid | Interest of periods past their due date, not yet collected |
-| **Portfolio value** | Available capital + available interest + capital lent out + interest due, unpaid |
+| Late fees receivable | Late fees assessed and not waived, not yet collected |
+| **Portfolio value** | Available capital + available interest + capital lent out + interest due, unpaid + late fees receivable |
 | Defaulted balance | What defaulted loans still owe; excluded from value |
 | Portfolio gain | Portfolio value − capital invested |
 | Income received | Interest + fees collected |
@@ -185,6 +276,16 @@ beyond), drawn as straight segments between real values.
 - Schema v3 made payments editable (splits are kept in step by recalculation),
   and added expenses, transfers and adjustments, the change history, and the
   business logo (stored in the database, so backups carry it).
+- Schema v4 added installment loans: the interest period, loan type, number of
+  installments, late-fee rate and edited flag on each loan; the stored
+  schedule (`loan_installments`); how each payment was applied
+  (`payments.allocation_mode`, `payment_targets`, `installment_allocations`);
+  and `late_fees`. Existing loans became interest-only loans with the same
+  numbers. Nothing is deleted by the upgrade.
+- **Reset all data** (Settings → Data) deletes clients, loans, payments,
+  money movements and the change history, keeping settings, the receipt name
+  and the logo. It only runs when you type RESET, and saves a complete copy
+  (`before-reset-<time>.db`) in the backups folder first.
 - Backups use SQLite's online backup API and are verified before a restore; a
   restore first saves a safety copy of the current data.
 - The database is **not encrypted** by the app. Use BitLocker or device

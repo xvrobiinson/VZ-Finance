@@ -6,6 +6,7 @@ pub mod capital;
 pub mod changes;
 pub mod clients;
 pub mod entries;
+pub mod late_fees;
 pub mod loans;
 pub mod payments;
 pub mod settings;
