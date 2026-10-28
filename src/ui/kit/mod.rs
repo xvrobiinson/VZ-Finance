@@ -13,6 +13,7 @@ pub mod interact;
 mod list_row;
 mod overlay;
 mod segmented;
+mod sort_header;
 mod stat;
 mod stat_strip;
 
@@ -22,6 +23,7 @@ pub use dropdown::{Dropdown, DropdownItem};
 pub use list_row::ListRow;
 pub use overlay::{Overlay, OverlayAlign};
 pub use segmented::Segmented;
+pub use sort_header::{Sort, SortHeader};
 pub use stat::Stat;
 pub use stat_strip::StatStrip;
 

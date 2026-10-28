@@ -7,7 +7,7 @@ use gpui_kit::component::{h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
-use crate::app::VzApp;
+use crate::app::{CompanyField, VzApp};
 use crate::domain::loans::{Frequency, RATE_PRESETS};
 use crate::domain::money::{NumberStyle, Rate};
 use crate::i18n::{Lang, t};
@@ -24,6 +24,14 @@ enum ClientField {
     IdNumber,
     Phone,
     Address,
+}
+
+/// A company detail that can be printed on receipts.
+#[derive(Clone, Copy)]
+enum CompanyPart {
+    Name,
+    Address,
+    Phone,
 }
 
 /// Settings read as a form; past this width lines get too long to scan.
@@ -113,7 +121,7 @@ impl VzApp {
         let s = self.settings().clone();
         let today = self.today;
         let db_path = self.store.path().to_path_buf();
-        let db_dir = db_path.parent().map(|d| d.to_path_buf());
+        let db_file = Some(db_path.to_path_buf());
         let receipts_dir = self.store.receipts_dir();
         let facts = self.settings_facts().clone();
         let backups = facts.backups.clone();
@@ -134,13 +142,15 @@ impl VzApp {
         let range_opts: Vec<(ChartRange, &str)> = ChartRange::ALL.iter().map(|r| (*r, r.label())).collect();
         let theme_opts = [(ThemePref::Light, t("Light", "Claro")), (ThemePref::Dark, t("Dark", "Oscuro"))];
         let name_changed = self.receipt_name_input.read(cx).value().trim() != s.receipt_name;
+        let address_changed = self.company_address_input.read(cx).value().trim() != s.company_address;
+        let phone_changed = self.company_phone_input.read(cx).value().trim() != s.company_phone;
         let accent = p.accent;
 
         let business = v_flex()
             .gap(px(space::L))
             .child(row(
                 &p,
-                t("Name on receipts", "Nombre en los recibos"),
+                t("Company name", "Nombre de la empresa"),
                 Some(t(
                     "Printed at the top of every receipt. Leave it empty to print “Acervus Finance”.",
                     "Se imprime arriba en cada recibo. Déjalo vacío para imprimir “Acervus Finance”.",
@@ -151,6 +161,30 @@ impl VzApp {
                         .label(t("Save", "Guardar"))
                         .disabled(!name_changed)
                         .on_click(cx.listener(|this, _, w, cx| this.save_receipt_name(w, cx))),
+                ),
+            ))
+            .child(row(
+                &p,
+                t("Company address", "Dirección de la empresa"),
+                Some(t("Optional. Printed under the name when ticked below.", "Opcional. Se imprime bajo el nombre si está marcada abajo.")),
+                h_flex().gap(px(space::S)).child(div().w(px(FIELD_W)).child(Input::new(&self.company_address_input))).child(
+                    Button::new("save-address")
+                        .primary()
+                        .label(t("Save", "Guardar"))
+                        .disabled(!address_changed)
+                        .on_click(cx.listener(|this, _, w, cx| this.save_company(CompanyField::Address, w, cx))),
+                ),
+            ))
+            .child(row(
+                &p,
+                t("Company phone", "Teléfono de la empresa"),
+                Some(t("Optional. Printed under the name when ticked below.", "Opcional. Se imprime bajo el nombre si está marcado abajo.")),
+                h_flex().gap(px(space::S)).child(div().w(px(FIELD_W)).child(Input::new(&self.company_phone_input))).child(
+                    Button::new("save-phone")
+                        .primary()
+                        .label(t("Save", "Guardar"))
+                        .disabled(!phone_changed)
+                        .on_click(cx.listener(|this, _, w, cx| this.save_company(CompanyField::Phone, w, cx))),
                 ),
             ))
             .child(row(
@@ -302,6 +336,62 @@ impl VzApp {
             ))
             .child(row(
                 &p,
+                t("Company info to add to every receipt", "Datos de la empresa en cada recibo"),
+                Some(t(
+                    "Printed at the top. A detail that is empty is left out without a gap.",
+                    "Se imprimen arriba. Un dato vacío se omite sin dejar espacio.",
+                )),
+                v_flex().gap(px(space::S)).children(
+                    [
+                        ("rcpt-co-name", t("Company name", "Nombre de la empresa"), s.receipt_company.name, CompanyPart::Name),
+                        (
+                            "rcpt-co-address",
+                            t("Company address", "Dirección de la empresa"),
+                            s.receipt_company.address,
+                            CompanyPart::Address,
+                        ),
+                        ("rcpt-co-phone", t("Company phone", "Teléfono de la empresa"), s.receipt_company.phone, CompanyPart::Phone),
+                    ]
+                    .map(|(id, label, checked, which)| {
+                        Checkbox::new(id).label(label).checked(checked).on_click(cx.listener(move |this, checked: &bool, w, cx| {
+                            let v = *checked;
+                            this.update_settings(
+                                |s| {
+                                    let f = &mut s.receipt_company;
+                                    *match which {
+                                        CompanyPart::Name => &mut f.name,
+                                        CompanyPart::Address => &mut f.address,
+                                        CompanyPart::Phone => &mut f.phone,
+                                    } = v
+                                },
+                                w,
+                                cx,
+                            )
+                        }))
+                    }),
+                ),
+            ))
+            .child(row(
+                &p,
+                t("Receipt wording", "Texto de los recibos"),
+                Some(if s.receipt_text.is_default() {
+                    t(
+                        "“How payments work”, the signature captions and the closing lines. Using the built-in wording.",
+                        "“Cómo funcionan los pagos”, los textos de firma y las líneas finales. Se usa el texto original.",
+                    )
+                } else {
+                    t(
+                        "“How payments work”, the signature captions and the closing lines. Changed; you can restore the original.",
+                        "“Cómo funcionan los pagos”, los textos de firma y las líneas finales. Cambiado; puedes restaurar el original.",
+                    )
+                }),
+                Button::new("edit-wording")
+                    .icon(IconName::Pencil)
+                    .label(t("Edit wording", "Editar texto"))
+                    .on_click(cx.listener(|this, _, w, cx| this.open_receipt_text_form(w, cx))),
+            ))
+            .child(row(
+                &p,
                 t("Client info to add to every receipt", "Datos del cliente en cada recibo"),
                 Some(t(
                     "A detail the client doesn't have is left out. Photos are never printed.",
@@ -339,9 +429,9 @@ impl VzApp {
                 t("Receipts folder", "Carpeta de recibos"),
                 Some(t("Every receipt is also saved here", "Cada recibo también se guarda aquí")),
                 Button::new("open-receipts").ghost().icon(IconName::FolderOpen).label(t("Open folder", "Abrir carpeta")).on_click(
-                    cx.listener(move |_, _, _, cx| {
+                    cx.listener(move |this, _, w, cx| {
                         let _ = std::fs::create_dir_all(&receipts_dir);
-                        cx.open_with_system(&receipts_dir);
+                        this.open_path(receipts_dir.clone(), false, w, cx);
                     }),
                 ),
             ));
@@ -385,9 +475,9 @@ impl VzApp {
                     .ghost()
                     .icon(IconName::FolderOpen)
                     .label(t("Show in Explorer", "Mostrar en el Explorador"))
-                    .on_click(cx.listener(move |_, _, _, cx| {
-                        if let Some(d) = &db_dir {
-                            cx.open_with_system(d);
+                    .on_click(cx.listener(move |this, _, w, cx| {
+                        if let Some(db) = &db_file {
+                            this.open_path(db.clone(), true, w, cx);
                         }
                     })),
             ))
@@ -544,7 +634,7 @@ impl VzApp {
                 )),
                 Button::new("open-logs").ghost().icon(IconName::FolderOpen).label(t("Open folder", "Abrir carpeta")).on_click(cx.listener(
                     move |this, _, w, cx| match &log_dir {
-                        Some(d) if d.exists() => cx.open_with_system(d),
+                        Some(d) if d.exists() => this.open_path(d.clone(), false, w, cx),
                         _ => this.notify_error(
                             t(
                                 "There is no log yet: it is written by the installed app.",
@@ -597,7 +687,7 @@ impl VzApp {
             (t("Record payment", "Registrar pago"), "Ctrl P"),
             (t("New loan", "Nuevo préstamo"), "Ctrl L"),
             (t("New client", "Nuevo cliente"), "Ctrl N"),
-            (t("New expense", "Nuevo gasto"), "Ctrl E"),
+            (t("New record", "Nuevo registro"), "Ctrl E"),
             (t("Search", "Buscar"), "Ctrl F"),
             (t("Back up", "Copia de seguridad"), "Ctrl S"),
             (t("Toggle sidebar", "Mostrar u ocultar menú"), "Ctrl B"),
@@ -629,7 +719,7 @@ impl VzApp {
             .child(section(
                 &p,
                 t("Business", "Negocio"),
-                t("Name on receipts, logo and language", "Nombre en los recibos, logo e idioma"),
+                t("Company details, logo and language", "Datos de la empresa, logo e idioma"),
                 business,
             ))
             .child(section(&p, t("General", "General"), t("Currency, numbers and dates", "Moneda, números y fechas"), general))

@@ -9,6 +9,7 @@ pub mod entry;
 pub mod loan;
 pub mod payment;
 pub mod reason;
+pub mod receipt_text;
 pub mod reset;
 pub mod schedule;
 
@@ -90,11 +91,30 @@ pub fn footer(
     busy: bool,
     on_primary: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
 ) -> Div {
-    actions(Button::new("submit").primary().label(primary_label.to_string()).loading(busy).disabled(!enabled).on_click(on_primary))
+    footer_with(p, div(), primary_label, enabled, busy, on_primary)
+}
+
+/// `footer` with a secondary action on the left, such as "Restore".
+pub fn footer_with(
+    p: &Palette,
+    left: impl IntoElement,
+    primary_label: &str,
+    enabled: bool,
+    busy: bool,
+    on_primary: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+) -> Div {
+    h_flex()
+        .justify_between()
+        .items_center()
+        .gap(px(space::S))
         .pt(px(space::XL))
         .mt(px(space::S))
         .border_t_1()
         .border_color(p.rule)
+        .child(left)
+        .child(actions(
+            Button::new("submit").primary().label(primary_label.to_string()).loading(busy).disabled(!enabled).on_click(on_primary),
+        ))
 }
 
 /// Footer of a confirmation that destroys or removes something: Cancel and
@@ -161,4 +181,25 @@ pub fn choice_tile(p: &Palette, id: &'static str, title: &str, sub: Option<Strin
         .cursor_pointer()
         .child(div().typeset(text::BODY_STRONG).text_color(if selected { p.accent_text } else { p.text }).child(title.to_string()))
         .children(sub.map(|s| div().typeset(text::CAPTION).text_color(p.muted).child(s)))
+}
+
+/// Test support: the app in a GPUI test window over `store`.
+#[cfg(test)]
+pub(crate) fn test_app(cx: &mut TestAppContext, store: crate::services::Store) -> (Entity<crate::app::VzApp>, &mut VisualTestContext) {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+    cx.update(|cx| {
+        gpui_kit::init(cx);
+        crate::ui::theme::install(Default::default(), cx);
+        cx.set_reduce_motion(true);
+    });
+    let slot = Rc::new(RefCell::new(None));
+    let keep = slot.clone();
+    let (_, cx) = cx.add_window_view(move |window, cx| {
+        let app = cx.new(|cx| crate::app::VzApp::new(store, window, cx));
+        *keep.borrow_mut() = Some(app.clone());
+        gpui_kit::component::Root::new(app, window, cx)
+    });
+    let app = slot.borrow_mut().take().expect("the window builds the app");
+    (app, cx)
 }

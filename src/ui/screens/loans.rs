@@ -1,4 +1,5 @@
 use gpui_kit::assets::IconName;
+use gpui_kit::component::input::Input;
 use gpui_kit::component::{h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
@@ -11,10 +12,62 @@ use crate::domain::money::{Cents, percent_label};
 use crate::domain::portfolio::LoanBook;
 use crate::i18n::{count, t};
 use crate::tr;
-use crate::ui::components::{Tone, avatar, empty_state, kv, page_header, pill, progress_bar, sel, table_header, table_row, th};
+use crate::ui::components::{Tone, avatar, empty_state, icon, kv, page_header, pill, progress_bar, sel, table_header, table_row, th};
 use crate::ui::forms::reason::ReasonKind;
-use crate::ui::kit::{Button, Card, Dropdown, DropdownItem, Segmented, Stat, StatStrip};
+use crate::ui::kit::{Button, Card, Dropdown, DropdownItem, Segmented, SortHeader, Stat, StatStrip};
+use crate::ui::lists::{self, Key};
 use crate::ui::theme::{Palette, Typeset as _, Width, palette, space, tabular, text};
+
+/// Columns the loan list can be sorted by.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LoanColumn {
+    Client,
+    Lent,
+    Owes,
+    NextPayment,
+    Repaid,
+    Status,
+}
+
+/// A loan in the list with the figures it is searched and sorted by.
+struct LoanLine<'a> {
+    book: &'a LoanBook,
+    status: DisplayStatus,
+    owes: Cents,
+    repaid_ppm: i64,
+    /// None for paid-off and defaulted loans.
+    next_due: Option<chrono::NaiveDate>,
+}
+
+impl VzApp {
+    /// Whether a loan matches the search: its number, the client's name,
+    /// phone or ID number, the amount lent or owed, its status, type, rate
+    /// or notes.
+    fn loan_matches(&self, x: &LoanLine, query: &str, money: &crate::domain::money::MoneyFormat) -> bool {
+        let l = x.book;
+        let Some(loan) = self.snap.loan(l.id) else { return false };
+        let client = self.snap.client(l.client_id);
+        let opt = |v: Option<&Option<String>>| v.and_then(Clone::clone).unwrap_or_default();
+        let (id, hash_id) = (l.id.to_string(), format!("#{}", l.id));
+        let (phone, id_number) = (opt(client.map(|c| &c.phone)), opt(client.map(|c| &c.id_number)));
+        let rate = loan.terms.rate_line();
+        let lent = lists::amount_fields(money.format(l.facts.principal), l.facts.principal);
+        let owes = lists::amount_fields(money.format(x.owes), x.owes);
+        let mut fields: Vec<&str> = vec![
+            &id,
+            &hash_id,
+            self.snap.client_name(l.client_id),
+            &phone,
+            &id_number,
+            x.status.label(),
+            loan.terms.method.short_label(),
+            &rate,
+            &loan.notes,
+        ];
+        fields.extend(lent.iter().chain(owes.iter()).map(String::as_str));
+        lists::matches(query, &fields)
+    }
+}
 
 /// A muted caption for the right of a card header.
 fn header_note(p: &Palette, note: impl Into<SharedString>) -> Div {
@@ -76,8 +129,85 @@ impl VzApp {
                 .into_any_element()
         };
 
-        let mut visible: Vec<_> = statuses.iter().filter(|(_, st)| matches(self.loan_filter, *st)).collect();
-        visible.sort_by(|a, b| a.1.cmp(&b.1).then_with(|| a.0.delinquency(today).next_due.cmp(&b.0.delinquency(today).next_due)));
+        // Each loan's figures are worked out once here; search, sort and the
+        // rows reuse them, which keeps long lists quick.
+        let query = self.loan_search.read(cx).value().to_string();
+        let mut visible: Vec<LoanLine> = statuses
+            .iter()
+            .filter(|(_, st)| matches(self.loan_filter, *st))
+            .map(|(l, st)| {
+                let pos = l.position(today);
+                let closed = matches!(st, DisplayStatus::PaidOff | DisplayStatus::Defaulted);
+                LoanLine {
+                    book: l,
+                    status: *st,
+                    owes: pos.payoff(),
+                    // Parts per million of the capital, so it sorts as a number.
+                    repaid_ppm: if l.facts.principal > 0 { pos.principal_paid * 1_000_000 / l.facts.principal } else { 0 },
+                    next_due: if closed { None } else { l.delinquency(today).next_due },
+                }
+            })
+            .filter(|x| query.trim().is_empty() || self.loan_matches(x, &query, &money))
+            .collect();
+        visible.sort_by(|a, b| a.status.cmp(&b.status).then_with(|| a.next_due.cmp(&b.next_due)));
+        lists::sort_rows(&mut visible, self.loan_sort, |x, col| match col {
+            LoanColumn::Client => Key::text(self.snap.client_name(x.book.client_id)),
+            LoanColumn::Lent => Key::Number(x.book.facts.principal),
+            LoanColumn::Owes => Key::Number(x.owes),
+            LoanColumn::NextPayment => Key::Date(x.next_due),
+            LoanColumn::Repaid => Key::Number(x.repaid_ppm),
+            LoanColumn::Status => Key::Number(x.status as i64),
+        });
+        let sort = self.loan_sort;
+        let header_cell = |id: &'static str, label: &'static str, col: LoanColumn, cx: &mut Context<Self>| {
+            SortHeader::new(id, label, col, sort).on_click(cx.listener(move |this, _, _, cx| {
+                this.loan_sort = this.loan_sort.toggle(col);
+                cx.notify();
+            }))
+        };
+        let head = table_header(&p)
+            .child(div().flex_1().min_w(px(180.)).child(header_cell(
+                "lsort-client",
+                t("Client and loan", "Cliente y préstamo"),
+                LoanColumn::Client,
+                cx,
+            )))
+            .when(full, |d| {
+                d.child(
+                    ncolumn(130.)
+                        .flex()
+                        .justify_end()
+                        .child(header_cell("lsort-lent", t("Lent", "Prestado"), LoanColumn::Lent, cx).right()),
+                )
+            })
+            .child(
+                ncolumn(130.)
+                    .flex()
+                    .justify_end()
+                    .child(header_cell("lsort-owes", t("Owes today", "Debe hoy"), LoanColumn::Owes, cx).right()),
+            )
+            .when(show_next, |d| {
+                d.child(
+                    ncolumn(130.)
+                        .flex()
+                        .justify_end()
+                        .child(header_cell("lsort-next", t("Next payment", "Próximo pago"), LoanColumn::NextPayment, cx).right()),
+                )
+            })
+            .when(full, |d| {
+                d.child(div().w(px(120.)).flex_none().child(header_cell(
+                    "lsort-repaid",
+                    t("Capital repaid", "Capital pagado"),
+                    LoanColumn::Repaid,
+                    cx,
+                )))
+            })
+            .child(
+                ncolumn(130.)
+                    .flex()
+                    .justify_end()
+                    .child(header_cell("lsort-status", t("Status", "Estado"), LoanColumn::Status, cx).right()),
+            );
 
         let subtitle = {
             let active = count(s.active_loans, "active loan", "active loans", "préstamo activo", "préstamos activos");
@@ -99,7 +229,8 @@ impl VzApp {
             ],
         );
 
-        let rows = visible.iter().map(|(l, st)| {
+        let rows = visible.iter().map(|x| {
+            let (l, st) = (x.book, &x.status);
             let lid = l.id;
             let pos = l.position(today);
             let q = l.delinquency(today);
@@ -176,6 +307,21 @@ impl VzApp {
                 ),
             )
             .into_any_element()
+        } else if visible.is_empty() && !query.trim().is_empty() {
+            empty_state(
+                &p,
+                IconName::SearchX,
+                t("No matching loans", "Ningún préstamo coincide"),
+                &{
+                    let q = query.trim();
+                    tr!(
+                        "Nothing in this list matches “{q}”. Try All, or another word.",
+                        "Nada en esta lista coincide con “{q}”. Prueba Todos u otra palabra."
+                    )
+                },
+                None,
+            )
+            .into_any_element()
         } else if visible.is_empty() {
             empty_state(
                 &p,
@@ -186,23 +332,29 @@ impl VzApp {
             )
             .into_any_element()
         } else {
+            let n = visible.len();
             v_flex()
-                .child(
-                    table_header(&p)
-                        .child(div().flex_1().min_w(px(180.)).child(th(&p, t("Client and loan", "Cliente y préstamo"))))
-                        .when(full, |d| d.child(ncolumn(130.).child(th(&p, t("Lent", "Prestado")))))
-                        .child(ncolumn(130.).child(th(&p, t("Owes today", "Debe hoy"))))
-                        .when(show_next, |d| d.child(ncolumn(130.).child(th(&p, t("Next payment", "Próximo pago")))))
-                        .when(full, |d| d.child(div().w(px(120.)).flex_none().child(th(&p, t("Capital repaid", "Capital pagado")))))
-                        .child(ncolumn(130.).child(th(&p, t("Status", "Estado")))),
-                )
+                .child(head)
                 .children(rows)
+                .child(
+                    div()
+                        .px(px(space::XL))
+                        .py(px(space::M))
+                        .typeset(text::CAPTION)
+                        .text_color(p.faint)
+                        .child(sel(tr!("{n} shown", "{n} en la lista"))),
+                )
                 .into_any_element()
         };
 
+        let search = div()
+            .flex_1()
+            .min_w(px(200.))
+            .max_w(px(340.))
+            .child(Input::new(&self.loan_search).prefix(icon(IconName::Search, p.faint, 14.)).cleanable(true));
         v_flex()
             .child(header)
-            .child(div().pb(px(space::L)).child(filter_el))
+            .child(h_flex().flex_wrap().gap(px(space::M)).pb(px(space::L)).child(filter_el).child(search))
             .child(Card::new().overflow_hidden().child(body))
             .into_any_element()
     }

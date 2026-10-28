@@ -131,22 +131,17 @@ impl ClientForm {
         if !started {
             return;
         }
-        let rx = cx.prompt_for_paths(PathPromptOptions {
-            files: true,
-            directories: false,
-            multiple: false,
-            prompt: Some(t("Use this photo", "Usar esta foto").into()),
-        });
+        let request = crate::file_picker::Request::picture(
+            t("Choose the ID photo", "Elige la foto de identificación"),
+            t("Use this photo", "Usar esta foto"),
+        );
+        let rx = crate::file_picker::pick(crate::file_picker::owner_of(window), request);
         cx.spawn_in(window, async move |this, cx| {
-            let result = rx.await;
+            let result = crate::file_picker::wait(rx, cx.background_executor().clone()).await;
             let _ = this.update_in(cx, |form, window, cx| {
-                let picked = form.app.update(cx, |app, _| app.end_file_dialog("client photo", result));
+                let picked = form.app.update(cx, |app, _| app.end_pick("client photo", result));
                 match picked {
-                    Ok(Ok(Some(paths))) => {
-                        if let Some(path) = paths.into_iter().next() {
-                            form.use_photo_file(path, window, cx);
-                        }
-                    }
+                    Ok(Ok(Some(path))) => form.use_photo_file(path, window, cx),
                     Ok(Err(why)) => {
                         form.photo_error = Some(tr!(
                             "The Open window couldn't open ({why}). Drag the picture onto the photo box instead.",

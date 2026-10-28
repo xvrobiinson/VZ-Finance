@@ -152,6 +152,7 @@ fn main() -> Result<()> {
     // corrected note so the change history has something in it.
     s.add_transfer(Account::Interest, 1_000_000, ago(20), "Reinvertir ganancias", t)?;
     s.add_expense(Account::Interest, 350_000, ago(6), "Reparación del carro", t)?;
+    s.add_income(Account::Interest, 800_000, ago(12), "Alquiler del local", t)?;
     let snap = s.snapshot()?;
     let fl = snap.loan(f).unwrap();
     s.update_loan(f, fl.client_id, &fl.terms.clone(), None, "Para inventario de la tienda", "Faltaba el motivo", t)?;

@@ -74,8 +74,13 @@ impl VzApp {
             ),
             cell(
                 t("Income received", "Ganancia cobrada"),
-                money.format(s.realized_income()),
-                t("Interest and fees received", "Intereses y cargos cobrados").into(),
+                money.format(s.total_income()),
+                if s.other_income > 0 {
+                    let other = money.format(s.other_income);
+                    tr!("Interest and fees, plus {other} other income", "Intereses y cargos, más {other} de otros ingresos")
+                } else {
+                    t("Interest and fees received", "Intereses y cargos cobrados").into()
+                },
                 p.text,
             ),
         ];
@@ -87,7 +92,7 @@ impl VzApp {
                 t("Capital invested", "Capital invertido"),
                 money.format(invested),
                 {
-                    let (i, o) = (money.format(s.contributions), money.format(s.withdrawals));
+                    let (i, o) = (money.format(s.contributions + s.capital_income), money.format(s.withdrawals));
                     tr!("{i} in · {o} out", "{i} entró · {o} salió")
                 },
                 p.text,
@@ -213,6 +218,8 @@ impl VzApp {
         // lending; interest, net flow and ending cash always stay.
         let show_moves = w >= Width::Wide;
         let show_lending = w >= Width::Medium;
+        // Outside income gets a column only once there is some.
+        let has_income = flows.iter().any(|f| f.income > 0);
         let flow_rows = flows.iter().rev().map(|f| {
             let net = f.net();
             h_flex()
@@ -240,6 +247,7 @@ impl VzApp {
                         .text_color(if f.interest_received + f.fees_received > 0 { p.positive } else { p.muted })
                         .child(sel(dash(&money, f.interest_received + f.fees_received))),
                 )
+                .when(show_moves && has_income, |d| d.child(fcol().text_color(p.muted).child(sel(dash(&money, f.income)))))
                 .when(show_moves, |d| d.child(fcol().text_color(p.muted).child(sel(dash_neg(&money, f.expenses)))))
                 .child(fcol().child(sel(money.format_signed(net))))
                 .child(fcol().child(sel(money.format(f.ending_cash))))
@@ -271,6 +279,7 @@ impl VzApp {
                                     .child(fcol().child(th(&p, t("Capital back", "Capital cobrado"))))
                             })
                             .child(fcol().child(th(&p, t("Interest", "Interés"))))
+                            .when(show_moves && has_income, |d| d.child(fcol().child(th(&p, t("Income", "Ingresos")))))
                             .when(show_moves, |d| d.child(fcol().child(th(&p, t("Expenses", "Gastos")))))
                             .child(fcol().child(th(&p, t("Net cash flow", "Flujo neto"))))
                             .child(fcol().child(th(&p, t("Ending cash", "Efectivo final")))),
@@ -323,6 +332,10 @@ impl VzApp {
                             EntryKind::Expense => {
                                 let from = e.account.label().to_lowercase();
                                 (tr!("From {from}", "Del {from}"), money.format_signed(-e.amount), p.text)
+                            }
+                            EntryKind::Income => {
+                                let into = e.account.label().to_lowercase();
+                                (tr!("Into {into}", "Al {into}"), money.format_signed(e.amount), p.positive)
                             }
                             EntryKind::Adjustment => (
                                 e.account.label().to_string(),
@@ -477,7 +490,7 @@ impl VzApp {
             return vec![
                 Button::new("an-expense")
                     .icon(IconName::ReceiptText)
-                    .label(t("New expense", "Nuevo gasto"))
+                    .label(t("New record", "Nuevo registro"))
                     .on_click(expense)
                     .into_any_element(),
                 Button::new("an-withdraw").label(t("Withdraw capital", "Retirar capital")).on_click(withdraw).into_any_element(),
@@ -488,7 +501,7 @@ impl VzApp {
             .icon(IconName::Ellipsis)
             .tooltip(t("More actions", "Más acciones"))
             .align_end()
-            .item(DropdownItem::new(t("New expense", "Nuevo gasto"), expense).icon(IconName::ReceiptText))
+            .item(DropdownItem::new(t("New record", "Nuevo registro"), expense).icon(IconName::ReceiptText))
             .item(DropdownItem::new(t("Withdraw capital", "Retirar capital"), withdraw).icon(IconName::Landmark));
         vec![more.into_any_element(), add]
     }

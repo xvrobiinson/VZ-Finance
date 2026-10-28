@@ -5,6 +5,7 @@ pub mod export;
 mod lending;
 pub mod picture;
 pub mod receipt;
+pub mod receipt_text;
 mod records;
 pub mod settings;
 
@@ -353,6 +354,18 @@ impl Store {
         if s.receipt_name.chars().any(char::is_control) {
             return invalid(t("The name can't contain line breaks or tabs", "El nombre no puede tener saltos de línea ni tabulaciones"));
         }
+        if s.company_address.trim().chars().count() > 200 {
+            return invalid(t("The address is too long (200 characters at most)", "La dirección es muy larga (máximo 200 caracteres)"));
+        }
+        if s.company_phone.trim().chars().count() > 40 {
+            return invalid(t("The phone number is too long (40 characters at most)", "El teléfono es muy largo (máximo 40 caracteres)"));
+        }
+        if s.company_address.chars().chain(s.company_phone.chars()).any(char::is_control) {
+            return invalid(t("Write the address and phone on one line", "Escribe la dirección y el teléfono en una sola línea"));
+        }
+        if let Some(problem) = s.receipt_text.problem() {
+            return invalid(problem);
+        }
         if s.late_fee_rate.0 < 0 || s.late_fee_rate > crate::domain::loans::MAX_PERIOD_RATE {
             return invalid(t("The late fee must be between 0% and 100%", "El cargo por mora debe estar entre 0% y 100%"));
         }
@@ -628,3 +641,5 @@ mod tests_clients;
 mod tests_installments;
 #[cfg(test)]
 mod tests_receipts;
+#[cfg(test)]
+mod tests_v6;

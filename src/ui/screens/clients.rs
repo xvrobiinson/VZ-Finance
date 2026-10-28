@@ -15,13 +15,39 @@ use crate::i18n::{count, t};
 use crate::tr;
 use crate::ui::components::{Tone, avatar, empty_state, icon, kv, page_header, pill, sel, table_header, table_row, th};
 use crate::ui::forms::reason::ReasonKind;
-use crate::ui::kit::{Button, Card, Dropdown, DropdownItem, ListRow, Stat, StatStrip};
+use crate::ui::kit::{Button, Card, Dropdown, DropdownItem, ListRow, SortHeader, Stat, StatStrip};
+use crate::ui::lists::{self, Key};
 use crate::ui::theme::{Palette, RADIUS_CONTROL, Typeset as _, Width, palette, space, tabular, text};
 
 /// Diameter of the avatar beside the profile title.
 const PROFILE_AVATAR: f32 = 40.;
 /// Height of a shown client photo; it keeps its shape inside.
 const PHOTO_HEIGHT: f32 = 220.;
+
+/// Columns the client list can be sorted by.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ClientColumn {
+    Name,
+    ActiveLoans,
+    Borrowed,
+    Owes,
+    InterestPaid,
+    Status,
+}
+
+/// Status order for sorting: what needs attention first, archived last.
+fn status_rank(c: &Client, st: &ClientStats) -> i64 {
+    if c.is_archived() {
+        return 6;
+    }
+    match st.worst {
+        Some(DisplayStatus::Overdue) => 0,
+        Some(DisplayStatus::Defaulted) => 1,
+        Some(DisplayStatus::DueSoon) => 2,
+        _ if st.active_loans > 0 => 3,
+        _ => 4,
+    }
+}
 
 /// Per-client figures derived from the ledger.
 #[derive(Default, Clone)]
@@ -83,22 +109,32 @@ impl VzApp {
         let query = self.client_search.read(cx).value().to_lowercase();
         let archived_count = self.snap.clients.iter().filter(|c| c.is_archived()).count();
         let with_loans = self.snap.clients.iter().filter(|c| self.client_stats(c.id).active_loans > 0).count();
-        let visible: Vec<(&Client, ClientStats)> = self
+        let mut visible: Vec<(&Client, ClientStats)> = self
             .snap
             .clients
             .iter()
             .filter(|c| self.show_archived || !c.is_archived())
             .filter(|c| {
-                query.trim().is_empty() || {
-                    let q = query.trim();
-                    c.full_name.to_lowercase().contains(q)
-                        || c.phone.as_deref().is_some_and(|x| x.to_lowercase().contains(q))
-                        || c.email.as_deref().is_some_and(|x| x.to_lowercase().contains(q))
-                        || c.id_number.as_deref().is_some_and(|x| x.to_lowercase().contains(q))
-                }
+                let opt = |v: &Option<String>| v.clone().unwrap_or_default();
+                lists::matches(&query, &[&c.full_name, &opt(&c.phone), &opt(&c.email), &opt(&c.id_number), &opt(&c.address), &c.notes])
             })
             .map(|c| (c, self.client_stats(c.id)))
             .collect();
+        lists::sort_rows(&mut visible, self.client_sort, |(c, st), col| match col {
+            ClientColumn::Name => Key::text(&c.full_name),
+            ClientColumn::ActiveLoans => Key::Number(st.active_loans as i64),
+            ClientColumn::Borrowed => Key::Number(st.borrowed),
+            ClientColumn::Owes => Key::Number(st.outstanding),
+            ClientColumn::InterestPaid => Key::Number(st.interest_paid),
+            ClientColumn::Status => Key::Number(status_rank(c, st)),
+        });
+        let sort = self.client_sort;
+        let header_cell = |id: &'static str, label: &'static str, col: ClientColumn, cx: &mut Context<Self>| {
+            SortHeader::new(id, label, col, sort).on_click(cx.listener(move |this, _, _, cx| {
+                this.client_sort = this.client_sort.toggle(col);
+                cx.notify();
+            }))
+        };
         let total = self.snap.clients.len() - archived_count;
         let subtitle = {
             let n = count(total, "client", "clients", "cliente", "clientes");
@@ -147,83 +183,108 @@ impl VzApp {
                 )
             });
 
-        let body = if self.snap.clients.is_empty() {
-            empty_state(
-                &p,
-                IconName::Users,
-                t("No clients yet", "Aún no hay clientes"),
-                t(
-                    "Add the people you lend to. Each client keeps their loans, payments and notes together.",
-                    "Agrega a las personas a quienes prestas. Cada cliente guarda juntos sus préstamos, pagos y notas.",
-                ),
-                Some(
-                    Button::new("empty-new-client")
-                        .primary()
-                        .label(t("Add your first client", "Agrega tu primer cliente"))
-                        .on_click(cx.listener(|this, _, w, cx| this.open_client_form(None, w, cx)))
-                        .into_any_element(),
-                ),
-            )
-            .into_any_element()
-        } else if visible.is_empty() {
-            empty_state(
-                &p,
-                IconName::SearchX,
-                t("No matching clients", "Ningún cliente coincide"),
-                &{
-                    let q = query.trim();
-                    tr!("Nothing matches “{q}”.", "Nada coincide con “{q}”.")
-                },
-                None,
-            )
-            .into_any_element()
-        } else {
-            let rows = visible.iter().map(|(c, st)| {
-                let id = c.id;
-                let contact = [c.phone.clone(), c.email.clone()].into_iter().flatten().collect::<Vec<_>>().join(" · ");
-                table_row(&p, ("client", id as u64), true)
-                    .child(
-                        h_flex().flex_1().min_w_0().gap(px(space::M)).child(avatar(&p, &c.full_name, c.id, 32.)).child(
-                            v_flex()
-                                .min_w_0()
-                                .child(
-                                    div()
-                                        .typeset(text::BODY)
-                                        .text_color(if c.is_archived() { p.muted } else { p.text })
-                                        .truncate()
-                                        .child(sel(c.full_name.clone())),
-                                )
-                                .child(div().typeset(text::CAPTION).text_color(p.muted).truncate().child(sel(if contact.is_empty() {
-                                    t("No contact details", "Sin datos de contacto").to_string()
-                                } else {
-                                    contact
-                                }))),
-                        ),
-                    )
-                    .when(show_count, |d| d.child(ncolumn(90.).child(sel(st.active_loans.to_string()))))
-                    .when(show_history, |d| d.child(ncolumn(140.).text_color(p.muted).child(sel(money.format(st.borrowed)))))
-                    .child(ncolumn(140.).child(sel(money.format(st.outstanding))))
-                    .when(show_history, |d| d.child(ncolumn(130.).text_color(p.muted).child(sel(money.format(st.interest_paid)))))
-                    .child(column(130.).flex().justify_end().child(self.client_status_pill(&p, c, st)))
-                    .on_click(cx.listener(move |this, _, w, cx| this.open_row(Route::Client(id), w, cx)))
-            });
-            v_flex()
-                .child(
-                    table_header(&p)
-                        .child(div().flex_1().min_w_0().child(th(&p, t("Client", "Cliente"))))
-                        .when(show_count, |d| d.child(ncolumn(90.).child(th(&p, t("Active loans", "Préstamos")))))
-                        .when(show_history, |d| d.child(ncolumn(140.).child(th(&p, t("Total borrowed", "Total prestado")))))
-                        .child(ncolumn(140.).child(th(&p, t("Owes", "Debe"))))
-                        .when(show_history, |d| d.child(ncolumn(130.).child(th(&p, t("Interest paid", "Interés pagado")))))
-                        .child(ncolumn(130.).child(th(&p, t("Status", "Estado")))),
+        let body =
+            if self.snap.clients.is_empty() {
+                empty_state(
+                    &p,
+                    IconName::Users,
+                    t("No clients yet", "Aún no hay clientes"),
+                    t(
+                        "Add the people you lend to. Each client keeps their loans, payments and notes together.",
+                        "Agrega a las personas a quienes prestas. Cada cliente guarda juntos sus préstamos, pagos y notas.",
+                    ),
+                    Some(
+                        Button::new("empty-new-client")
+                            .primary()
+                            .label(t("Add your first client", "Agrega tu primer cliente"))
+                            .on_click(cx.listener(|this, _, w, cx| this.open_client_form(None, w, cx)))
+                            .into_any_element(),
+                    ),
                 )
-                .children(rows)
-                .child(div().px(px(space::XL)).py(px(space::M)).typeset(text::CAPTION).text_color(p.faint).child(sel({
-                    let n = visible.len();
-                    tr!("{n} shown", "{n} en la lista")
-                })))
                 .into_any_element()
-        };
+            } else if visible.is_empty() {
+                empty_state(
+                    &p,
+                    IconName::SearchX,
+                    t("No matching clients", "Ningún cliente coincide"),
+                    &{
+                        let q = query.trim();
+                        tr!("Nothing matches “{q}”.", "Nada coincide con “{q}”.")
+                    },
+                    None,
+                )
+                .into_any_element()
+            } else {
+                let head =
+                    table_header(&p)
+                        .child(div().flex_1().min_w_0().child(header_cell("sort-name", t("Client", "Cliente"), ClientColumn::Name, cx)))
+                        .when(show_count, |d| {
+                            d.child(
+                                ncolumn(90.).flex().justify_end().child(
+                                    header_cell("sort-active", t("Active loans", "Préstamos"), ClientColumn::ActiveLoans, cx).right(),
+                                ),
+                            )
+                        })
+                        .when(show_history, |d| {
+                            d.child(ncolumn(140.).flex().justify_end().child(
+                                header_cell("sort-borrowed", t("Total borrowed", "Total prestado"), ClientColumn::Borrowed, cx).right(),
+                            ))
+                        })
+                        .child(
+                            ncolumn(140.)
+                                .flex()
+                                .justify_end()
+                                .child(header_cell("sort-owes", t("Owes", "Debe"), ClientColumn::Owes, cx).right()),
+                        )
+                        .when(show_history, |d| {
+                            d.child(ncolumn(130.).flex().justify_end().child(
+                                header_cell("sort-interest", t("Interest paid", "Interés pagado"), ClientColumn::InterestPaid, cx).right(),
+                            ))
+                        })
+                        .child(
+                            ncolumn(130.)
+                                .flex()
+                                .justify_end()
+                                .child(header_cell("sort-status", t("Status", "Estado"), ClientColumn::Status, cx).right()),
+                        );
+                let rows = visible.iter().map(|(c, st)| {
+                    let id = c.id;
+                    let contact = [c.phone.clone(), c.email.clone()].into_iter().flatten().collect::<Vec<_>>().join(" · ");
+                    table_row(&p, ("client", id as u64), true)
+                        .child(
+                            h_flex().flex_1().min_w_0().gap(px(space::M)).child(avatar(&p, &c.full_name, c.id, 32.)).child(
+                                v_flex()
+                                    .min_w_0()
+                                    .child(
+                                        div()
+                                            .typeset(text::BODY)
+                                            .text_color(if c.is_archived() { p.muted } else { p.text })
+                                            .truncate()
+                                            .child(sel(c.full_name.clone())),
+                                    )
+                                    .child(div().typeset(text::CAPTION).text_color(p.muted).truncate().child(sel(if contact.is_empty() {
+                                        t("No contact details", "Sin datos de contacto").to_string()
+                                    } else {
+                                        contact
+                                    }))),
+                            ),
+                        )
+                        .when(show_count, |d| d.child(ncolumn(90.).child(sel(st.active_loans.to_string()))))
+                        .when(show_history, |d| d.child(ncolumn(140.).text_color(p.muted).child(sel(money.format(st.borrowed)))))
+                        .child(ncolumn(140.).child(sel(money.format(st.outstanding))))
+                        .when(show_history, |d| d.child(ncolumn(130.).text_color(p.muted).child(sel(money.format(st.interest_paid)))))
+                        .child(column(130.).flex().justify_end().child(self.client_status_pill(&p, c, st)))
+                        .on_click(cx.listener(move |this, _, w, cx| this.open_row(Route::Client(id), w, cx)))
+                });
+                v_flex()
+                    .child(head)
+                    .children(rows)
+                    .child(div().px(px(space::XL)).py(px(space::M)).typeset(text::CAPTION).text_color(p.faint).child(sel({
+                        let n = visible.len();
+                        tr!("{n} shown", "{n} en la lista")
+                    })))
+                    .into_any_element()
+            };
 
         v_flex().child(header).child(toolbar.pb(px(space::L))).child(Card::new().overflow_hidden().child(body)).into_any_element()
     }

@@ -16,7 +16,8 @@ use anyhow::{Context as _, Result, anyhow};
 use chrono::NaiveDate;
 
 use super::Snapshot;
-use super::settings::ReceiptClientFields;
+use super::receipt_text::{self, RuleSet, Tags};
+use super::settings::{CompanyLines, ReceiptClientFields};
 use crate::database::repositories::clients::Client;
 use crate::database::repositories::payments::Payment;
 use crate::domain::installments::{self, Applied, Installment, InstallmentStatus, Instruction, PlanPayment, PlanState};
@@ -142,6 +143,7 @@ pub struct HistoryLine {
 pub struct ReceiptData {
     pub payment_id: i64,
     pub business: String,
+    pub company: CompanyLines,
     pub client: ClientLines,
     pub loan_id: i64,
     pub method: Method,
@@ -232,6 +234,7 @@ pub fn data(snap: &Snapshot, payment_id: i64) -> Option<ReceiptData> {
     let mut d = ReceiptData {
         payment_id,
         business: snap.settings.receipt_title(),
+        company: snap.settings.receipt_company_lines(),
         client: ClientLines::new(client, snap.settings.receipt_client),
         loan_id: loan.id,
         method: loan.terms.method,
@@ -358,6 +361,7 @@ pub fn data(snap: &Snapshot, payment_id: i64) -> Option<ReceiptData> {
 pub struct LoanReceipt {
     pub loan_id: i64,
     pub business: String,
+    pub company: CompanyLines,
     pub client: ClientLines,
     pub start_date: NaiveDate,
     pub principal: Cents,
@@ -391,6 +395,7 @@ pub fn loan_data(snap: &Snapshot, loan_id: i64) -> Option<LoanReceipt> {
     Some(LoanReceipt {
         loan_id,
         business: snap.settings.receipt_title(),
+        company: snap.settings.receipt_company_lines(),
         client: ClientLines::new(client, snap.settings.receipt_client),
         start_date: terms.start_date,
         principal: terms.principal,
@@ -437,6 +442,7 @@ const BASE_CSS: &str = r#"
   h1 { font-size:15pt; line-height:1.2; margin:0; }
   h2 { font-size:10pt; margin:0 0 4pt; }
   .kind { color:var(--muted); margin:1pt 0 0; }
+  .contact { margin:1pt 0 0; font-size:8.5pt; }
   .doc { text-align:right; white-space:nowrap; }
   .doc b { display:block; font-size:11pt; }
   .muted { color:var(--muted); }
@@ -485,6 +491,11 @@ const BASE_CSS: &str = r#"
 /// A complete receipt page around `body`, which prints itself when opened.
 /// Every printed page carries the receipt's name and its page number.
 fn page(title: &str, css: &str, body: &str) -> String {
+    page_with(title, "", css, body)
+}
+
+/// `page` with an extra class on the sheet, for a receipt's own layout.
+fn page_with(title: &str, class: &str, css: &str, body: &str) -> String {
     let lang = i18n::get().key();
     let print = esc(t("Print", "Imprimir"));
     let (page_word, of) = (t("Page", "Página"), t("of", "de"));
@@ -505,7 +516,7 @@ fn page(title: &str, css: &str, body: &str) -> String {
 {BASE_CSS}{css}</style>
 </head>
 <body>
-<div class="sheet">
+<div class="sheet {class}">
 {body}
 </div>
 <div class="actions"><button onclick="window.print()">{print}</button></div>
@@ -529,15 +540,18 @@ fn status(class: &str, text: &str, check: bool) -> String {
     format!("<span class=\"st {class}\">{mark}{}</span>", esc(text))
 }
 
-/// The header: logo, business name, what the document is and its number.
-fn header(snap: &Snapshot, business: &str, kind: &str, number: &str, date_label: &str, date: &str) -> String {
+/// The header: logo, the company details ticked in Settings, what the
+/// document is and its number. A detail that is off or empty leaves no gap.
+fn header(snap: &Snapshot, company: &CompanyLines, kind: &str, number: &str, date_label: &str, date: &str) -> String {
+    let name = company.name.as_deref().map(|n| format!("<h1>{}</h1>", esc(n))).unwrap_or_default();
+    let contact: Vec<String> = [&company.address, &company.phone].into_iter().flatten().map(|v| esc(v)).collect();
+    let contact = if contact.is_empty() { String::new() } else { format!("<p class=\"contact\">{}</p>", contact.join(" · ")) };
     format!(
         r#"<div class="top">
-  <div class="brand">{logo}<div><h1>{business}</h1><p class="kind">{kind} · {no} {number}</p></div></div>
+  <div class="brand">{logo}<div>{name}{contact}<p class="kind">{kind} · {no} {number}</p></div></div>
   <div class="doc"><span class="muted">{date_label}</span><b>{date}</b></div>
 </div>"#,
         logo = logo_html(snap),
-        business = esc(business),
         kind = esc(kind),
         no = esc(t("No.", "No.")),
         date_label = esc(date_label),
@@ -751,7 +765,11 @@ pub fn render(d: &ReceiptData, snap: &Snapshot) -> String {
     };
     let schedule = if installment_loan { schedule_table(d, &m, ds) } else { String::new() };
     let schedule_rows = if d.schedule.is_empty() { 0 } else { d.schedule.len() + 2 };
-    let rows = schedule_rows + d.history.iter().map(|h| h.installments.len().max(1)).sum::<usize>();
+    // A contact line and a closing line longer than the built-in one take
+    // room on the page too.
+    let footer = snap.settings.receipt_text.payment_footer();
+    let extra = contact_rows(&d.company) + text_rows(&footer).saturating_sub(1);
+    let rows = schedule_rows + d.history.iter().map(|h| h.installments.len().max(1)).sum::<usize>() + extra;
     let title = tr!("Receipt {number}", "Recibo {number}");
     let css = r#"
   .void { border:2pt solid var(--neg); color:var(--neg); border-radius:6pt; text-align:center; font-weight:700; font-size:14pt; padding:4pt; margin-bottom:8pt; }
@@ -773,7 +791,7 @@ pub fn render(d: &ReceiptData, snap: &Snapshot) -> String {
 <div class="end"><span>{thanks}</span><span>{loan_l} #{loan_id} · {receipt_l} {number}</span></div>"#,
         header = header(
             snap,
-            &d.business,
+            &d.company,
             t("Payment receipt", "Recibo de pago"),
             &number,
             t("Date paid", "Fecha de pago"),
@@ -794,7 +812,7 @@ pub fn render(d: &ReceiptData, snap: &Snapshot) -> String {
             ),
         ),
         history = history_table(d, &m, ds),
-        thanks = esc(t("Thank you for your payment.", "Gracias por su pago.")),
+        thanks = esc(&company_tags(d.business.clone(), &d.company).fill(&snap.settings.receipt_text.payment_footer())),
         loan_l = esc(t("Loan", "Préstamo")),
         loan_id = d.loan_id,
         receipt_l = esc(t("Receipt", "Recibo")),
@@ -817,7 +835,7 @@ pub fn render_loan(d: &LoanReceipt, snap: &Snapshot) -> String {
         row(t("Interest rate", "Tasa de interés"), esc(&d.rate_line), ""),
         row(t("Payments", "Pagos"), esc(d.frequency.label()), ""),
     ];
-    let (schedule_html, rules): (String, Vec<String>) = if installment_loan {
+    let schedule_html: String = if installment_loan {
         let total_interest = d.total_interest();
         terms.push(row(t("Installments", "Cuotas"), d.schedule.len().to_string(), ""));
         terms.push(row(t("Total interest", "Interés total"), m(total_interest), ""));
@@ -851,90 +869,120 @@ pub fn render_loan(d: &LoanReceipt, snap: &Snapshot) -> String {
             esc(t("Payment", "Cuota")),
             esc(t("Capital left", "Restante")),
         );
-        let fee = d.late_fee_rate.percent_label();
-        let mut r = vec![d.method.explanation().to_string()];
-        if let Some(c) = &d.conversion {
-            r.push(tr!("The rate is converted on a 30-day month: {c}.", "La tasa se convierte sobre un mes de 30 días: {c}."));
-        }
-        if d.late_fee_rate.0 > 0 {
-            r.push(tr!(
-                "An installment not fully paid by its due date is charged a late fee of {fee} of what is still unpaid, once, the day after.",
-                "Una cuota que no se pague completa a su vencimiento tiene un cargo por mora de {fee} de lo que falte, una sola vez, al día siguiente."
-            ));
-        }
-        r.push(
-            t(
-                "Payments cover late fees first, then interest, then capital. The loan can be paid off early with the capital owed plus the interest due.",
-                "Los pagos cubren primero los cargos por mora, luego el interés y después el capital. El préstamo se puede saldar antes con el capital adeudado más el interés pendiente.",
-            )
-            .to_string(),
-        );
-        if d.schedule_edited {
-            r.push(t("This schedule was set by agreement.", "Este calendario se fijó de común acuerdo.").to_string());
-        }
-        (schedule_html, r)
+        schedule_html
     } else {
         // An open loan has no schedule: no due dates are printed.
         terms.push(row(t("Interest per payment", "Interés por pago"), m(d.interest_per_period), ""));
-        let half = d.principal / 2;
-        let (i, p, h, pay, next) =
-            (m(d.interest_per_period), m(d.principal), m(half), m(d.interest_per_period + half), m(d.interest_after_half));
-        let mut r = vec![d.method.explanation().to_string()];
-        if let Some(c) = &d.conversion {
-            r.push(tr!("The rate is converted on a 30-day month: {c}.", "La tasa se convierte sobre un mes de 30 días: {c}."));
-        }
-        r.extend([
-            tr!("Paying {i} each time covers the interest; the capital stays at {p}.", "Si paga {i} cada vez, cubre el interés y el capital sigue en {p}."),
-            tr!(
-                "Anything paid above the interest lowers the capital. For example, paying {pay} is {i} of interest and {h} of capital, and the next interest drops to {next}.",
-                "Todo lo que pague por encima del interés baja el capital. Por ejemplo, si paga {pay}, son {i} de interés y {h} de capital, y el próximo interés baja a {next}."
-            ),
-            t(
-                "The loan can be paid off at any time with the capital owed plus the interest due. It closes when the capital reaches zero.",
-                "El préstamo se puede saldar en cualquier momento con el capital adeudado más el interés pendiente. Se cierra cuando el capital llega a cero.",
-            )
-            .to_string(),
-        ]);
-        (String::new(), r)
+        String::new()
     };
-    let rules = rules.iter().map(|r| format!("<li>{}</li>", esc(r))).collect::<String>();
+
+    // How payments work: the lines for this loan type from Settings (the
+    // built-in wording unless changed), with this loan's figures filled in.
+    let text = &snap.settings.receipt_text;
+    let plain = |c: Cents| money.format(c);
+    let half = d.principal / 2;
+    let tags = Tags {
+        amount: plain(d.principal),
+        interest: plain(d.interest_per_period),
+        late_fee: d.late_fee_rate.percent_label(),
+        conversion: d.conversion.clone().unwrap_or_default(),
+        example_payment: plain(d.interest_per_period + half),
+        example_capital: plain(half),
+        next_interest: plain(d.interest_after_half),
+        ..company_tags(d.business.clone(), &d.company)
+    };
+    let late_fee = installment_loan && d.late_fee_rate.0 > 0;
+    let edited = installment_loan && d.schedule_edited;
+    let rules = receipt_text::lines_for(&text.rules(RuleSet::of(d.method)), &tags, d.conversion.is_some(), late_fee, edited);
+    let heading = tags.fill(&text.heading());
+    let rules_html = if rules.is_empty() {
+        String::new()
+    } else {
+        let items: String = rules.iter().map(|r| format!("<li>{}</li>", esc(r))).collect();
+        let h = if heading.trim().is_empty() { String::new() } else { format!("<h2>{}</h2>", esc(&heading)) };
+        format!("<div class=\"rules\">{h}<ul>{items}</ul></div>")
+    };
     let notes = if d.notes.trim().is_empty() {
         String::new()
     } else {
         format!("<p class=\"muted\">{} {}</p>", esc(t("Notes:", "Notas:")), esc(&d.notes))
     };
     let title = tr!("Loan receipt {number}", "Recibo de préstamo {number}");
+    // The signatures sit at the foot of the page, using the space left
+    // under a short receipt; a long one pushes them onto the last page,
+    // never splitting them. 9.9in is the Letter page inside its half-inch
+    // margins, less a little so a full page never spills a blank one.
     let css = r#"
+  .sheet.loan { display:flex; flex-direction:column; }
+  .loan .body { flex:1 0 auto; }
   .received { margin:10pt 0 0; padding:6pt 9pt; background:#f3f5ff; border-radius:4pt; font-size:10pt; }
   .rules { margin-top:10pt; font-size:7.5pt; line-height:1.35; color:var(--muted); }
   .rules h2 { font-size:8pt; color:var(--ink); margin-bottom:2pt; }
   .rules ul { margin:0; padding-left:12pt; }
   .rules li { margin:1pt 0; }
-  .sign { display:flex; gap:28pt; margin-top:36pt; break-inside:avoid; }
-  .sign div { flex:1; border-top:1pt solid var(--ink); padding-top:4pt; text-align:center; font-size:8.5pt; color:var(--muted); }
+  .foot { break-inside:avoid; padding-top:36pt; }
+  .sign { display:flex; gap:28pt; }
+  .sign div { flex:1; border-top:1pt solid var(--ink); padding-top:4pt; text-align:center; font-size:8.5pt; color:var(--muted); overflow-wrap:anywhere; }
+  .closing { margin:10pt 0 0; text-align:center; font-size:8.5pt; color:var(--muted); }
+  @media print { .sheet.loan { min-height:9.9in; } }
 "#;
     // The client's name appears only where Settings allows it.
     let (amount, date) = (m(d.principal), esc(&ds.format(d.start_date)));
+    let caption = tags.fill(&text.client_sign());
     let (received, client_sign) = match &d.client.name {
         Some(name) => {
-            let sign = esc(&tr!("Client: {name}", "Cliente: {name}"));
+            let sign = if caption.trim().is_empty() { name.clone() } else { format!("{caption}: {name}") };
             let name = esc(name);
-            (tr!("{name} received {amount} on {date}.", "{name} recibió {amount} el {date}."), sign)
+            (tr!("{name} received {amount} on {date}.", "{name} recibió {amount} el {date}."), esc(&sign))
         }
-        None => (tr!("The client received {amount} on {date}.", "El cliente recibió {amount} el {date}."), esc(t("Client", "Cliente"))),
+        None => (tr!("The client received {amount} on {date}.", "El cliente recibió {amount} el {date}."), esc(&caption)),
+    };
+    let closing = tags.fill(&text.loan_footer());
+    let closing = if closing.trim().is_empty() { String::new() } else { format!("<p class=\"closing\">{}</p>", esc(&closing)) };
+
+    // Whether the receipt runs past one page (measured in Edge, see
+    // `LOAN_TEXT_PT`): the schedule, the wording and the optional lines.
+    let mut used = rules_pt(&rules) + paragraph_pt(&d.notes) + paragraph_pt(&closing);
+    if contact_rows(&d.company) > 0 {
+        used += LINE_PT;
+    }
+    if installment_loan {
+        used += SCHEDULE_HEAD_PT + SCHEDULE_ROW_PT * d.schedule.len() as f32;
+    }
+    let overflow = if d.schedule.len() > LOAN_PAGE_ROWS {
+        overflow_note(
+            d.schedule.len(),
+            LOAN_PAGE_ROWS,
+            t(
+                "The schedule continues on the next page; the signatures are at the end.",
+                "El calendario continúa en la página siguiente; las firmas están al final.",
+            ),
+        )
+    } else if used > LOAN_TEXT_PT {
+        format!(
+            "<p class=\"note\">{}</p>",
+            esc(t(
+                "This receipt continues on the next page; the signatures are at the end.",
+                "Este recibo continúa en la página siguiente; las firmas están al final.",
+            ))
+        )
+    } else {
+        String::new()
     };
     let body = format!(
-        r#"{header}
+        r#"<div class="body">
+{header}
 <div class="cols">{client}<div class="block"><p class="label">{terms_l}</p><table class="kv">{terms}</table></div></div>
 <p class="received">{received}</p>
 {overflow}
 {schedule_html}
-<div class="rules"><h2>{rules_h}</h2><ul>{rules}</ul></div>
+{rules_html}
 {notes}
-<div class="sign"><div>{client_sign}</div><div>{lender_sign}</div></div>"#,
+</div>
+<div class="foot"><div class="sign"><div>{client_sign}</div><div>{lender_sign}</div></div>{closing}</div>"#,
         header = header(
             snap,
-            &d.business,
+            &d.company,
             t("Loan receipt", "Recibo de préstamo"),
             &number,
             t("Loan date", "Fecha del préstamo"),
@@ -946,21 +994,56 @@ pub fn render_loan(d: &LoanReceipt, snap: &Snapshot) -> String {
             tr!("Loan #{id}", "Préstamo #{id}")
         }),
         terms = terms.join(""),
-        overflow = overflow_note(
-            d.schedule.len(),
-            LOAN_PAGE_ROWS,
-            t(
-                "The schedule continues on the next page; the signatures are at the end.",
-                "El calendario continúa en la página siguiente; las firmas están al final.",
-            ),
-        ),
-        rules_h = esc(t("How payments work", "Cómo funcionan los pagos")),
-        lender_sign = esc(&{
-            let business = &d.business;
-            tr!("For {business}", "Por {business}")
-        }),
+        lender_sign = esc(&tags.fill(&text.lender_sign())),
     );
-    page(&title, css, &body)
+    page_with(&title, "loan", css, &body)
+}
+
+/// The values of the `{company}` tag: the company name when receipts print
+/// it, otherwise a plain word for the lender.
+fn company_tags(business: String, company: &CompanyLines) -> Tags {
+    Tags { company: if company.name.is_some() { business } else { t("the lender", "el prestamista").to_string() }, ..Default::default() }
+}
+
+/// Lines a piece of text takes on the printed page, roughly: about 130
+/// characters fit across a Letter page at receipt sizes.
+fn text_rows(s: &str) -> usize {
+    s.trim().chars().count().div_ceil(130)
+}
+
+/// Points of a loan receipt's Letter page left for the schedule, the "How
+/// payments work" list, notes and optional lines once the header, terms,
+/// "received" line and signatures are placed. Measured by printing loan
+/// receipts with 10 to 20 custom lines of 130 to 500 characters in Edge:
+/// without a schedule 445 pt fit and 486 pt spilled; a loan with 6 and with
+/// 8 installments fit 242 pt and spilled 324 pt of lines.
+const LOAN_TEXT_PT: f32 = 460.0;
+/// An installment loan's schedule title, column names and extra terms.
+const SCHEDULE_HEAD_PT: f32 = 76.0;
+const SCHEDULE_ROW_PT: f32 = 13.7;
+/// One printed line of 8.5–9.5 pt text.
+const LINE_PT: f32 = 12.0;
+
+/// Points the "How payments work" list takes: rows of about 140 characters
+/// at 7.5 pt, the space between items and the heading.
+fn rules_pt(lines: &[String]) -> f32 {
+    if lines.is_empty() {
+        return 0.0;
+    }
+    14.0 + lines.iter().map(|l| l.chars().count().div_ceil(140).max(1) as f32 * 10.1 + 2.0).sum::<f32>()
+}
+
+/// Points a paragraph takes (notes, a closing line), or none when empty.
+fn paragraph_pt(s: &str) -> f32 {
+    match text_rows(s) {
+        0 => 0.0,
+        rows => 10.0 + rows as f32 * LINE_PT,
+    }
+}
+
+/// The header's contact line, when there is one.
+fn contact_rows(c: &CompanyLines) -> usize {
+    usize::from(c.address.is_some() || c.phone.is_some())
 }
 
 /// Writes the receipt for `payment_id` into `dir` and returns its path.

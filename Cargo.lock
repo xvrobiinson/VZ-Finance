@@ -7219,7 +7219,7 @@ dependencies = [
 
 [[package]]
 name = "vz-finance"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -7232,9 +7232,11 @@ dependencies = [
  "gpui-pre",
  "image",
  "log",
+ "raw-window-handle",
  "rusqlite",
  "tempfile",
  "thiserror 2.0.21",
+ "windows 0.62.2",
 ]
 
 [[package]]

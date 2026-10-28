@@ -88,6 +88,13 @@ impl Route {
     }
 }
 
+/// Company details edited in Settings besides the name.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CompanyField {
+    Address,
+    Phone,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum LoanFilter {
     #[default]
@@ -115,6 +122,12 @@ pub struct VzApp {
     pub(crate) payment_search: Entity<InputState>,
     pub(crate) currency_select: Entity<SelectState<Vec<Choice>>>,
     pub(crate) receipt_name_input: Entity<InputState>,
+    pub(crate) company_address_input: Entity<InputState>,
+    pub(crate) company_phone_input: Entity<InputState>,
+    pub(crate) loan_search: Entity<InputState>,
+    /// Column and direction the Clients and Loans tables are sorted by.
+    pub(crate) client_sort: crate::ui::kit::Sort<crate::ui::screens::clients::ClientColumn>,
+    pub(crate) loan_sort: crate::ui::kit::Sort<crate::ui::screens::loans::LoanColumn>,
     pub(crate) loan_filter: LoanFilter,
     pub(crate) show_archived: bool,
     pub(crate) chart_hover: Option<usize>,
@@ -163,6 +176,9 @@ impl VzApp {
         let client_search = cx.new(|cx| InputState::new(window, cx));
         let payment_search = cx.new(|cx| InputState::new(window, cx));
         let receipt_name_input = cx.new(|cx| InputState::new(window, cx).default_value(snap.settings.receipt_name.clone()));
+        let company_address_input = cx.new(|cx| InputState::new(window, cx).default_value(snap.settings.company_address.clone()));
+        let company_phone_input = cx.new(|cx| InputState::new(window, cx).default_value(snap.settings.company_phone.clone()));
+        let loan_search = cx.new(|cx| InputState::new(window, cx));
         let selected = CURRENCIES.iter().position(|c| c.code == snap.settings.currency_code).map(IndexPath::new);
         let currency_select = cx.new(|cx| SelectState::new(currency_choices(), selected, window, cx));
         let subs = vec![
@@ -176,6 +192,21 @@ impl VzApp {
                 InputEvent::PressEnter { .. } | InputEvent::Blur => this.save_receipt_name(window, cx),
                 InputEvent::Change => cx.notify(),
                 _ => {}
+            }),
+            cx.subscribe_in(&company_address_input, window, |this, _, ev: &InputEvent, window, cx| match ev {
+                InputEvent::PressEnter { .. } | InputEvent::Blur => this.save_company(CompanyField::Address, window, cx),
+                InputEvent::Change => cx.notify(),
+                _ => {}
+            }),
+            cx.subscribe_in(&company_phone_input, window, |this, _, ev: &InputEvent, window, cx| match ev {
+                InputEvent::PressEnter { .. } | InputEvent::Blur => this.save_company(CompanyField::Phone, window, cx),
+                InputEvent::Change => cx.notify(),
+                _ => {}
+            }),
+            cx.subscribe(&loan_search, |_, _, e: &InputEvent, cx| {
+                if matches!(e, InputEvent::Change) {
+                    cx.notify();
+                }
             }),
             cx.subscribe(&client_search, |_, _, e: &InputEvent, cx| {
                 if matches!(e, InputEvent::Change) {
@@ -205,6 +236,11 @@ impl VzApp {
             payment_search,
             currency_select,
             receipt_name_input,
+            company_address_input,
+            company_phone_input,
+            loan_search,
+            client_sort: Default::default(),
+            loan_sort: Default::default(),
             loan_filter: LoanFilter::default(),
             show_archived: false,
             chart_hover: None,
@@ -215,6 +251,22 @@ impl VzApp {
             _subscriptions: subs,
         };
         app.apply_language(window, cx);
+        // Debug builds only: VZ_FINANCE_START opens a screen or dialog at
+        // launch, so screenshots can be taken without clicking anything.
+        if cfg!(debug_assertions)
+            && let Ok(start) = std::env::var("VZ_FINANCE_START")
+        {
+            cx.defer_in(window, move |app, window, cx| match start.as_str() {
+                "clients" => app.navigate(Route::Clients, window, cx),
+                "loans" => app.navigate(Route::Loans, window, cx),
+                "analytics" => app.navigate(Route::Analytics, window, cx),
+                "settings" => app.navigate(Route::Settings, window, cx),
+                "new-record" => app.open_entry_form(EntryKind::Expense, None, window, cx),
+                "new-income" => app.open_entry_form(EntryKind::Income, None, window, cx),
+                "wording" => app.open_receipt_text_form(window, cx),
+                _ => {}
+            });
+        }
         // Left open past midnight: what is overdue and the late fees change
         // with the date, so bring everything up to date when it does.
         cx.spawn(async move |this, cx| {
@@ -246,6 +298,9 @@ impl VzApp {
         });
         self.payment_search
             .update(cx, |s, cx| s.set_placeholder(t("Search payments by client or note", "Buscar pagos por cliente o nota"), window, cx));
+        self.loan_search.update(cx, |s, cx| {
+            s.set_placeholder(t("Search by loan #, client, amount or status", "Buscar por préstamo #, cliente, monto o estado"), window, cx)
+        });
         let selected = CURRENCIES.iter().position(|c| c.code == self.snap.settings.currency_code).map(IndexPath::new);
         self.currency_select.update(cx, |s, cx| {
             s.set_items(currency_choices(), window, cx);
@@ -431,8 +486,66 @@ impl VzApp {
         self.notify_success(tr!("Receipts will show “{shown}”", "Los recibos mostrarán “{shown}”"), window, cx);
     }
 
+    /// Saves the company address or phone from its field. Empty is allowed:
+    /// receipts then leave it out.
+    pub fn save_company(&mut self, which: CompanyField, window: &mut Window, cx: &mut Context<Self>) {
+        let (input, saved) = match which {
+            CompanyField::Address => (&self.company_address_input, self.settings().company_address.clone()),
+            CompanyField::Phone => (&self.company_phone_input, self.settings().company_phone.clone()),
+        };
+        let input = input.clone();
+        let value = input.read(cx).value().trim().to_string();
+        if value == saved {
+            return;
+        }
+        self.update_settings(
+            |s| match which {
+                CompanyField::Address => s.company_address = value.clone(),
+                CompanyField::Phone => s.company_phone = value.clone(),
+            },
+            window,
+            cx,
+        );
+        let now = match which {
+            CompanyField::Address => self.settings().company_address.clone(),
+            CompanyField::Phone => self.settings().company_phone.clone(),
+        };
+        if now != value {
+            // Refused (too long); show what is saved.
+            input.update(cx, |s, cx| s.set_value(now, window, cx));
+            return;
+        }
+        let msg = match which {
+            CompanyField::Address => t("Company address saved", "Dirección de la empresa guardada"),
+            CompanyField::Phone => t("Company phone saved", "Teléfono de la empresa guardado"),
+        };
+        self.notify_success(msg, window, cx);
+    }
+
     fn toggle_sidebar(&mut self, _: &ToggleSidebar, window: &mut Window, cx: &mut Context<Self>) {
         self.update_settings(|s| s.sidebar_collapsed = !s.sidebar_collapsed, window, cx);
+    }
+
+    /// Opens a file or folder with Windows, or shows a file in Explorer
+    /// (`reveal`). A failure is shown, not only logged.
+    pub(crate) fn open_path(&mut self, path: PathBuf, reveal: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let rx = if reveal { crate::shell::reveal(&path) } else { crate::shell::open(&path) };
+        cx.spawn_in(window, async move |this, cx| {
+            if let Err(why) = crate::shell::wait(rx, cx.background_executor().clone()).await {
+                let shown = path.display().to_string();
+                let _ = this.update_in(cx, |app, window, cx| {
+                    app.notify_error(
+                        tr!(
+                            "Windows couldn't open {shown} ({why}). It is saved there; open it from File Explorer.",
+                            "Windows no pudo abrir {shown} ({why}). Está guardado ahí; ábrelo desde el Explorador de archivos."
+                        ),
+                        window,
+                        cx,
+                    )
+                });
+            }
+        })
+        .detach();
     }
 
     // ----- receipts -------------------------------------------------------
@@ -441,7 +554,7 @@ impl VzApp {
     /// shows the print dialog.
     pub fn open_receipt(&mut self, payment_id: i64, window: &mut Window, cx: &mut Context<Self>) {
         match self.store.write_receipt(payment_id) {
-            Ok(path) => cx.open_with_system(&path),
+            Ok(path) => self.open_path(path, false, window, cx),
             Err(e) => {
                 let msg = tr!("Could not create the receipt: {e:#}", "No se pudo crear el recibo: {e:#}");
                 self.notify_error(msg, window, cx);
@@ -453,7 +566,7 @@ impl VzApp {
     /// opens it for printing.
     pub fn open_loan_receipt(&mut self, loan_id: i64, window: &mut Window, cx: &mut Context<Self>) {
         match self.store.write_loan_receipt(loan_id) {
-            Ok(path) => cx.open_with_system(&path),
+            Ok(path) => self.open_path(path, false, window, cx),
             Err(e) => {
                 let msg = tr!("Could not create the receipt: {e:#}", "No se pudo crear el recibo: {e:#}");
                 self.notify_error(msg, window, cx);
@@ -511,6 +624,38 @@ impl VzApp {
                 Err(t("the window closed unexpectedly", "la ventana se cerró inesperadamente").to_string())
             }
         }
+    }
+
+    /// Shows the Windows Open window for `request` and calls `done` with the
+    /// chosen path. A failure is logged and handed to `failed` with the
+    /// reason; cancelling calls neither.
+    pub(crate) fn pick_path(
+        &mut self,
+        what: &'static str,
+        request: crate::file_picker::Request,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+        done: impl FnOnce(&mut Self, PathBuf, &mut Window, &mut Context<Self>) + 'static,
+        failed: impl FnOnce(&mut Self, String, &mut Window, &mut Context<Self>) + 'static,
+    ) {
+        if !self.begin_file_dialog(what, window, cx) {
+            return;
+        }
+        let rx = crate::file_picker::pick(crate::file_picker::owner_of(window), request);
+        cx.spawn_in(window, async move |this, cx| {
+            let result = crate::file_picker::wait(rx, cx.background_executor().clone()).await;
+            let _ = this.update_in(cx, |app, window, cx| match app.end_pick(what, result) {
+                Ok(Some(path)) => done(app, path, window, cx),
+                Ok(None) => {}
+                Err(why) => failed(app, why, window, cx),
+            });
+        })
+        .detach();
+    }
+
+    /// `end_file_dialog` for the app's own Open window.
+    pub(crate) fn end_pick(&mut self, what: &str, result: crate::file_picker::PickResult) -> Result<Option<PathBuf>, String> {
+        self.end_file_dialog(what, Ok::<_, ()>(result.map_err(|e| anyhow::anyhow!(e.0))))
     }
 
     pub fn backup_now(&mut self, _: &BackupNow, window: &mut Window, cx: &mut Context<Self>) {

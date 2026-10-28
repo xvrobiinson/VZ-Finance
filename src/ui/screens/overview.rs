@@ -118,7 +118,7 @@ impl VzApp {
             return vec![
                 Button::new("ov-expense")
                     .icon(IconName::ReceiptText)
-                    .label(t("New expense", "Nuevo gasto"))
+                    .label(t("New record", "Nuevo registro"))
                     .tooltip("Ctrl+E")
                     .on_click(expense)
                     .into_any_element(),
@@ -131,7 +131,7 @@ impl VzApp {
             .tooltip(t("More actions", "Más acciones"))
             .align_end()
             .item(DropdownItem::new(t("New loan", "Nuevo préstamo"), loan).icon(IconName::HandCoins).hint("Ctrl+L"))
-            .item(DropdownItem::new(t("New expense", "Nuevo gasto"), expense).icon(IconName::ReceiptText).hint("Ctrl+E"))
+            .item(DropdownItem::new(t("New record", "Nuevo registro"), expense).icon(IconName::ReceiptText).hint("Ctrl+E"))
             .item(
                 DropdownItem::new(
                     t("Add capital", "Agregar capital"),

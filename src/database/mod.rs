@@ -15,12 +15,13 @@ const MIGRATIONS: &[(i64, &str)] = &[
     (3, include_str!("migrations/0003_editable_records.sql")),
     (4, include_str!("migrations/0004_installment_loans.sql")),
     (5, include_str!("migrations/0005_client_identity.sql")),
+    (6, include_str!("migrations/0006_income_entries.sql")),
 ];
 
 /// Migrations that rebuild tables and must run with foreign keys disabled.
-const REBUILDS: &[i64] = &[2, 4];
+const REBUILDS: &[i64] = &[2, 4, 6];
 
-pub const SCHEMA_VERSION: i64 = 5;
+pub const SCHEMA_VERSION: i64 = 6;
 
 /// The tables every VZ Finance database has had since version 1 (backups
 /// from older versions are upgraded after they are restored).
@@ -261,6 +262,47 @@ mod tests {
         // One late fee per installment.
         conn.execute("INSERT INTO late_fees VALUES (1, 1, '2026-02-02', 100, 50000, 5, NULL, '', 'x', 'x')", []).unwrap();
         assert!(conn.execute("INSERT INTO late_fees VALUES (1, 1, '2026-02-02', 100, 50000, 5, NULL, '', 'x', 'x')", []).is_err());
+    }
+
+    #[test]
+    fn upgrades_a_version_5_database_keeping_every_cash_entry() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        conn.pragma_update(None, "foreign_keys", "ON").unwrap();
+        conn.execute_batch("CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY NOT NULL, applied_at TEXT NOT NULL) STRICT;")
+            .unwrap();
+        for (v, sql) in &MIGRATIONS[..5] {
+            conn.execute_batch(sql).unwrap();
+            conn.execute("INSERT INTO schema_migrations VALUES (?1, 'x')", [v]).unwrap();
+        }
+        conn.execute_batch(
+            "INSERT INTO cash_entries (kind, account, amount, occurred_on, description, created_at) VALUES
+               ('expense', 'interest', 5000, '2026-02-01', 'Repair', 'x'),
+               ('transfer', 'interest', 7000, '2026-02-02', '', 'x'),
+               ('adjustment', 'capital', -300, '2026-02-03', 'Count', 'x');",
+        )
+        .unwrap();
+        assert!(conn.execute("INSERT INTO cash_entries (kind, account, amount, occurred_on, created_at) VALUES ('income', 'interest', 1, '2026-02-04', 'x')", []).is_err());
+        migrate(&mut conn).unwrap();
+        assert_eq!(schema_version(&conn).unwrap(), SCHEMA_VERSION);
+        let rows: Vec<(i64, String, String, i64, String)> = conn
+            .prepare("SELECT id, kind, account, amount, description FROM cash_entries ORDER BY id")
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(
+            rows,
+            vec![
+                (1, "expense".into(), "interest".into(), 5000, "Repair".into()),
+                (2, "transfer".into(), "interest".into(), 7000, String::new()),
+                (3, "adjustment".into(), "capital".into(), -300, "Count".into()),
+            ]
+        );
+        // Income is now allowed; nonsense still isn't.
+        conn.execute("INSERT INTO cash_entries (kind, account, amount, occurred_on, description, created_at) VALUES ('income', 'interest', 100, '2026-02-04', 'Rent', 'x')", []).unwrap();
+        assert!(conn.execute("INSERT INTO cash_entries (kind, account, amount, occurred_on, created_at) VALUES ('gift', 'interest', 1, '2026-02-04', 'x')", []).is_err());
+        assert!(conn.execute("INSERT INTO cash_entries (kind, account, amount, occurred_on, created_at) VALUES ('income', 'interest', -1, '2026-02-04', 'x')", []).is_err());
     }
 
     #[test]

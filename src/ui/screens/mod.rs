@@ -157,3 +157,52 @@ pub fn column(width: f32) -> Div {
 pub fn ncolumn(width: f32) -> Div {
     div().w(px(width)).flex_none().text_right().font_features(tabular()).whitespace_nowrap()
 }
+
+#[cfg(test)]
+mod tests {
+    use ::gpui;
+    use core::prelude::v1::test;
+
+    use super::*;
+    use crate::app::Route;
+    use crate::database::repositories::clients::ClientInput;
+    use crate::domain::loans::{Frequency, LoanTerms};
+    use crate::domain::money::Rate;
+    use crate::domain::portfolio::CapitalKind;
+    use crate::services::Store;
+    use crate::ui::screens::clients::ClientColumn;
+    use crate::ui::screens::loans::LoanColumn;
+
+    /// Clients and Loans draw with a search and a sort applied, and the sort
+    /// flips on a second click.
+    #[gpui::test]
+    fn lists_draw_searched_and_sorted(cx: &mut TestAppContext) {
+        let today = crate::utils::dates::today();
+        let mut store = Store::in_memory();
+        store.add_capital(CapitalKind::Contribution, 10_000_000, today, "", today).unwrap();
+        for (name, amount) in [("José Peña", 50_000), ("Ana Ruiz", 120_000), ("Bruno Díaz", 9_000)] {
+            let id = store.create_client(&ClientInput { full_name: name.into(), ..Default::default() }).unwrap();
+            store.create_loan(id, &LoanTerms::interest_only(amount, Rate(100_000), Frequency::Monthly, today), "", today).unwrap();
+        }
+        let (app, cx) = crate::ui::forms::test_app(cx, store);
+        cx.update(|window, cx| {
+            app.update(cx, |a, cx| {
+                a.client_search.update(cx, |s, cx| s.set_value("pena", window, cx));
+                a.client_sort = a.client_sort.toggle(ClientColumn::Owes).toggle(ClientColumn::Owes);
+                assert!(a.client_sort.descending);
+                a.navigate(Route::Clients, window, cx);
+            })
+        });
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            app.update(cx, |a, cx| {
+                a.loan_search.update(cx, |s, cx| s.set_value("ruiz", window, cx));
+                a.loan_sort = a.loan_sort.toggle(LoanColumn::Lent);
+                a.navigate(Route::Loans, window, cx);
+            })
+        });
+        cx.run_until_parked();
+        let sort = cx.update(|_, cx| app.read(cx).loan_sort);
+        assert_eq!((sort.column, sort.descending), (Some(LoanColumn::Lent), false));
+    }
+}

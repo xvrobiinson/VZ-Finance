@@ -37,6 +37,10 @@ Built in Rust with [GPUI](https://gpui.rs) and SQLite.
 - **Overview**: portfolio value, capital lent out, interest earned, available
   capital, active loans and overdue amount, with a growth chart, where your
   money is, recent payments and loans needing attention.
+- **Search and sort**: the Clients and Loans tables have a search box
+  (name, ID number, phone, address or notes; loan number, client, amount,
+  status, type or rate; case and accents don't matter) and every column
+  sorts by clicking its header, again to reverse.
 - **Clients**: searchable directory; each client has a profile with loans,
   payment history, totals and notes, and optionally an ID number, an address
   and a photo of the client or their ID (kept private in the database, shown
@@ -46,8 +50,10 @@ Built in Rust with [GPUI](https://gpui.rs) and SQLite.
   interest and capital.
 - **Two accounts**: available capital and available interest. Loans use
   capital first, then interest; repaid capital goes back to capital, interest
-  to interest. Record expenses from either account, move money between them,
-  or adjust both to what you really have on hand.
+  to interest. **New record** takes income from outside the business or an
+  expense, each with a required reason, into or out of either account; you
+  can also move money between them, or adjust both to what you really have
+  on hand.
 - **Everything is editable**: loans, payments, capital, expenses and clients
   can be edited or deleted. Payment splits are recalculated automatically and
   every change is kept in a change history with the old and new values.
@@ -61,12 +67,16 @@ Built in Rust with [GPUI](https://gpui.rs) and SQLite.
   - a loan receipt: amount, rate, the schedule of an installment loan, how
     payments work and signature lines.
 
-  A long history continues on a second page with numbered pages; nothing is
-  left out.
+  The signature lines sit at the foot of the page. A long history or long
+  custom wording continues on a second page with numbered pages; nothing is
+  left out. The "How payments work" lines (one list per loan type), the
+  signature captions and the closing lines can be reworded in Settings, and
+  the original wording restored at any time.
 - **Portfolio Analytics**: returns, capital ledger, monthly interest, capital
   lent out, loans by status and a monthly cash-flow table.
-- **Settings**: the name printed on receipts (left empty, receipts say
-  "Acervus Finance") and a logo (button or drag and drop), English or Spanish,
+- **Settings**: company name (left empty, receipts say "Acervus Finance"),
+  address and phone, with a tick for each to print on receipts, the client
+  details to print, receipt wording, a logo (button or drag and drop), English or Spanish,
   currency (Dominican peso by default), number and date formats, default rate,
   payment frequency and late fee, light and dark theme, verified backup and
   restore (with a list of recent backups), CSV export, a "Reset all data"
@@ -105,6 +115,14 @@ a file window that couldn't open, never names or amounts. Backups also work
 without the file window (Save in backups folder), and a logo can be dragged
 onto the logo box.
 
+The Open window (logo, client photo, restore, export folder) always starts in
+a folder that exists and keeps its own remembered state. If Windows still
+refuses to show it, the app tries again with that state cleared, then
+without an owner window, then with the older Windows file window; every
+attempt and its error code is logged. Receipts and folders are opened the
+same careful way, with Explorer or Edge as a fallback, and a failure is shown
+instead of nothing happening.
+
 Tested on Windows 11 Home (build 26300) only. Windows 10 hasn't been tested;
 the 1809 minimum follows from what the app needs (DirectX 11 with DXGI 1.6,
 available from Windows 10 1803).
@@ -123,7 +141,7 @@ app; use BitLocker or device encryption for encryption at rest.
 | Record payment | Ctrl P |
 | New loan | Ctrl L |
 | New client | Ctrl N |
-| New expense | Ctrl E |
+| New record (income or expense) | Ctrl E |
 | Search clients | Ctrl F |
 | Back up | Ctrl S |
 | Toggle sidebar | Ctrl B |

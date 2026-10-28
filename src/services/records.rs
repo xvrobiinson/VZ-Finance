@@ -32,6 +32,20 @@ pub(super) fn positive(amount: Cents) -> Result<()> {
     Ok(())
 }
 
+/// Expenses say what they were for and income where it came from; spaces
+/// alone don't count.
+fn required_reason(kind: EntryKind, text: &str) -> Result<()> {
+    let text = text.trim();
+    match kind {
+        EntryKind::Expense if text.is_empty() => invalid(t("Write what the expense was for", "Escribe en qué fue el gasto")),
+        EntryKind::Income if text.is_empty() => invalid(t("Write where the income came from", "Escribe de dónde vino el ingreso")),
+        _ if text.chars().count() > 2000 => {
+            invalid(t("The description is too long (2,000 characters at most)", "La descripción es muy larga (máximo 2.000 caracteres)"))
+        }
+        _ => Ok(()),
+    }
+}
+
 /// Refuses a new outflow larger than what `account` (both accounts for a
 /// loan) can spare on `on` and after.
 pub(super) fn ensure_available(c: &Connection, on: NaiveDate, account: Option<Account>, amount: Cents) -> Result<()> {
@@ -105,14 +119,39 @@ impl Store {
 
     /// Records money spent outside the business, paid from `account`.
     pub fn add_expense(&mut self, account: Account, amount: Cents, on: NaiveDate, description: &str, today: NaiveDate) -> Result<i64> {
+        self.add_record(EntryKind::Expense, account, amount, on, description, today)
+    }
+
+    /// Records money received from outside the business into `account`:
+    /// into available interest it is income, into available capital it
+    /// counts as capital invested. It needs no balance to exist first.
+    pub fn add_income(&mut self, account: Account, amount: Cents, on: NaiveDate, source: &str, today: NaiveDate) -> Result<i64> {
+        self.add_record(EntryKind::Income, account, amount, on, source, today)
+    }
+
+    /// An expense or income from New record. The same record submitted
+    /// twice within a few seconds is saved once.
+    fn add_record(
+        &mut self,
+        kind: EntryKind,
+        account: Account,
+        amount: Cents,
+        on: NaiveDate,
+        description: &str,
+        today: NaiveDate,
+    ) -> Result<i64> {
         positive(amount)?;
         not_future(on, today)?;
-        if description.trim().is_empty() {
-            return invalid(t("Write what the expense was for", "Escribe en qué fue el gasto"));
-        }
+        required_reason(kind, description)?;
         self.write(|c| {
-            ensure_available(c, on, Some(account), amount)?;
-            let id = entries::insert(c, EntryKind::Expense, account, amount, on, description)?;
+            if let Some(id) = entries::recent_duplicate(c, kind, account, amount, on, description, 10)? {
+                log::warn!("{} submitted twice; kept the first", kind.key());
+                return Ok(id);
+            }
+            if kind == EntryKind::Expense {
+                ensure_available(c, on, Some(account), amount)?;
+            }
+            let id = entries::insert(c, kind, account, amount, on, description)?;
             check_cash(c)?;
             Ok(id)
         })
@@ -182,9 +221,7 @@ impl Store {
                 EntryKind::Adjustment => {}
                 _ => positive(amount)?,
             }
-            if old.kind == EntryKind::Expense && description.trim().is_empty() {
-                return invalid(t("Write what the expense was for", "Escribe en qué fue el gasto"));
-            }
+            required_reason(old.kind, description)?;
             let diff = Diff::default()
                 .field("account", old.account.key(), account.key())
                 .field("amount", old.amount, amount)

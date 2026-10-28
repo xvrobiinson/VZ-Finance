@@ -67,6 +67,30 @@ pub fn insert(conn: &Connection, kind: EntryKind, account: Account, amount: Cent
     Ok(conn.last_insert_rowid())
 }
 
+/// An identical entry saved within the last `seconds`: the same submission
+/// arriving twice (a double click or a repeated Enter), not a second record.
+pub fn recent_duplicate(
+    conn: &Connection,
+    kind: EntryKind,
+    account: Account,
+    amount: Cents,
+    on: NaiveDate,
+    description: &str,
+    seconds: i64,
+) -> Result<Option<i64>> {
+    let since = (chrono::Utc::now() - chrono::Duration::seconds(seconds)).format("%Y-%m-%dT%H:%M:%SZ").to_string();
+    let id = conn
+        .query_row(
+            "SELECT id FROM cash_entries
+             WHERE kind = ?1 AND account = ?2 AND amount = ?3 AND occurred_on = ?4 AND description = ?5 AND created_at >= ?6
+             ORDER BY id DESC LIMIT 1",
+            params![kind.key(), account.key(), amount, Day(on), description.trim(), since],
+            |r| r.get(0),
+        )
+        .optional()?;
+    Ok(id)
+}
+
 pub fn update(conn: &Connection, id: i64, account: Account, amount: Cents, on: NaiveDate, description: &str) -> Result<()> {
     conn.execute(
         "UPDATE cash_entries SET account = ?1, amount = ?2, occurred_on = ?3, description = ?4 WHERE id = ?5",

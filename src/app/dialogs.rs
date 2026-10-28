@@ -43,7 +43,17 @@ macro_rules! submit_impl {
     )*};
 }
 
-submit_impl!(ClientForm, LoanForm, PaymentForm, CapitalForm, ReasonForm, EntryForm, AdjustForm, crate::ui::forms::reset::ResetForm);
+submit_impl!(
+    ClientForm,
+    LoanForm,
+    PaymentForm,
+    CapitalForm,
+    ReasonForm,
+    EntryForm,
+    AdjustForm,
+    crate::ui::forms::reset::ResetForm,
+    crate::ui::forms::receipt_text::ReceiptTextForm
+);
 
 impl VzApp {
     pub fn open_client_form(&mut self, client_id: Option<i64>, window: &mut Window, cx: &mut Context<Self>) {
@@ -287,35 +297,24 @@ impl VzApp {
     /// Picks a picture to use as the business logo. If the Open window can't
     /// open, says so; a picture can also be dragged onto the logo box.
     pub fn choose_logo(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if !self.begin_file_dialog("logo", window, cx) {
-            return;
-        }
-        let rx = cx.prompt_for_paths(PathPromptOptions {
-            files: true,
-            directories: false,
-            multiple: false,
-            prompt: Some(t("Use as logo", "Usar como logo").into()),
-        });
-        cx.spawn_in(window, async move |this, cx| {
-            let result = rx.await;
-            let _ = this.update_in(cx, |app, window, cx| match app.end_file_dialog("logo", result) {
-                Ok(Some(paths)) => {
-                    if let Some(path) = paths.into_iter().next() {
-                        app.use_logo_file(&path, window, cx);
-                    }
-                }
-                Ok(None) => {}
-                Err(why) => app.notify_error(
+        let request = crate::file_picker::Request::picture(t("Choose a logo", "Elige un logo"), t("Use as logo", "Usar como logo"));
+        self.pick_path(
+            "logo",
+            request,
+            window,
+            cx,
+            |app, path, window, cx| app.use_logo_file(&path, window, cx),
+            |app, why, window, cx| {
+                app.notify_error(
                     tr!(
                         "The Open window couldn't open ({why}). Drag the picture onto the logo box in Settings instead.",
                         "La ventana Abrir no se pudo abrir ({why}). Arrastra la imagen al cuadro del logo en Configuración."
                     ),
                     window,
                     cx,
-                ),
-            });
-        })
-        .detach();
+                )
+            },
+        );
     }
 
     /// Reads a picture file and saves it as the logo.
@@ -358,35 +357,29 @@ impl VzApp {
     }
 
     pub fn choose_restore(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if !self.begin_file_dialog("restore", window, cx) {
-            return;
-        }
-        let rx = cx.prompt_for_paths(PathPromptOptions {
-            files: true,
-            directories: false,
-            multiple: false,
-            prompt: Some(t("Restore", "Restaurar").into()),
-        });
-        cx.spawn_in(window, async move |this, cx| {
-            let result = rx.await;
-            let _ = this.update_in(cx, |app, window, cx| match app.end_file_dialog("restore", result) {
-                Ok(Some(paths)) => {
-                    if let Some(path) = paths.into_iter().next() {
-                        app.confirm_restore(path, window, cx);
-                    }
-                }
-                Ok(None) => {}
-                Err(why) => app.notify_error(
+        let request = crate::file_picker::Request {
+            title: t("Choose a backup to restore", "Elige una copia para restaurar").into(),
+            ok_label: t("Restore", "Restaurar").into(),
+            pick: crate::file_picker::Pick::File { type_name: t("Backups", "Copias de seguridad").into(), patterns: vec!["*.db"] },
+            start: vec![self.store.backups_dir()],
+        };
+        self.pick_path(
+            "restore",
+            request,
+            window,
+            cx,
+            |app, path, window, cx| app.confirm_restore(path, window, cx),
+            |app, why, window, cx| {
+                app.notify_error(
                     tr!(
                         "The Open window couldn't open ({why}). Pick one of the backups listed in Settings → Data instead.",
                         "La ventana Abrir no se pudo abrir ({why}). Elige una de las copias listadas en Configuración → Datos."
                     ),
                     window,
                     cx,
-                ),
-            });
-        })
-        .detach();
+                )
+            },
+        );
     }
 
     pub(crate) fn confirm_restore(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
@@ -444,40 +437,32 @@ impl VzApp {
     }
 
     pub fn choose_export(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if !self.begin_file_dialog("export", window, cx) {
-            return;
-        }
-        let rx = cx.prompt_for_paths(PathPromptOptions {
-            files: false,
-            directories: true,
-            multiple: false,
-            prompt: Some(t("Export here", "Exportar aquí").into()),
-        });
-        cx.spawn_in(window, async move |this, cx| {
-            let result = rx.await;
-            let _ = this.update_in(cx, |app, window, cx| match app.end_file_dialog("export", result) {
-                Ok(Some(paths)) => {
-                    if let Some(dir) = paths.into_iter().next() {
-                        app.export_to(dir, window, cx);
-                    }
-                }
-                Ok(None) => {}
-                Err(why) => {
-                    let dir = app.store.exports_dir();
-                    let shown = dir.display().to_string();
-                    app.notify_error(
-                        tr!(
-                            "The folder window couldn't open ({why}). Exporting to {shown} instead.",
-                            "La ventana de carpetas no se pudo abrir ({why}). Se exporta a {shown}."
-                        ),
-                        window,
-                        cx,
-                    );
-                    app.export_to(dir, window, cx);
-                }
-            });
-        })
-        .detach();
+        let exports = self.store.exports_dir();
+        let request = crate::file_picker::Request {
+            title: t("Choose a folder for the CSV files", "Elige una carpeta para los archivos CSV").into(),
+            ok_label: t("Export here", "Exportar aquí").into(),
+            pick: crate::file_picker::Pick::Folder,
+            start: [dirs::document_dir(), dirs::home_dir()].into_iter().flatten().collect(),
+        };
+        self.pick_path(
+            "export",
+            request,
+            window,
+            cx,
+            |app, dir, window, cx| app.export_to(dir, window, cx),
+            move |app, why, window, cx| {
+                let shown = exports.display().to_string();
+                app.notify_error(
+                    tr!(
+                        "The folder window couldn't open ({why}). Exporting to {shown} instead.",
+                        "La ventana de carpetas no se pudo abrir ({why}). Se exporta a {shown}."
+                    ),
+                    window,
+                    cx,
+                );
+                app.export_to(exports, window, cx);
+            },
+        );
     }
 
     fn export_to(&mut self, dir: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
@@ -485,13 +470,26 @@ impl VzApp {
             Ok(files) => {
                 let (n, shown) = (files.len(), dir.display().to_string());
                 self.notify_success(tr!("Exported {n} CSV files to {shown}", "Se exportaron {n} archivos CSV a {shown}"), window, cx);
-                cx.reveal_path(&dir);
+                self.open_path(dir, false, window, cx);
             }
             Err(e) => {
                 log::error!("export failed: {e:#}");
                 self.notify_error(tr!("Export failed: {e:#}", "La exportación falló: {e:#}"), window, cx)
             }
         }
+    }
+
+    /// Edits the wording printed on receipts.
+    pub fn open_receipt_text_form(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let app = cx.entity().downgrade();
+        let settings = self.settings().clone();
+        let form = cx.new(|cx| crate::ui::forms::receipt_text::ReceiptTextForm::new(app, &settings, window, cx));
+        let first = Cell::new(true);
+        window.open_dialog(cx, move |dialog, window, cx| {
+            let handle = form.read(cx).heading.focus_handle(cx);
+            focus_once(&first, &handle, window, cx);
+            dialog.title(t("Receipt wording", "Texto de los recibos")).w(px(720.)).child(form.clone()).on_ok(confirm(&form))
+        });
     }
 
     /// Asks for a typed confirmation, saves a copy and deletes every client,

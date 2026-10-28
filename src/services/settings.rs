@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 
+pub use super::receipt_text::ReceiptText;
 use crate::domain::loans::Frequency;
 use crate::domain::money::{MoneyFormat, NumberStyle, Rate};
 use crate::i18n::{Lang, t};
@@ -116,12 +117,42 @@ impl Default for ReceiptClientFields {
     }
 }
 
+/// Which company details are printed at the top of receipts. Each is
+/// printed only when it is ticked and has a value.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ReceiptCompanyFields {
+    pub name: bool,
+    pub address: bool,
+    pub phone: bool,
+}
+
+impl Default for ReceiptCompanyFields {
+    fn default() -> Self {
+        Self { name: true, address: true, phone: true }
+    }
+}
+
+/// Company details printed on a receipt (see `Settings::receipt_company_lines`).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct CompanyLines {
+    pub name: Option<String>,
+    pub address: Option<String>,
+    pub phone: Option<String>,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct Settings {
     pub language: Lang,
-    /// The business name printed on receipts. Empty: the app name. The app
+    /// The company name printed on receipts. Empty: the app name. The app
     /// itself is always called Acervus Finance.
     pub receipt_name: String,
+    /// Optional; printed on receipts when ticked.
+    pub company_address: String,
+    pub company_phone: String,
+    /// Company details printed on every receipt.
+    pub receipt_company: ReceiptCompanyFields,
+    /// Receipt wording; built-in text unless changed.
+    pub receipt_text: ReceiptText,
     pub currency_code: String,
     pub number_style: NumberStyle,
     pub date_style: DateStyle,
@@ -149,6 +180,10 @@ impl Default for Settings {
         Self {
             language: Lang::En,
             receipt_name: String::new(),
+            company_address: String::new(),
+            company_phone: String::new(),
+            receipt_company: ReceiptCompanyFields::default(),
+            receipt_text: ReceiptText::default(),
             currency_code: "DOP".into(),
             number_style: NumberStyle::CommaDot,
             date_style: DateStyle::Medium,
@@ -176,6 +211,14 @@ impl Settings {
             language: get("language").map(Lang::from_key).unwrap_or(d.language),
             // Stored under its original key so older backups keep it.
             receipt_name: get("business_name").map(str::trim).filter(|s| *s != OLD_DEFAULT_NAME).unwrap_or_default().to_string(),
+            company_address: get("company_address").unwrap_or_default().trim().to_string(),
+            company_phone: get("company_phone").unwrap_or_default().trim().to_string(),
+            receipt_company: ReceiptCompanyFields {
+                name: flag("receipt_company_name", d.receipt_company.name),
+                address: flag("receipt_company_address", d.receipt_company.address),
+                phone: flag("receipt_company_phone", d.receipt_company.phone),
+            },
+            receipt_text: ReceiptText::from_map(|k| get(k).map(str::to_string)),
             currency_code: get("currency").map(|c| currency(c).code.to_string()).unwrap_or(d.currency_code),
             number_style: get("number_style").map(NumberStyle::from_key).unwrap_or(d.number_style),
             date_style: get("date_style").map(DateStyle::from_key).unwrap_or(d.date_style),
@@ -211,9 +254,14 @@ impl Settings {
 
     pub fn to_pairs(&self) -> Vec<(&'static str, String)> {
         let b = |v: bool| if v { "1" } else { "0" }.to_string();
-        vec![
+        let mut pairs = vec![
             ("language", self.language.key().into()),
             ("business_name", self.receipt_name.trim().to_string()),
+            ("company_address", self.company_address.trim().to_string()),
+            ("company_phone", self.company_phone.trim().to_string()),
+            ("receipt_company_name", b(self.receipt_company.name)),
+            ("receipt_company_address", b(self.receipt_company.address)),
+            ("receipt_company_phone", b(self.receipt_company.phone)),
             ("currency", self.currency_code.clone()),
             ("number_style", self.number_style.key().into()),
             ("date_style", self.date_style.key().into()),
@@ -230,7 +278,21 @@ impl Settings {
             ("chart_range", self.chart_range.key().into()),
             ("show_interest_line", b(self.show_interest_line)),
             ("sidebar_collapsed", b(self.sidebar_collapsed)),
-        ]
+        ];
+        pairs.extend(self.receipt_text.to_pairs());
+        pairs
+    }
+
+    /// The company details to print at the top of receipts: ticked and not
+    /// empty, in order (name, address, phone). The name is always the
+    /// receipt name, or the app name when that is empty.
+    pub fn receipt_company_lines(&self) -> CompanyLines {
+        let keep = |on: bool, v: &str| Some(v.trim()).filter(|v| on && !v.is_empty()).map(str::to_string);
+        CompanyLines {
+            name: self.receipt_company.name.then(|| self.receipt_title()),
+            address: keep(self.receipt_company.address, &self.company_address),
+            phone: keep(self.receipt_company.phone, &self.company_phone),
+        }
     }
 
     /// The name printed on receipts.

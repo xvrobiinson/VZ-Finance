@@ -914,13 +914,10 @@ impl Render for LoanForm {
 
 #[cfg(test)]
 mod tests {
-    use std::cell::RefCell;
-
     // The kit's glob import also brings GPUI's `test` macro; keep the
     // built-in one for what `#[gpui::test]` expands to.
     use ::gpui;
     use core::prelude::v1::test;
-    use gpui_kit::component::Root;
 
     use super::*;
     use crate::database::repositories::clients::ClientInput;
@@ -930,23 +927,11 @@ mod tests {
     /// The app in a test window over an in-memory database with one client
     /// and money to lend, and the New loan form open.
     fn loan_form(cx: &mut TestAppContext) -> (Entity<VzApp>, Entity<LoanForm>, &mut VisualTestContext) {
-        cx.update(|cx| {
-            gpui_kit::init(cx);
-            crate::ui::theme::install(Default::default(), cx);
-            cx.set_reduce_motion(true);
-        });
         let today = crate::utils::dates::today();
         let mut store = Store::in_memory();
         store.create_client(&ClientInput { full_name: "Ana Ruiz".into(), ..Default::default() }).unwrap();
         store.add_capital(CapitalKind::Contribution, 10_000_000, today, "", today).unwrap();
-        let slot = Rc::new(RefCell::new(None));
-        let keep = slot.clone();
-        let (_, cx) = cx.add_window_view(move |window, cx| {
-            let app = cx.new(|cx| VzApp::new(store, window, cx));
-            *keep.borrow_mut() = Some(app.clone());
-            Root::new(app, window, cx)
-        });
-        let app = slot.borrow_mut().take().unwrap();
+        let (app, cx) = crate::ui::forms::test_app(cx, store);
         let form = cx.update(|window, cx| app.update(cx, |a, cx| a.loan_dialog(None, None, window, cx)));
         cx.run_until_parked();
         // Something typed before adding the client.

@@ -100,6 +100,10 @@ impl Account {
 pub enum EntryKind {
     /// Money spent outside the business, paid from one account.
     Expense,
+    /// Money received from outside the business (not a loan payment and
+    /// not a transfer), into one account. Into available interest it is
+    /// income; into available capital it counts as capital invested.
+    Income,
     /// Money moved from one account to the other.
     Transfer,
     /// A correction of one account's balance (signed).
@@ -110,6 +114,7 @@ impl EntryKind {
     pub fn key(self) -> &'static str {
         match self {
             EntryKind::Expense => "expense",
+            EntryKind::Income => "income",
             EntryKind::Transfer => "transfer",
             EntryKind::Adjustment => "adjustment",
         }
@@ -117,6 +122,7 @@ impl EntryKind {
     pub fn from_key(key: &str) -> Option<Self> {
         match key {
             "expense" => Some(EntryKind::Expense),
+            "income" => Some(EntryKind::Income),
             "transfer" => Some(EntryKind::Transfer),
             "adjustment" => Some(EntryKind::Adjustment),
             _ => None,
@@ -125,6 +131,7 @@ impl EntryKind {
     pub fn label(self) -> &'static str {
         match self {
             EntryKind::Expense => t("Expense", "Gasto"),
+            EntryKind::Income => t("Income", "Ingreso"),
             EntryKind::Transfer => t("Money moved", "Dinero movido"),
             EntryKind::Adjustment => t("Balance adjustment", "Ajuste de saldo"),
         }
@@ -278,6 +285,10 @@ pub struct Summary {
     pub fees_collected: Cents,
     pub capital_expenses: Cents,
     pub interest_expenses: Cents,
+    /// Outside income put into available capital (counts as invested).
+    pub capital_income: Cents,
+    /// Outside income put into available interest (counts as income).
+    pub other_income: Cents,
     pub capital_adjustments: Cents,
     pub interest_adjustments: Cents,
     pub available_capital: Cents,
@@ -303,7 +314,7 @@ pub struct Summary {
 
 impl Summary {
     pub fn net_invested(&self) -> Cents {
-        self.contributions - self.withdrawals + self.capital_adjustments - self.capital_expenses
+        self.contributions - self.withdrawals + self.capital_adjustments + self.capital_income - self.capital_expenses
     }
     pub fn gain(&self) -> Cents {
         self.portfolio_value - self.net_invested()
@@ -317,6 +328,14 @@ impl Summary {
     }
     pub fn expenses(&self) -> Cents {
         self.capital_expenses + self.interest_expenses
+    }
+    /// Outside income recorded with New record, into either account.
+    pub fn outside_income(&self) -> Cents {
+        self.capital_income + self.other_income
+    }
+    /// Interest, fees and outside income counted as income.
+    pub fn total_income(&self) -> Cents {
+        self.realized_income() + self.other_income
     }
 }
 
@@ -334,6 +353,7 @@ impl Book {
             match e.kind {
                 EntryKind::Adjustment => out.push((e.occurred_on, 0, Move::Add(e.account, e.amount))),
                 EntryKind::Transfer => out.push((e.occurred_on, 2, Move::Transfer(e.account, e.amount))),
+                EntryKind::Income => out.push((e.occurred_on, 0, Move::Add(e.account, e.amount))),
                 EntryKind::Expense => out.push((e.occurred_on, 4, Move::Add(e.account, -e.amount))),
             }
         }
@@ -437,6 +457,8 @@ impl Book {
             match (e.kind, e.account) {
                 (EntryKind::Expense, Account::Capital) => s.capital_expenses += e.amount,
                 (EntryKind::Expense, Account::Interest) => s.interest_expenses += e.amount,
+                (EntryKind::Income, Account::Capital) => s.capital_income += e.amount,
+                (EntryKind::Income, Account::Interest) => s.other_income += e.amount,
                 (EntryKind::Adjustment, Account::Capital) => s.capital_adjustments += e.amount,
                 (EntryKind::Adjustment, Account::Interest) => s.interest_adjustments += e.amount,
                 (EntryKind::Transfer, _) => {}
@@ -549,6 +571,7 @@ impl Book {
             if let Some(f) = months.get_mut(&month_start(e.occurred_on)) {
                 match (e.kind, e.account) {
                     (EntryKind::Expense, _) => f.expenses += e.amount,
+                    (EntryKind::Income, _) => f.income += e.amount,
                     (EntryKind::Adjustment, Account::Capital) if e.amount > 0 => f.contributions += e.amount,
                     (EntryKind::Adjustment, Account::Capital) => f.withdrawals -= e.amount,
                     (EntryKind::Adjustment, Account::Interest) => f.interest_received += e.amount,
@@ -598,12 +621,18 @@ pub struct MonthFlow {
     pub interest_received: Cents,
     pub fees_received: Cents,
     pub expenses: Cents,
+    /// Outside income, into either account.
+    pub income: Cents,
     pub ending_cash: Cents,
 }
 
 impl MonthFlow {
     pub fn net(&self) -> Cents {
-        self.contributions - self.withdrawals - self.disbursed + self.principal_returned + self.interest_received + self.fees_received
+        self.contributions - self.withdrawals - self.disbursed
+            + self.principal_returned
+            + self.interest_received
+            + self.fees_received
+            + self.income
             - self.expenses
     }
 }
@@ -785,17 +814,19 @@ mod tests {
         book.entries.push(entry(1, EntryKind::Expense, Account::Interest, 30_000, d(2026, 3, 5)));
         book.entries.push(entry(2, EntryKind::Transfer, Account::Interest, 50_000, d(2026, 3, 9)));
         book.entries.push(entry(3, EntryKind::Adjustment, Account::Capital, 7_000, d(2026, 5, 1)));
+        book.entries.push(entry(4, EntryKind::Income, Account::Interest, 12_000, d(2026, 6, 2)));
+        book.entries.push(entry(5, EntryKind::Income, Account::Capital, 40_000, d(2026, 7, 3)));
         let mut day = d(2025, 12, 30);
         while day <= d(2026, 12, 31) {
             let s = book.summary(day);
             assert_eq!(
                 s.available_cash + s.outstanding_principal + s.defaulted_principal,
-                s.net_invested() + s.interest_collected + s.fees_collected + s.interest_adjustments - s.interest_expenses,
+                s.net_invested() + s.interest_collected + s.fees_collected + s.interest_adjustments + s.other_income - s.interest_expenses,
                 "{day}"
             );
             assert_eq!(
                 s.gain(),
-                s.realized_income() + s.interest_adjustments - s.interest_expenses + s.interest_receivable - s.defaulted_principal,
+                s.total_income() + s.interest_adjustments - s.interest_expenses + s.interest_receivable - s.defaulted_principal,
                 "{day}"
             );
             assert_eq!(book.cash_on(day), s.available_cash, "{day}");

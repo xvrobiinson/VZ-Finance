@@ -27,8 +27,10 @@ Kit contents: `Button` (Primary, Secondary, Ghost, Danger, DangerGhost;
 Mini/Small/Medium; `.loading`, `.selected`, `.suffix`), `Card`, `Stat`,
 `StatStrip`, `ListRow` (`.muted`), `Segmented` (`Segmented::pick`, cells
 fit their labels), `Dropdown` + `DropdownItem` (`.danger`, `.disabled`,
-`.hint`), `Overlay`, and `kit::interact` (hover state, color mixing) for
-custom elements that need the same springs.
+`.hint`), `Overlay`, `SortHeader` + `Sort` (sortable column header, `.right`
+for number columns; used on Clients and Loans, approved 2026-10-27), and
+`kit::interact` (hover state, color mixing) for custom elements that need
+the same springs. Searching and sorting rules live in `ui::lists`.
 
 ## Principles
 
@@ -64,14 +66,23 @@ custom elements that need the same springs.
   headless Edge (`msedge --headless=new --no-pdf-header-footer
   --print-to-pdf=<out.pdf> file:///<receipt.html>`) from a scratch database.
   After changing receipt CSS, measure again so the "continues on the next
-  page" note matches the real page count.
+  page" note matches the real page count. The loan receipt's note uses
+  `LOAN_TEXT_PT` and friends, measured the same way with long custom wording.
 - Form tests run in a GPUI test window (`#[gpui::test]`, dev-dependency
   `gpui-pre` with `test-support`). In a test module that does `use super::*`
   over the kit's glob import, add `use core::prelude::v1::test;` and
   `use ::gpui;`, or the macro recurses or is ambiguous. Never let a test print
   a receipt: an in-memory store writes files next to the working directory.
+  `ui::forms::test_app` builds the app in a test window.
+- The Windows Open window is `file_picker` (not GPUI's `prompt_for_paths`,
+  which fails with 0x80004005 on some PCs) and opening files or folders is
+  `shell` (not `open_with_system`/`reveal_path`, which fail silently).
+  `cargo test -- --ignored file_windows_open` shows and closes every kind of
+  Open window for a moment.
 - For screenshots use a demo database, never the user's data:
   `cargo run --example seed_demo -- <new.db>` and launch with
-  `VZ_FINANCE_DB=<new.db>`. Capture the window with `PrintWindow`, which works
+  `VZ_FINANCE_DB=<new.db>`; in debug builds `VZ_FINANCE_START` opens a screen
+  or dialog at launch (`clients`, `loans`, `analytics`, `settings`,
+  `new-record`, `new-income`, `wording`). Capture the window with `PrintWindow`, which works
   even when it is covered. Never send synthetic keystrokes or clicks: when the
   app isn't the foreground window they land in the user's other programs.

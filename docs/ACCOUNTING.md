@@ -193,7 +193,8 @@ reprint of an old receipt shows the same figures.
     counted**, crossed out, and is left out of every figure.
 - **Loan receipt** (the loan page, or right after creating a loan): what the
   client received and on which date, the rate, how often payments are made,
-  how payments work (in smaller type) and lines for both signatures.
+  how payments work (in smaller type) and lines for both signatures, which
+  sit at the foot of the page (on the last page when it runs longer).
   Installment loans add the whole schedule (due date, capital, interest and
   total of each installment), the late-fee rule and whether the schedule was
   set by agreement. Open loans show the interest per payment and no dates.
@@ -208,8 +209,23 @@ reprint of an old receipt shows the same figures.
   payments; a loan receipt up to 20 installments). A longer one continues on
   the next page with the column headings repeated, every page is numbered
   ("Page 1 of 2"), and the first page says it continues. Nothing is left out.
-- Both carry the name set in Settings → Name on receipts (or "Acervus Finance"
-  when it is empty) and the logo. They are saved as HTML files in
+- **Company details**: Settings → Receipts → "Company info to add to every
+  receipt" ticks the company name (Settings → Company name, or "Acervus
+  Finance" when empty), address and phone for the top of every receipt. A
+  detail that is off or empty leaves no label or gap. With the name off, the
+  company signature caption says "For the lender".
+- **Wording**: Settings → Receipts → Receipt wording changes the "How payments
+  work" heading, its lines (one list per loan type: reorder, add, remove), the
+  two signature captions and the closing line of each receipt. Lines show the
+  loan's figures through tags such as `{interest}` and `{late_fee}`; a line
+  that only applies to some loans (late fee, converted rate, edited schedule)
+  keeps that rule. Text left unchanged is the built-in wording, identical to
+  earlier versions, and follows the language setting; "Restore original
+  wording" asks first, then puts it all back. Wording never changes a loan's
+  terms or figures. Long custom text is never cut: the receipt continues on
+  the next page and says so (measured in Edge for 10–20 lines of 130–500
+  characters).
+- Both carry the logo. They are saved as HTML files in
   `%LOCALAPPDATA%\VZFinance\receipts` and open in the default browser, which
   shows the print dialog.
 
@@ -241,17 +257,26 @@ Movements between and out of them:
 - **New loan:** paid from available capital first; if that is not enough, the
   rest comes from available interest. Capital repaid always returns to
   available capital.
-- **Expense** (money used outside the business): paid from the account you
-  choose. Only that account goes down; loans and interest earned are unchanged.
-  An expense from capital lowers capital invested; an expense from interest
-  lowers the portfolio gain.
+- **Expense** (money used outside the business, from *New record*): paid from
+  the account you choose. Only that account goes down; loans and interest
+  earned are unchanged. An expense from capital lowers capital invested; an
+  expense from interest lowers the portfolio gain. It needs a reason.
+- **Income** (money received from outside the business, from *New record*):
+  not a loan payment and not money moved between the accounts, so it is
+  counted once, as new money. It goes into the account you choose and needs no
+  balance there first. Into available interest it counts as income (it raises
+  the portfolio gain and "Income received"); into available capital it counts
+  as capital invested, like a contribution. It needs a source or reason.
+- An expense or income submitted twice within ten seconds with the same
+  account, amount, date and reason (a double click) is saved once.
 - **Move money:** from one account to the other. The total is unchanged.
 - **Adjust balances:** type what each account really holds on a date; an
   adjustment is recorded for each difference, with a reason. Capital
   adjustments count as capital invested; interest adjustments count as income.
 
-Within a day, money coming in is applied before money going out: capital added
-and adjustments, then payments, transfers, loans, expenses and withdrawals.
+Within a day, money coming in is applied before money going out: capital added,
+income and adjustments, then payments, transfers, loans, expenses and
+withdrawals.
 Neither account may go below zero at any point; a new or edited record that
 would cause it is refused and the date is named.
 
@@ -259,7 +284,7 @@ would cause it is refused and the date is named.
 
 | Figure | Definition |
 | --- | --- |
-| Capital invested | Contributions − withdrawals + capital adjustments − expenses paid from capital |
+| Capital invested | Contributions − withdrawals + capital adjustments + income put into capital − expenses paid from capital |
 | Available capital, available interest | The two cash accounts above |
 | Capital lent out | Capital still owed on performing (non-defaulted) loans |
 | Interest due, unpaid | Interest of periods past their due date, not yet collected |
@@ -267,7 +292,7 @@ would cause it is refused and the date is named.
 | **Portfolio value** | Available capital + available interest + capital lent out + interest due, unpaid + late fees receivable |
 | Defaulted balance | What defaulted loans still owe; excluded from value |
 | Portfolio gain | Portfolio value − capital invested |
-| Income received | Interest + fees collected |
+| Income received | Interest + fees collected + income put into available interest |
 | Return on invested capital | Gain ÷ capital invested (total, not annualized) |
 | Expected interest per month | Rate × capital owed on active loans (twice for every-15-days loans) |
 
@@ -282,7 +307,7 @@ Consequences, all tested:
   to cash.
 - Capital contributions and withdrawals are **not profit or loss**.
 - Ledger invariant, checked day by day:
-  `cash + all capital still owed = capital invested + interest received + fees received + interest adjustments − expenses paid from interest`.
+  `cash + all capital still owed = capital invested + interest received + fees received + interest adjustments + income into interest − expenses paid from interest`.
 
 ## History and charts
 
@@ -312,6 +337,12 @@ beyond), drawn as straight segments between real values.
   (`payments.allocation_mode`, `payment_targets`, `installment_allocations`);
   and `late_fees`. Existing loans became interest-only loans with the same
   numbers. Nothing is deleted by the upgrade.
+- Schema v5 added a client's ID number, address and photo.
+- Schema v6 allows `income` in `cash_entries` (the table is rebuilt with
+  every row copied unchanged; a copy of the database is saved first). Company
+  address and phone, the receipt checkboxes and the receipt wording are
+  settings, stored in `app_settings`, so they need no table and backups carry
+  them.
 - **Reset all data** (Settings → Data) deletes clients, loans, payments,
   money movements and the change history, keeping settings, the receipt name
   and the logo. It only runs when you type RESET, and saves a complete copy
