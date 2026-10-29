@@ -122,6 +122,89 @@ pub(crate) fn cloud_language(conn: &Connection) -> Result<String> {
     state_value(conn, "language")
 }
 
+/// A file to fetch from the cloud after a new copy.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Download {
+    /// A client's ID photo (admins only), at the client's `version`.
+    Photo { client: String, version: i64 },
+    /// The business logo, at its address.
+    Logo { url: String },
+}
+
+fn file_tag(conn: &Connection, key: &str) -> Result<Option<String>> {
+    Ok(conn.query_row("SELECT tag FROM cloud_files WHERE key = ?1", [key], |r| r.get(0)).optional()?)
+}
+
+/// The photos and logo this database doesn't have in their latest version.
+pub fn downloads(conn: &Connection, snap: &Snapshot) -> Result<Vec<Download>> {
+    let mut out = Vec::new();
+    if snap.me.role == Role::Admin {
+        for c in snap.clients.iter().filter(|c| c.has_photo) {
+            let kept: bool =
+                conn.query_row("SELECT EXISTS(SELECT 1 FROM client_photos WHERE client_id = ?1)", [c.record_no], |r| r.get(0))?;
+            if !kept || file_tag(conn, &format!("photo:{}", c.id))? != Some(c.version.to_string()) {
+                out.push(Download::Photo { client: c.id.clone(), version: c.version });
+            }
+        }
+    }
+    if let Some(url) = snap.settings.as_ref().and_then(|s| s.logo_url.clone())
+        && file_tag(conn, "logo")?.as_deref() != Some(url.as_str())
+    {
+        out.push(Download::Logo { url });
+    }
+    Ok(out)
+}
+
+/// Keeps a downloaded file: an ID photo as JPEG encrypted for this Windows
+/// user, the logo as the PNG the app prints. A photo for a client that is
+/// gone, or that arrives after the user stopped being an admin, is dropped.
+pub fn save_download(conn: &Connection, d: &Download, bytes: &[u8]) -> Result<()> {
+    use crate::database::repositories::assets;
+    use crate::services::picture;
+    match d {
+        Download::Photo { client, version } => {
+            let Some(id) = local(conn, Entity::Client, client)? else { return Ok(()) };
+            if link(conn)?.is_none_or(|l| l.role != Role::Admin) {
+                return Ok(());
+            }
+            let jpeg = picture::Photo::from_upload(bytes).map_err(|e| anyhow::anyhow!(e.message()))?;
+            let sealed = super::vault::protect(jpeg.jpeg()).map_err(anyhow::Error::msg)?;
+            conn.execute(
+                "INSERT INTO client_photos (client_id, mime, data, updated_at) VALUES (?1, 'image/jpeg', ?2, ?3)
+                 ON CONFLICT (client_id) DO UPDATE SET data = excluded.data, updated_at = excluded.updated_at",
+                params![id, sealed, now_timestamp()],
+            )?;
+            conn.execute(
+                "INSERT INTO cloud_files (key, tag) VALUES (?1, ?2) ON CONFLICT (key) DO UPDATE SET tag = excluded.tag",
+                params![format!("photo:{client}"), version.to_string()],
+            )?;
+        }
+        Download::Logo { url } => {
+            let png = picture::logo_png(bytes).map_err(|e| anyhow::anyhow!(e.message()))?;
+            assets::set(conn, assets::LOGO, "image/png", &png)?;
+            conn.execute(
+                "INSERT INTO cloud_files (key, tag) VALUES ('logo', ?1) ON CONFLICT (key) DO UPDATE SET tag = excluded.tag",
+                [url],
+            )?;
+        }
+    }
+    Ok(())
+}
+
+/// Deletes every ID photo kept on this PC (signing out, or no longer an
+/// admin). They stay in the cloud.
+pub fn forget_photos(conn: &Connection) -> Result<()> {
+    conn.execute_batch("DELETE FROM client_photos; DELETE FROM cloud_files WHERE key GLOB 'photo:*';")?;
+    Ok(())
+}
+
+/// A photo as kept in a linked database: encrypted with DPAPI. Photos saved
+/// before linking (or in an unlinked database) are plain JPEG or PNG.
+pub(crate) fn open_photo(data: Vec<u8>) -> Result<Vec<u8>> {
+    let plain = data.starts_with(&[0xFF, 0xD8]) || data.starts_with(b"\x89PNG");
+    if plain { Ok(data) } else { super::vault::unprotect(&data).map_err(anyhow::Error::msg) }
+}
+
 /// Milliseconds since 1970 as the local timestamp text.
 fn stamp(ms: i64) -> String {
     chrono::DateTime::from_timestamp_millis(ms).unwrap_or_default().format("%Y-%m-%dT%H:%M:%SZ").to_string()
@@ -173,6 +256,14 @@ pub fn apply(conn: &mut Connection, snap: &Snapshot) -> Result<()> {
     tx.execute("DELETE FROM clients WHERE id NOT IN (SELECT value FROM json_each(?1))", [&keep])?;
     let photoless: Vec<i64> = snap.clients.iter().filter(|c| !c.has_photo).map(|c| c.record_no).collect();
     tx.execute("DELETE FROM client_photos WHERE client_id IN (SELECT value FROM json_each(?1))", [serde_json::to_string(&photoless)?])?;
+    if snap.me.role != Role::Admin {
+        // ID photos stay only on admins' PCs.
+        forget_photos(&tx)?;
+    }
+    if snap.settings.as_ref().is_none_or(|s| s.logo_url.is_none()) {
+        crate::database::repositories::assets::remove(&tx, crate::database::repositories::assets::LOGO)?;
+        tx.execute("DELETE FROM cloud_files WHERE key = 'logo'", [])?;
+    }
 
     let mut remote = tx.prepare("INSERT INTO remote_ids (entity, local_id, seq, remote_id, version) VALUES (?1, ?2, ?3, ?4, ?5)")?;
     let mut local = std::collections::HashMap::new();
@@ -550,5 +641,58 @@ pub(crate) mod tests {
         let p = path_for("k57abc123").unwrap();
         assert!(p.ends_with("cloud/k57abc123.db"), "{}", p.display());
         assert!(path_for("../x").is_err() && path_for("").is_err());
+    }
+
+    #[test]
+    fn admins_keep_id_photos_encrypted_and_others_none() {
+        let mut store = Store::in_memory();
+        let mut b = book();
+        b["settings"]["logoUrl"] = json!("https://files.example/logo1");
+        let s = snap(b.clone());
+        store.apply_cloud(&s).unwrap();
+        let want = store.cloud_downloads(&s).unwrap();
+        let photo = Download::Photo { client: "c7".into(), version: 2 };
+        let logo = Download::Logo { url: "https://files.example/logo1".into() };
+        assert_eq!(want, [photo.clone(), logo.clone()]);
+
+        let picture = crate::services::picture::tests::png(40, 30);
+        store.save_download(&photo, &picture).unwrap();
+        store.save_download(&logo, &picture).unwrap();
+        assert!(store.cloud_downloads(&s).unwrap().is_empty(), "nothing new to fetch");
+        let kept = clients::photo(store.conn(), 7).unwrap().unwrap();
+        assert!(!kept.starts_with(&[0xFF, 0xD8]), "kept encrypted");
+        assert!(store.client_photo(7).unwrap().unwrap().starts_with(&[0xFF, 0xD8]), "shown as JPEG");
+        assert!(store.snapshot().unwrap().logo.is_some());
+
+        // A new version of the client (the photo changed) is fetched again.
+        b["clients"][0]["version"] = json!(3.0);
+        let s = snap(b.clone());
+        store.apply_cloud(&s).unwrap();
+        assert_eq!(store.cloud_downloads(&s).unwrap(), [Download::Photo { client: "c7".into(), version: 3 }]);
+
+        // No longer an admin: the photos go and none are fetched; the logo stays.
+        b["me"]["role"] = json!("collector");
+        let s = snap(b.clone());
+        store.apply_cloud(&s).unwrap();
+        assert_eq!(store.client_photo(7).unwrap(), None);
+        assert!(store.cloud_downloads(&s).unwrap().is_empty());
+        store.save_download(&photo, &picture).unwrap();
+        assert_eq!(store.client_photo(7).unwrap(), None, "a late download isn't kept");
+
+        // The logo removed in the cloud goes here too.
+        b["settings"]["logoUrl"] = json!(null);
+        store.apply_cloud(&snap(b)).unwrap();
+        assert!(store.snapshot().unwrap().logo.is_none());
+    }
+
+    #[test]
+    fn signing_out_forgets_the_photos() {
+        let mut store = Store::in_memory();
+        let s = snap(book());
+        store.apply_cloud(&s).unwrap();
+        store.save_download(&Download::Photo { client: "c7".into(), version: 2 }, &crate::services::picture::tests::png(20, 20)).unwrap();
+        store.forget_cloud_photos().unwrap();
+        assert_eq!(store.client_photo(7).unwrap(), None);
+        assert_eq!(store.cloud_downloads(&s).unwrap().len(), 1);
     }
 }

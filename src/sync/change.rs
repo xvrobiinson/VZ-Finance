@@ -20,6 +20,7 @@ use crate::domain::money::Cents;
 use crate::domain::portfolio::{Account, CapitalKind, EntryKind};
 use crate::i18n::t;
 use crate::services::Store;
+use crate::services::picture::{self, PhotoChange};
 use crate::services::settings::Settings;
 
 #[derive(Clone, Debug)]
@@ -136,6 +137,14 @@ pub enum Change {
         id: i64,
         reason: String,
     },
+    /// An ID photo set or removed (admins). A new client's photo is sent
+    /// once the cloud has the client.
+    ClientPhoto {
+        id: i64,
+        photo: PhotoChange,
+    },
+    /// The business logo, or none.
+    Logo(Option<Vec<u8>>),
     Settings(Box<Settings>),
 }
 
@@ -207,6 +216,21 @@ impl Change {
                 s.update_entry(*id, *account, *amount, *on, description, reason, today).map(|_| None)?
             }
             DeleteEntry { id, reason } => s.delete_entry(*id, reason).map(|_| None)?,
+            ClientPhoto { id, photo } => {
+                let c = crate::database::repositories::clients::get(s.conn(), *id)?.ok_or_else(|| anyhow!("client not found"))?;
+                let o = |v: &Option<String>| v.clone().unwrap_or_default();
+                let input = ClientInput {
+                    full_name: c.full_name.clone(),
+                    phone: o(&c.phone),
+                    email: o(&c.email),
+                    id_number: o(&c.id_number),
+                    address: o(&c.address),
+                    notes: c.notes.clone(),
+                };
+                s.save_client(Some(*id), &input, photo).map(|_| None)?
+            }
+            Logo(Some(bytes)) => s.set_logo(bytes).map(|_| None)?,
+            Logo(None) => s.remove_logo().map(|_| None)?,
             Settings(settings) => s.save_settings(settings).map(|_| None)?,
         })
     }
@@ -317,6 +341,19 @@ impl Change {
                 let (eid, version) = id(Entity::Entry, *local)?;
                 ("money:removeEntry", json!({ "id": eid, "expectedVersion": version, "reason": reason }))
             }
+            ClientPhoto { id: local, photo } => {
+                let cid = id(Entity::Client, *local)?.0;
+                match photo {
+                    PhotoChange::Set(p) => ("clients:setPhoto", json!({ "clientId": cid, "upload": upload(p.jpeg(), "image/jpeg") })),
+                    PhotoChange::Remove => ("clients:removePhoto", json!({ "clientId": cid })),
+                    PhotoChange::Keep => return Err(anyhow!("no photo change")),
+                }
+            }
+            Logo(Some(bytes)) => {
+                let png = picture::logo_png(bytes).map_err(|e| anyhow!(e.message()))?;
+                ("settings:setLogo", json!({ "upload": upload(&png, "image/png") }))
+            }
+            Logo(None) => ("settings:setLogo", json!({ "storageId": null })),
             Settings(s) => ("settings:update", settings(conn, s)?),
         };
         Ok(Op { mutation, args })
@@ -391,6 +428,13 @@ fn remote_id(conn: &Connection, entity: Entity, local: i64, seq: i64) -> Result<
             )
         )
     })
+}
+
+/// A file the worker uploads to the cloud's storage before the mutation,
+/// which then gets the stored file's `storageId` in its place.
+fn upload(bytes: &[u8], content_type: &str) -> Value {
+    use base64::Engine as _;
+    json!({ "contentType": content_type, "data": base64::engine::general_purpose::STANDARD.encode(bytes) })
 }
 
 fn client(c: &ClientInput) -> Value {
@@ -592,5 +636,24 @@ mod tests {
             (Some("es"), Some(4), Some("809-000"))
         );
         assert_eq!(a["receiptText"], json!({ "receipt_payment_footer": "=Gracias" }));
+    }
+
+    #[test]
+    fn photos_and_the_logo_travel_as_files_to_upload() {
+        let mut s = linked();
+        let png = crate::services::picture::tests::png(40, 30);
+        let photo = picture::Photo::from_upload(&png).unwrap();
+        let (_, q) = s.save(&Change::ClientPhoto { id: 7, photo: PhotoChange::Set(photo) }, today()).unwrap();
+        let a = q.unwrap().op.args;
+        assert_eq!((a["clientId"].as_str(), a["upload"]["contentType"].as_str()), (Some("c7"), Some("image/jpeg")));
+        assert!(s.client_photo(7).unwrap().is_some(), "shown here at once");
+        let (_, q) = s.save(&Change::ClientPhoto { id: 7, photo: PhotoChange::Remove }, today()).unwrap();
+        assert_eq!(q.unwrap().op.mutation, "clients:removePhoto");
+
+        let (_, q) = s.save(&Change::Logo(Some(png)), today()).unwrap();
+        let q = q.unwrap();
+        assert_eq!((q.op.mutation, q.op.args["upload"]["contentType"].as_str()), ("settings:setLogo", Some("image/png")));
+        let (_, q) = s.save(&Change::Logo(None), today()).unwrap();
+        assert_eq!(q.unwrap().op.args, json!({ "storageId": null }));
     }
 }

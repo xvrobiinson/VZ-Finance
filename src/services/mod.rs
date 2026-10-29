@@ -245,6 +245,10 @@ impl Store {
         &self.path
     }
 
+    pub(crate) fn conn(&self) -> &Connection {
+        &self.conn
+    }
+
     fn app_dir(&self) -> PathBuf {
         self.path.parent().and_then(Path::parent).unwrap_or(Path::new(".")).to_path_buf()
     }
@@ -536,7 +540,22 @@ impl Store {
 
     /// The client's photo (JPEG), loaded only when someone asks to see it.
     pub fn client_photo(&self, id: i64) -> Result<Option<Vec<u8>>> {
-        clients::photo(&self.conn, id)
+        clients::photo(&self.conn, id)?.map(crate::sync::replica::open_photo).transpose()
+    }
+
+    /// The photos and logo to fetch after a new copy from the cloud.
+    pub fn cloud_downloads(&self, snap: &crate::sync::wire::Snapshot) -> Result<Vec<crate::sync::replica::Download>> {
+        crate::sync::replica::downloads(&self.conn, snap)
+    }
+
+    /// Keeps a photo or logo fetched from the cloud.
+    pub fn save_download(&mut self, d: &crate::sync::replica::Download, bytes: &[u8]) -> Result<()> {
+        self.write(|c| crate::sync::replica::save_download(c, d, bytes))
+    }
+
+    /// Deletes the ID photos kept on this PC (on signing out).
+    pub fn forget_cloud_photos(&mut self) -> Result<()> {
+        self.write(crate::sync::replica::forget_photos)
     }
 
     pub fn set_client_archived(&mut self, id: i64, archived: bool) -> Result<()> {

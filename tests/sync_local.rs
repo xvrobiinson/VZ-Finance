@@ -19,6 +19,7 @@ use vz_finance::domain::loans::{Frequency, LoanTerms, Method};
 use vz_finance::domain::money::Rate;
 use vz_finance::domain::portfolio::{Account, CapitalKind, EntryKind};
 use vz_finance::services::Store;
+use vz_finance::services::picture::{Photo, PhotoChange};
 use vz_finance::sync::auth::{self, AuthError, Endpoints, Session};
 use vz_finance::sync::change::Change;
 use vz_finance::sync::figures::figures;
@@ -383,4 +384,105 @@ fn numbers(book: &vz_finance::domain::portfolio::Book, today: NaiveDate) -> serd
         loan.as_object_mut().unwrap().remove("no");
     }
     f
+}
+
+/// An ID photo and the logo set on the desktop reach the cloud, and an
+/// admin's desktop fetches them back (the photo kept encrypted).
+#[test]
+#[ignore = "needs a local PWA backend; see the top of this file"]
+fn photos_and_the_logo_go_both_ways() {
+    let email = format!("desktop-photos-{}@example.com", std::process::id());
+    let session = sign_in(&email);
+    let business_id = create_business(&session, "Préstamos Fotos");
+    let (worker, mut rx) =
+        Worker::start(Config { endpoints: endpoints(), client_version: "0.7.0".into() }, Stored { email, session }).unwrap();
+    worker.open(&business_id);
+    let tmp = tempfile::tempdir().unwrap();
+    let mut store = Store::open(tmp.path().join("data").join("linked.db")).unwrap();
+    apply_when(&mut rx, &mut store, "the empty books", |_| true);
+    let today = store.cloud_link().unwrap().unwrap().today;
+
+    let ana = ClientInput { full_name: "Ana Gómez".into(), ..Default::default() };
+    assert!(matches!(save_and_send(&mut store, &worker, Change::NewClient(ana), today), Outcome::Accepted(_)));
+    apply_when(&mut rx, &mut store, "the client", |s| s.clients.len() == 1);
+    let client = store.snapshot().unwrap().clients[0].id;
+
+    let mut picture = image::RgbImage::new(64, 48);
+    picture.pixels_mut().for_each(|p| *p = image::Rgb([200, 120, 40]));
+    let mut png = Vec::new();
+    picture.write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png).unwrap();
+    let photo = Photo::from_upload(&png).unwrap();
+    let outcome = save_and_send(&mut store, &worker, Change::ClientPhoto { id: client, photo: PhotoChange::Set(photo) }, today);
+    assert!(matches!(outcome, Outcome::Accepted(_)), "{outcome:?}");
+    let outcome = save_and_send(&mut store, &worker, Change::Logo(Some(png)), today);
+    assert!(matches!(outcome, Outcome::Accepted(_)), "{outcome:?}");
+
+    let snap = wait_for(&mut rx, "the photo and logo", |e| match e {
+        Event::Snapshot(s) if s.clients[0].has_photo && s.settings.as_ref().is_some_and(|x| x.logo_url.is_some()) => Some(s),
+        Event::Problem(p) => panic!("{p}"),
+        _ => None,
+    });
+    store.apply_cloud(&snap).unwrap();
+    store.forget_cloud_photos().unwrap();
+    let wanted = store.cloud_downloads(&snap).unwrap();
+    assert_eq!(wanted.len(), 2, "{wanted:?}");
+    worker.download(wanted);
+    for _ in 0..2 {
+        let (file, bytes) = wait_for(&mut rx, "a download", |e| match e {
+            Event::Downloaded { file, bytes } => Some((file, bytes)),
+            Event::Problem(p) => panic!("{p}"),
+            _ => None,
+        });
+        store.save_download(&file, &bytes).unwrap();
+    }
+    assert!(store.client_photo(client).unwrap().unwrap().starts_with(&[0xFF, 0xD8]));
+    assert!(store.snapshot().unwrap().logo.is_some());
+    assert!(store.cloud_downloads(&snap).unwrap().is_empty());
+    worker.stop();
+}
+
+/// Waiving a late fee the cloud assessed. The cloud assesses late fees
+/// hourly; while this waits, run `npx convex run lateFees:refreshAll` in the
+/// PWA repo.
+#[test]
+#[ignore = "needs a local PWA backend and a late-fee run; see above"]
+fn a_late_fee_is_waived_from_the_desktop() {
+    let email = format!("desktop-fees-{}@example.com", std::process::id());
+    let session = sign_in(&email);
+    let business_id = create_business(&session, "Préstamos Mora");
+    let (worker, mut rx) =
+        Worker::start(Config { endpoints: endpoints(), client_version: "0.7.0".into() }, Stored { email, session }).unwrap();
+    worker.open(&business_id);
+    let tmp = tempfile::tempdir().unwrap();
+    let mut store = Store::open(tmp.path().join("data").join("linked.db")).unwrap();
+    apply_when(&mut rx, &mut store, "the empty books", |_| true);
+    let today = store.cloud_link().unwrap().unwrap().today;
+    let start = today - chrono::Days::new(45);
+
+    let money = Change::NewCapital { kind: CapitalKind::Contribution, amount: 50_000_000, on: start, notes: String::new() };
+    assert!(matches!(save_and_send(&mut store, &worker, money, today), Outcome::Accepted(_)));
+    let ana = ClientInput { full_name: "Ana Gómez".into(), ..Default::default() };
+    assert!(matches!(save_and_send(&mut store, &worker, Change::NewClient(ana), today), Outcome::Accepted(_)));
+    apply_when(&mut rx, &mut store, "the client", |s| s.clients.len() == 1 && s.capital.len() == 1);
+    let terms = LoanTerms {
+        principal: 1_000_000,
+        rate: Rate(100_000),
+        interest_period: Frequency::Monthly,
+        frequency: Frequency::Monthly,
+        start_date: start,
+        method: Method::Declining,
+        installments: Some(3),
+        late_fee_rate: Rate(50_000),
+    };
+    let client = store.snapshot().unwrap().clients[0].id;
+    let loan = Change::NewLoan { client_id: client, terms, schedule: None, notes: String::new() };
+    assert!(matches!(save_and_send(&mut store, &worker, loan, today), Outcome::Accepted(_)));
+    println!("READY FOR LATE FEES");
+    apply_when(&mut rx, &mut store, "the late fee", |s| !s.late_fees.is_empty());
+    let loan = store.snapshot().unwrap().loans[0].id;
+    let waive = Change::WaiveLateFee { loan_id: loan, seq: 1, waived: true, reason: "Cliente avisó".into() };
+    let outcome = save_and_send(&mut store, &worker, waive, today);
+    assert!(matches!(outcome, Outcome::Accepted(_)), "{outcome:?}");
+    apply_when(&mut rx, &mut store, "the waiver", |s| s.late_fees[0].waived_at.is_some());
+    worker.stop();
 }

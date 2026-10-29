@@ -45,3 +45,12 @@ CREATE TABLE sync_state (
     language         TEXT NOT NULL DEFAULT 'es',
     applied_at       TEXT NOT NULL
 ) STRICT;
+
+-- Files downloaded from the cloud and which version of them: `logo` (tag:
+-- the logo's address) and `photo:<client cloud id>` (tag: the client's
+-- version, which changes with the photo). ID photos are kept only on
+-- admins' PCs, encrypted for this Windows user (DPAPI), in client_photos.
+CREATE TABLE cloud_files (
+    key TEXT PRIMARY KEY NOT NULL,
+    tag TEXT NOT NULL
+) STRICT;

@@ -22,6 +22,7 @@ use tokio::sync::mpsc;
 
 use super::auth::{self, AuthError, Endpoints};
 use super::outbox::{Outcome, Queued};
+use super::replica::Download;
 use super::vault::{self, Stored};
 use super::wire::{self, Membership, Snapshot};
 
@@ -54,11 +55,14 @@ pub enum Event {
     Snapshot(Box<Snapshot>),
     /// Something went wrong that the worker keeps going after (logged too).
     Problem(String),
+    /// A photo or logo asked for with `Worker::download`.
+    Downloaded { file: Download, bytes: Vec<u8> },
 }
 
 enum Command {
     Open(String),
     Send { mutation: &'static str, args: serde_json::Value, reply: oneshot::Sender<Outcome> },
+    Download(Vec<Download>),
     Stop,
 }
 
@@ -98,6 +102,14 @@ impl Worker {
         let (reply, rx) = oneshot::channel();
         let _ = self.commands.send(Command::Send { mutation: q.op.mutation, args: q.op.args.clone(), reply });
         rx
+    }
+
+    /// Fetches photos and the logo for the open business
+    /// (`Store::cloud_downloads`); each arrives as `Event::Downloaded`.
+    pub fn download(&self, files: Vec<Download>) {
+        if !files.is_empty() {
+            let _ = self.commands.send(Command::Download(files));
+        }
     }
 
     /// Stops the worker and waits for its thread.
@@ -147,7 +159,77 @@ fn to_convex(v: serde_json::Value) -> Value {
 /// How long to wait for the cloud's answer to a change.
 const ANSWER: Duration = Duration::from_secs(25);
 
-async fn send_change(mut client: ConvexClient, mutation: &str, args: serde_json::Value) -> Outcome {
+/// Sends one change. A photo or logo goes to the cloud's file storage first
+/// (`upload` in the arguments); the mutation then names the stored file.
+/// Until the mutation itself is sent nothing has changed in the cloud, so a
+/// failed upload leaves the change waiting.
+async fn send_change(mut client: ConvexClient, mutation: &str, mut args: serde_json::Value) -> Outcome {
+    if let Some(file) = args.as_object_mut().and_then(|a| a.remove("upload")) {
+        match upload(&mut client, mutation, &args["businessId"], &file).await {
+            Ok(storage_id) => args["storageId"] = storage_id.into(),
+            Err(o) => return o,
+        }
+    }
+    call(&mut client, mutation, args).await
+}
+
+async fn upload(
+    client: &mut ConvexClient,
+    mutation: &str,
+    business: &serde_json::Value,
+    file: &serde_json::Value,
+) -> Result<String, Outcome> {
+    use base64::Engine as _;
+    let url_from = match mutation {
+        "clients:setPhoto" => "clients:photoUploadUrl",
+        "settings:setLogo" => "settings:logoUploadUrl",
+        _ => return Err(Outcome::Refused(serde_json::json!({ "code": "invalid" }))),
+    };
+    let url = match call(client, url_from, serde_json::json!({ "businessId": business })).await {
+        Outcome::Accepted(serde_json::Value::String(url)) => url,
+        Outcome::Refused(e) => return Err(Outcome::Refused(e)),
+        _ => return Err(Outcome::NotSent),
+    };
+    let content_type = file["contentType"].as_str().unwrap_or("application/octet-stream").to_string();
+    let bytes = base64::engine::general_purpose::STANDARD.decode(file["data"].as_str().unwrap_or_default()).unwrap_or_default();
+    let stored = tokio::task::spawn_blocking(move || -> Result<String, String> {
+        let mut res = auth::agent().post(&url).header("Content-Type", &content_type).send(&bytes[..]).map_err(|e| e.to_string())?;
+        if res.status() != 200 {
+            return Err(format!("upload: HTTP {}", res.status()));
+        }
+        let body: serde_json::Value = res.body_mut().read_json().map_err(|e| e.to_string())?;
+        body["storageId"].as_str().map(str::to_string).ok_or_else(|| "upload: no storageId".into())
+    })
+    .await;
+    match stored {
+        Ok(Ok(id)) => Ok(id),
+        Ok(Err(e)) => {
+            log::info!("sync: {e}");
+            Err(Outcome::NotSent)
+        }
+        Err(_) => Err(Outcome::NotSent),
+    }
+}
+
+/// Fetches a photo (with the user's token, admins only) or the logo.
+fn fetch(endpoints: &Endpoints, business: &str, token: Option<&str>, file: &Download) -> Result<Vec<u8>, String> {
+    let agent = auth::agent();
+    let req = match file {
+        Download::Photo { client, .. } => agent
+            .get(format!("{}/client-photo", endpoints.site))
+            .query("businessId", business)
+            .query("clientId", client)
+            .header("Authorization", format!("Bearer {}", token.unwrap_or_default())),
+        Download::Logo { url } => agent.get(url),
+    };
+    let mut res = req.call().map_err(|e| e.to_string())?;
+    if res.status() != 200 {
+        return Err(format!("HTTP {}", res.status()));
+    }
+    res.body_mut().with_config().limit(8 * 1024 * 1024).read_to_vec().map_err(|e| e.to_string())
+}
+
+async fn call(client: &mut ConvexClient, mutation: &str, args: serde_json::Value) -> Outcome {
     let serde_json::Value::Object(args) = args else { return Outcome::Refused(serde_json::json!({ "code": "invalid" })) };
     let args = args.into_iter().map(|(k, v)| (k, to_convex(v))).collect();
     match tokio::time::timeout(ANSWER, client.mutation(mutation, args)).await {
@@ -171,9 +253,17 @@ struct Compat {
 
 /// Fetches Convex tokens with the session, renewing the stored session when
 /// the server slides it forward and reporting a session that has ended.
-fn token_fetcher(endpoints: Endpoints, stored: Arc<Mutex<Stored>>, out: events::UnboundedSender<Event>) -> convex::AuthTokenFetcher {
+/// The Convex token last fetched, for the photo endpoint.
+type Token = Arc<Mutex<Option<String>>>;
+
+fn token_fetcher(
+    endpoints: Endpoints,
+    stored: Arc<Mutex<Stored>>,
+    latest: Token,
+    out: events::UnboundedSender<Event>,
+) -> convex::AuthTokenFetcher {
     Box::new(move |_force| {
-        let (endpoints, stored, out) = (endpoints.clone(), stored.clone(), out.clone());
+        let (endpoints, stored, latest, out) = (endpoints.clone(), stored.clone(), latest.clone(), out.clone());
         Box::pin(async move {
             let session = stored.lock().unwrap().session.clone();
             let ep = endpoints.clone();
@@ -187,6 +277,7 @@ fn token_fetcher(endpoints: Endpoints, stored: Arc<Mutex<Stored>>, out: events::
                             log::warn!("renewed session not saved: {e}");
                         }
                     }
+                    *latest.lock().unwrap() = Some(token.clone());
                     Ok(AuthenticationToken::User(token))
                 }
                 Err(AuthError::SignedOut) => {
@@ -238,7 +329,8 @@ async fn run(config: Config, stored: Stored, mut commands: mpsc::UnboundedReceiv
     }
 
     let stored = Arc::new(Mutex::new(stored));
-    let fetcher = || token_fetcher(config.endpoints.clone(), stored.clone(), out.clone());
+    let latest: Token = Arc::default();
+    let fetcher = || token_fetcher(config.endpoints.clone(), stored.clone(), latest.clone(), out.clone());
     client.set_auth_callback(Some(fetcher())).await;
 
     let mut businesses = match client.subscribe("businesses:mine", BTreeMap::new()).await {
@@ -283,6 +375,19 @@ async fn run(config: Config, stored: Stored, mut commands: mpsc::UnboundedReceiv
                         tokio::spawn(async move { let _ = reply.send(send_change(client, mutation, args).await); });
                     }
                     _ => { let _ = reply.send(Outcome::NotSent); }
+                },
+                Some(Command::Download(files)) => if let Some(business) = open.clone() {
+                    for file in files {
+                        let (endpoints, business, out) = (config.endpoints.clone(), business.clone(), out.clone());
+                        let token = latest.lock().unwrap().clone();
+                        tokio::task::spawn_blocking(move || {
+                            let event = match fetch(&endpoints, &business, token.as_deref(), &file) {
+                                Ok(bytes) => Event::Downloaded { file, bytes },
+                                Err(e) => Event::Problem(format!("download: {e}")),
+                            };
+                            let _ = out.unbounded_send(event);
+                        });
+                    }
                 },
                 Some(Command::Stop) | None => return,
             },
