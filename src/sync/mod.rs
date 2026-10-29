@@ -1,0 +1,18 @@
+//! Cloud sync with the Acervus Finance PWA's Convex backend
+//! (docs/DESKTOP-SYNC-PLAN.md in the PWA repo).
+//!
+//! - `auth`: signing in with the emailed code, and Convex tokens.
+//! - `vault`: the session in Windows Credential Manager; DPAPI for ID photos.
+//! - `wire`: what the cloud sends, as plain structs.
+//! - `worker`: the background connection that reports to the app.
+//!
+//! Without a signed-in session none of this runs and the app makes no
+//! network requests, as before.
+
+pub mod auth;
+pub mod vault;
+pub mod wire;
+pub mod worker;
+
+/// This build's version, which the cloud checks before syncing.
+pub const CLIENT_VERSION: &str = env!("CARGO_PKG_VERSION");
