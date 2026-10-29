@@ -5,6 +5,7 @@
 //! - `vault`: the session in Windows Credential Manager; DPAPI for ID photos.
 //! - `wire`: what the cloud sends, as plain structs.
 //! - `replica`: a linked database as a copy of the cloud's books.
+//! - `change`, `outbox`: changes saved on this PC, queued for the cloud.
 //! - `figures`: the engine's figures in the shape the cloud compares.
 //! - `worker`: the background connection that reports to the app.
 //!
@@ -12,7 +13,9 @@
 //! network requests, as before.
 
 pub mod auth;
+pub mod change;
 pub mod figures;
+pub mod outbox;
 pub mod replica;
 pub mod vault;
 pub mod wire;

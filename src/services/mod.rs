@@ -33,6 +33,8 @@ use crate::domain::ledger::{Allocation, ContractStatus, LoanFacts, PaymentError,
 use crate::domain::money::Cents;
 use crate::domain::portfolio::{Account, Book, LoanBook, Shortfall};
 use crate::i18n::t;
+use crate::sync::change::{Change as CloudChange, Saved};
+use crate::sync::outbox::{self, Queued};
 use picture::PhotoChange;
 use settings::Settings;
 
@@ -309,9 +311,55 @@ impl Store {
         })
     }
 
-    /// Replaces the books with the cloud's copy (`sync::replica::apply`).
+    /// Saves a change with the local rules. In a database linked to the
+    /// cloud it is also queued for the cloud, and the queued entry is
+    /// returned for sending. A change naming a record the cloud doesn't have
+    /// yet is refused before anything is saved.
+    pub fn save(&mut self, change: &CloudChange, today: NaiveDate) -> Result<(Saved, Option<Queued>)> {
+        let op = match self.cloud_link()? {
+            Some(_) => Some(change.op(&self.conn)?),
+            None => None,
+        };
+        let saved = change.run(self, today)?;
+        let queued = op.map(|op| outbox::push(&self.conn, op)).transpose()?;
+        Ok((saved, queued))
+    }
+
+    /// Replaces the books with the cloud's copy (`sync::replica::apply`),
+    /// then shows the changes still waiting to be sent on top of it.
     pub fn apply_cloud(&mut self, snap: &crate::sync::wire::Snapshot) -> Result<()> {
-        crate::sync::replica::apply(&mut self.conn, snap)
+        crate::sync::replica::apply(&mut self.conn, snap)?;
+        let today = NaiveDate::parse_from_str(&snap.today, "%Y-%m-%d")?;
+        for change in outbox::replayable(&self.conn)? {
+            if let Err(e) = change.run(self, today) {
+                log::info!("waiting change no longer fits the books: {e:#}");
+            }
+        }
+        Ok(())
+    }
+
+    /// The changes waiting to be sent to the cloud, oldest first.
+    pub fn outbox_waiting(&self) -> Result<Vec<Queued>> {
+        outbox::waiting(&self.conn)
+    }
+
+    /// The changes the cloud refused (or that may not have arrived).
+    pub fn outbox_refused(&self) -> Result<Vec<outbox::Refused>> {
+        outbox::refused(&self.conn)
+    }
+
+    /// Records the cloud's answer for a sent change. When it returns `true`,
+    /// apply the last copy from the cloud again so the books show it.
+    pub fn outbox_finish(&mut self, q: &Queued, outcome: &outbox::Outcome) -> Result<bool> {
+        outbox::finish(&self.conn, q, outcome)
+    }
+
+    pub fn outbox_retry(&mut self, op_id: &str, args: Option<&serde_json::Value>) -> Result<()> {
+        outbox::retry(&self.conn, op_id, args)
+    }
+
+    pub fn outbox_discard(&mut self, op_id: &str) -> Result<()> {
+        outbox::discard(&self.conn, op_id)
     }
 
     /// The cloud business this database follows, if it is linked.

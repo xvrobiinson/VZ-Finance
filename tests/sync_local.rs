@@ -9,14 +9,23 @@
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
+use chrono::NaiveDate;
 use convex::{ConvexClient, FunctionResult, Value};
 use futures::StreamExt;
 use futures::channel::mpsc::UnboundedReceiver;
+use vz_finance::database::repositories::clients::ClientInput;
+use vz_finance::domain::installments::Instruction;
+use vz_finance::domain::loans::{Frequency, LoanTerms, Method};
+use vz_finance::domain::money::Rate;
+use vz_finance::domain::portfolio::{Account, CapitalKind, EntryKind};
 use vz_finance::services::Store;
 use vz_finance::sync::auth::{self, AuthError, Endpoints, Session};
+use vz_finance::sync::change::Change;
 use vz_finance::sync::figures::figures;
+use vz_finance::sync::outbox::Outcome;
 use vz_finance::sync::vault::{self, Stored};
 use vz_finance::sync::wire::Role;
+use vz_finance::sync::wire::Snapshot;
 use vz_finance::sync::worker::{Config, Event, Worker};
 
 const CLOUD: &str = "http://127.0.0.1:3210";
@@ -181,4 +190,197 @@ fn an_imported_book_arrives_with_the_same_figures() {
     let got = figures(&store.snapshot().unwrap().book, today);
     assert_eq!(got["summary"], expected["summary"]);
     assert_eq!(got["loans"], expected["loans"]);
+}
+
+/// Waits for a copy of the books that `ready` accepts and applies it.
+fn apply_when(rx: &mut UnboundedReceiver<Event>, store: &mut Store, what: &str, ready: impl Fn(&Snapshot) -> bool) {
+    let snap = wait_for(rx, what, |e| match e {
+        Event::Snapshot(s) if ready(&s) => Some(s),
+        Event::Problem(p) => panic!("{p}"),
+        _ => None,
+    });
+    store.apply_cloud(&snap).unwrap();
+}
+
+/// Saves `change` here, sends it and returns the cloud's answer.
+fn save_and_send(store: &mut Store, worker: &Worker, change: Change, today: NaiveDate) -> Outcome {
+    let (_, q) = store.save(&change, today).unwrap();
+    let q = q.expect("a linked database queues the change");
+    let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+    let outcome = rt.block_on(worker.send(&q)).unwrap_or(Outcome::NotSent);
+    store.outbox_finish(&q, &outcome).unwrap();
+    outcome
+}
+
+/// Each kind of change made on the desktop reaches the cloud, and the
+/// cloud's books then match what the desktop worked out on its own.
+#[test]
+#[ignore = "needs a local PWA backend; see the top of this file"]
+fn changes_made_here_reach_the_cloud() {
+    let email = format!("desktop-saves-{}@example.com", std::process::id());
+    let session = sign_in(&email);
+    let business_id = create_business(&session, "Préstamos Sync");
+    let stored = Stored { email, session };
+    let (worker, mut rx) = Worker::start(Config { endpoints: endpoints(), client_version: "0.7.0".into() }, stored).unwrap();
+    worker.open(&business_id);
+    let tmp = tempfile::tempdir().unwrap();
+    let mut store = Store::open(tmp.path().join("data").join("linked.db")).unwrap();
+    apply_when(&mut rx, &mut store, "the empty books", |_| true);
+    let today = store.cloud_link().unwrap().unwrap().today;
+
+    let check = |store: &mut Store, rx: &mut UnboundedReceiver<Event>, change: Change, what: &str, ready: &dyn Fn(&Snapshot) -> bool| {
+        let outcome = save_and_send(store, &worker, change, today);
+        assert!(matches!(outcome, Outcome::Accepted(_)), "{what}: {outcome:?}");
+        let here = numbers(&store.snapshot().unwrap().book, today);
+        apply_when(rx, store, what, ready);
+        assert!(store.outbox_waiting().unwrap().is_empty());
+        assert_eq!(numbers(&store.snapshot().unwrap().book, today), here, "{what}: the cloud's books differ from the desktop's");
+    };
+
+    let one_million = Change::NewCapital { kind: CapitalKind::Contribution, amount: 100_000_000, on: today, notes: "Inicio".into() };
+    check(&mut store, &mut rx, one_million, "capital", &|s| s.capital.len() == 1);
+    let ana = ClientInput { full_name: "Ana Gómez".into(), phone: "809-555-0101".into(), ..Default::default() };
+    check(&mut store, &mut rx, Change::NewClient(ana), "client", &|s| s.clients.len() == 1);
+    let client = store.snapshot().unwrap().clients[0].id;
+    let terms = LoanTerms {
+        principal: 10_000_000,
+        rate: Rate(100_000),
+        interest_period: Frequency::Monthly,
+        frequency: Frequency::Monthly,
+        start_date: today,
+        method: Method::Declining,
+        installments: Some(4),
+        late_fee_rate: Rate(50_000),
+    };
+    let loan = Change::NewLoan { client_id: client, terms: terms.clone(), schedule: None, notes: String::new() };
+    check(&mut store, &mut rx, loan, "loan", &|s| s.loans.len() == 1);
+    let loan = store.snapshot().unwrap().loans[0].id;
+    let pay = Change::NewPayment {
+        loan_id: loan,
+        amount: 1_500_000,
+        fee: 0,
+        on: today,
+        notes: String::new(),
+        instruction: Some(Instruction::Auto),
+    };
+    check(&mut store, &mut rx, pay, "payment", &|s| s.payments.len() == 1);
+    let gas = Change::NewEntry {
+        kind: EntryKind::Expense,
+        account: Account::Interest,
+        amount: 50_000,
+        on: today,
+        description: "Gasolina".into(),
+    };
+    check(&mut store, &mut rx, gas, "expense", &|s| s.entries.len() == 1);
+    let payment = store.snapshot().unwrap().payments[0].id;
+    let edit = Change::EditPayment {
+        id: payment,
+        amount: 2_000_000,
+        fee: 0,
+        on: today,
+        notes: "corregido".into(),
+        instruction: Some(Instruction::Auto),
+        reason: "Monto equivocado".into(),
+    };
+    check(&mut store, &mut rx, edit, "payment edit", &|s| s.payments.first().is_some_and(|p| p.amount == 2_000_000));
+
+    let mut settings = store.snapshot().unwrap().settings;
+    settings.company_phone = "809-555-0000".into();
+    check(&mut store, &mut rx, Change::Settings(Box::new(settings)), "settings", &|s| {
+        s.settings.as_ref().is_some_and(|x| x.company_phone == "809-555-0000")
+    });
+    let capital = store.snapshot().unwrap().capital[0].id;
+    let more = Change::EditCapital {
+        id: capital,
+        kind: CapitalKind::Contribution,
+        amount: 120_000_000,
+        on: today,
+        notes: "Inicio".into(),
+        reason: "Faltaba".into(),
+    };
+    check(&mut store, &mut rx, more, "capital edit", &|s| s.capital[0].amount == 120_000_000);
+    let entry = store.snapshot().unwrap().entries[0].id;
+    let gas = Change::EditEntry {
+        id: entry,
+        account: Account::Interest,
+        amount: 60_000,
+        on: today,
+        description: "Gasolina".into(),
+        reason: "Recibo".into(),
+    };
+    check(&mut store, &mut rx, gas, "entry edit", &|s| s.entries[0].amount == 60_000);
+    let cash = store.snapshot().unwrap().book.summary(today);
+    let count = Change::AdjustBalances {
+        capital: cash.available_capital - 10_000,
+        interest: cash.available_interest,
+        on: today,
+        reason: "Conteo de caja".into(),
+    };
+    check(&mut store, &mut rx, count, "adjustment", &|s| s.entries.len() == 2);
+    let loan_notes =
+        Change::EditLoan { id: loan, client_id: client, terms, schedule: None, notes: "Fiador: Pedro".into(), reason: "Nota".into() };
+    check(&mut store, &mut rx, loan_notes, "loan edit", &|s| s.loans[0].notes == "Fiador: Pedro");
+    let default = Change::MarkDefaulted { id: loan, on: today, note: "No contesta".into() };
+    check(&mut store, &mut rx, default, "default", &|s| s.loans[0].status == "defaulted");
+    check(&mut store, &mut rx, Change::Reinstate { id: loan }, "reinstate", &|s| s.loans[0].status == "active");
+
+    // Sent twice (an answer lost on the way): recorded once.
+    let tip =
+        Change::NewEntry { kind: EntryKind::Income, account: Account::Interest, amount: 25_000, on: today, description: "Propina".into() };
+    let (_, q) = store.save(&tip, today).unwrap();
+    let q = q.unwrap();
+    let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+    let first = rt.block_on(worker.send(&q)).unwrap();
+    let again = rt.block_on(worker.send(&q)).unwrap();
+    match (&first, &again) {
+        (Outcome::Accepted(a), Outcome::Accepted(b)) => {
+            assert_eq!(a["entryId"], b["entryId"]);
+            assert_eq!(b["duplicate"], true);
+        }
+        other => panic!("{other:?}"),
+    }
+    store.outbox_finish(&q, &again).unwrap();
+    apply_when(&mut rx, &mut store, "the income", |s| s.entries.len() == 3);
+
+    for (change, what) in [
+        (Change::DeleteEntry { id: store.snapshot().unwrap().entries[0].id, reason: "Duplicado".into() }, "entry delete"),
+        (Change::DeletePayment { id: payment, reason: "Error".into() }, "payment delete"),
+        (Change::DeleteLoan { id: loan, reason: "Error".into() }, "loan delete"),
+    ] {
+        let before = store.snapshot().unwrap();
+        let (entries, payments, loans) = (before.entries.len(), before.payments.len(), before.loans.len());
+        check(&mut store, &mut rx, change, what, &|s| s.entries.len() + s.payments.len() + s.loans.len() == entries + payments + loans - 1);
+    }
+    check(&mut store, &mut rx, Change::ArchiveClient { id: client, archived: true }, "archive", &|s| s.clients[0].archived_at.is_some());
+    check(&mut store, &mut rx, Change::ArchiveClient { id: client, archived: false }, "restore", &|s| s.clients[0].archived_at.is_none());
+    let small = Change::NewCapital { kind: CapitalKind::Contribution, amount: 500_000, on: today, notes: String::new() };
+    check(&mut store, &mut rx, small, "second capital", &|s| s.capital.len() == 2);
+    let small = store.snapshot().unwrap().capital.iter().map(|c| c.id).max().unwrap();
+    check(&mut store, &mut rx, Change::DeleteCapital { id: small, reason: "Prueba".into() }, "capital delete", &|s| s.capital.len() == 1);
+
+    // Two edits from the same copy: the second started from a version the
+    // first replaced, so the cloud refuses it and the books keep the first.
+    let renamed = |name: &str| Change::EditClient { id: client, input: ClientInput { full_name: name.into(), ..Default::default() } };
+    assert!(matches!(save_and_send(&mut store, &worker, renamed("Ana G."), today), Outcome::Accepted(_)));
+    match save_and_send(&mut store, &worker, renamed("Ana María"), today) {
+        Outcome::Refused(e) => assert_eq!(e["code"], "conflict"),
+        other => panic!("a stale edit was {other:?}"),
+    }
+    apply_when(&mut rx, &mut store, "the first edit", |s| s.clients.first().is_some_and(|c| c.full_name == "Ana G."));
+    assert_eq!(store.snapshot().unwrap().clients[0].full_name, "Ana G.");
+    assert_eq!(store.outbox_refused().unwrap().len(), 1);
+    let gone = Change::DeleteClient { id: client, reason: "Ya no es cliente".into() };
+    assert!(matches!(save_and_send(&mut store, &worker, gone, today), Outcome::Accepted(_)));
+    apply_when(&mut rx, &mut store, "the client delete", |s| s.clients.is_empty());
+    worker.stop();
+}
+
+/// The figures without record numbers: a record made here gets its number
+/// from the cloud when the cloud accepts it.
+fn numbers(book: &vz_finance::domain::portfolio::Book, today: NaiveDate) -> serde_json::Value {
+    let mut f = figures(book, today);
+    for loan in f["loans"].as_array_mut().unwrap() {
+        loan.as_object_mut().unwrap().remove("no");
+    }
+    f
 }

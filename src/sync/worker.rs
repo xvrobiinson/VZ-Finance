@@ -16,10 +16,12 @@ use std::time::Duration;
 use convex::{AuthenticationToken, ConvexClient, ConvexClientBuilder, FunctionResult, Value, WebSocketState};
 use futures::StreamExt;
 use futures::channel::mpsc as events;
+use futures::channel::oneshot;
 use serde::de::DeserializeOwned;
 use tokio::sync::mpsc;
 
 use super::auth::{self, AuthError, Endpoints};
+use super::outbox::{Outcome, Queued};
 use super::vault::{self, Stored};
 use super::wire::{self, Membership, Snapshot};
 
@@ -56,6 +58,7 @@ pub enum Event {
 
 enum Command {
     Open(String),
+    Send { mutation: &'static str, args: serde_json::Value, reply: oneshot::Sender<Outcome> },
     Stop,
 }
 
@@ -88,6 +91,15 @@ impl Worker {
         let _ = self.commands.send(Command::Open(business_id.to_string()));
     }
 
+    /// Sends a queued change to the open business. The answer arrives on
+    /// the returned channel: `Outcome::NotSent` when offline or no business is
+    /// open (a closed channel means the same: the worker stopped first).
+    pub fn send(&self, q: &Queued) -> oneshot::Receiver<Outcome> {
+        let (reply, rx) = oneshot::channel();
+        let _ = self.commands.send(Command::Send { mutation: q.op.mutation, args: q.op.args.clone(), reply });
+        rx
+    }
+
     /// Stops the worker and waits for its thread.
     pub fn stop(mut self) {
         let _ = self.commands.send(Command::Stop);
@@ -115,6 +127,38 @@ fn read<T: DeserializeOwned>(result: FunctionResult) -> Result<T, String> {
         FunctionResult::Value(v) => serde_json::from_value(wire::normalize(serde_json::Value::from(v))).map_err(|e| e.to_string()),
         FunctionResult::ErrorMessage(m) => Err(m),
         FunctionResult::ConvexError(e) => Err(serde_json::Value::from(e.data).to_string()),
+    }
+}
+
+/// JSON as a Convex value. Every number is sent as a float, which is what
+/// the cloud's `v.number()` arguments take.
+fn to_convex(v: serde_json::Value) -> Value {
+    use serde_json::Value as J;
+    match v {
+        J::Null => Value::Null,
+        J::Bool(b) => Value::Boolean(b),
+        J::Number(n) => Value::Float64(n.as_f64().unwrap_or(0.0)),
+        J::String(s) => Value::String(s),
+        J::Array(a) => Value::Array(a.into_iter().map(to_convex).collect()),
+        J::Object(o) => Value::Object(o.into_iter().map(|(k, v)| (k, to_convex(v))).collect()),
+    }
+}
+
+/// How long to wait for the cloud's answer to a change.
+const ANSWER: Duration = Duration::from_secs(25);
+
+async fn send_change(mut client: ConvexClient, mutation: &str, args: serde_json::Value) -> Outcome {
+    let serde_json::Value::Object(args) = args else { return Outcome::Refused(serde_json::json!({ "code": "invalid" })) };
+    let args = args.into_iter().map(|(k, v)| (k, to_convex(v))).collect();
+    match tokio::time::timeout(ANSWER, client.mutation(mutation, args)).await {
+        Ok(Ok(FunctionResult::Value(v))) => Outcome::Accepted(wire::normalize(serde_json::Value::from(v))),
+        Ok(Ok(FunctionResult::ConvexError(e))) => Outcome::Refused(wire::normalize(serde_json::Value::from(e.data))),
+        Ok(Ok(FunctionResult::ErrorMessage(m))) => Outcome::Refused(serde_json::json!({ "code": "server", "message": m })),
+        Ok(Err(e)) => {
+            log::info!("sync: {mutation} got no answer: {e}");
+            Outcome::NoAnswer
+        }
+        Err(_) => Outcome::NoAnswer,
     }
 }
 
@@ -202,12 +246,17 @@ async fn run(config: Config, stored: Stored, mut commands: mpsc::UnboundedReceiv
         Err(e) => return send(Event::Problem(format!("businesses: {e}"))),
     };
     let mut books: Option<convex::QuerySubscription> = None;
+    let mut open: Option<String> = None;
+    let mut online = true;
     let mut renewal = tokio::time::interval(TOKEN_RENEWAL);
     renewal.tick().await;
 
     loop {
         tokio::select! {
-            Some(s) = states.recv() => send(Event::Online(matches!(s, WebSocketState::Connected))),
+            Some(s) = states.recv() => {
+                online = matches!(s, WebSocketState::Connected);
+                send(Event::Online(online));
+            },
             Some(r) = businesses.next() => match read::<Vec<Membership>>(r) {
                 Ok(list) => send(Event::Businesses(list)),
                 Err(e) => send(Event::Problem(format!("businesses: {e}"))),
@@ -221,8 +270,19 @@ async fn run(config: Config, stored: Stored, mut commands: mpsc::UnboundedReceiv
             _ = renewal.tick() => client.set_auth_callback(Some(fetcher())).await,
             cmd = commands.recv() => match cmd {
                 Some(Command::Open(id)) => match client.subscribe("data:snapshot", args(&[("businessId", &id)])).await {
-                    Ok(s) => books = Some(s),
+                    Ok(s) => {
+                        books = Some(s);
+                        open = Some(id);
+                    }
                     Err(e) => send(Event::Problem(format!("books: {e}"))),
+                },
+                Some(Command::Send { mutation, mut args, reply }) => match (&open, online) {
+                    (Some(id), true) => {
+                        args["businessId"] = id.clone().into();
+                        let client = client.clone();
+                        tokio::spawn(async move { let _ = reply.send(send_change(client, mutation, args).await); });
+                    }
+                    _ => { let _ = reply.send(Outcome::NotSent); }
                 },
                 Some(Command::Stop) | None => return,
             },

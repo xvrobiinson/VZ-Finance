@@ -98,6 +98,30 @@ pub fn remote(conn: &Connection, entity: Entity, local_id: i64, seq: i64) -> Res
     .map_err(Into::into)
 }
 
+/// The local id of a cloud record.
+pub fn local(conn: &Connection, entity: Entity, remote_id: &str) -> Result<Option<i64>> {
+    conn.query_row("SELECT local_id FROM remote_ids WHERE entity = ?1 AND remote_id = ?2", params![entity.key(), remote_id], |r| r.get(0))
+        .optional()
+        .map_err(Into::into)
+}
+
+pub(crate) fn is_interest_only(conn: &Connection, loan_id: i64) -> Result<bool> {
+    Ok(conn.query_row("SELECT method = 'interest_only' FROM loans WHERE id = ?1", [loan_id], |r| r.get(0)).optional()?.unwrap_or(false))
+}
+
+/// The settings version and business language of the last copy.
+fn state_value<T: rusqlite::types::FromSql + Default>(conn: &Connection, column: &str) -> Result<T> {
+    Ok(conn.query_row(&format!("SELECT {column} FROM sync_state WHERE id = 1"), [], |r| r.get(0)).optional()?.unwrap_or_default())
+}
+
+pub(crate) fn settings_version(conn: &Connection) -> Result<i64> {
+    state_value(conn, "settings_version")
+}
+
+pub(crate) fn cloud_language(conn: &Connection) -> Result<String> {
+    state_value(conn, "language")
+}
+
 /// Milliseconds since 1970 as the local timestamp text.
 fn stamp(ms: i64) -> String {
     chrono::DateTime::from_timestamp_millis(ms).unwrap_or_default().format("%Y-%m-%dT%H:%M:%SZ").to_string()
@@ -330,11 +354,11 @@ pub fn apply(conn: &mut Connection, snap: &Snapshot) -> Result<()> {
     }
 
     tx.execute(
-        "INSERT INTO sync_state (id, business_id, business_name, timezone, user_id, role, today, settings_version, applied_at)
-         VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+        "INSERT INTO sync_state (id, business_id, business_name, timezone, user_id, role, today, settings_version, language, applied_at)
+         VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
          ON CONFLICT (id) DO UPDATE SET business_name = excluded.business_name, timezone = excluded.timezone,
              user_id = excluded.user_id, role = excluded.role, today = excluded.today,
-             settings_version = excluded.settings_version, applied_at = excluded.applied_at",
+             settings_version = excluded.settings_version, language = excluded.language, applied_at = excluded.applied_at",
         params![
             snap.business.id,
             snap.business.name,
@@ -343,6 +367,7 @@ pub fn apply(conn: &mut Connection, snap: &Snapshot) -> Result<()> {
             role_key(snap.me.role),
             snap.today,
             snap.settings.as_ref().map_or(0, |s| s.version),
+            snap.settings.as_ref().map_or("es", |s| s.language.as_str()),
             now_timestamp()
         ],
     )?;
@@ -351,14 +376,14 @@ pub fn apply(conn: &mut Connection, snap: &Snapshot) -> Result<()> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::database::repositories::{clients, settings};
     use crate::services::Store;
     use serde_json::{Value, json};
 
     /// A small book as `data.snapshot` sends it (numbers as floats).
-    fn book() -> Value {
+    pub(crate) fn book() -> Value {
         json!({
             "business": { "_id": "biz1", "name": "Préstamos Uno", "timezone": "America/Santo_Domingo" },
             "me": { "userId": "u1", "role": "admin", "name": "Ana" },
@@ -367,7 +392,7 @@ mod tests {
                 "receiptName": "Préstamos Uno", "companyAddress": "Calle 1", "companyPhone": "809",
                 "receiptCompany": { "name": true, "address": true, "phone": false },
                 "receiptClient": { "name": true, "idNumber": false, "phone": true, "address": true },
-                "receiptText": { "receipt_payment_footer": "Gracias", "not_wording": "x" },
+                "receiptText": { "receipt_payment_footer": "=Gracias", "not_wording": "x" },
                 "currencyCode": "DOP", "numberStyle": "comma_dot", "dateStyle": "medium", "language": "es",
                 "defaultRate": 100000.0, "defaultFrequency": "monthly", "lateFeeRate": 50000.0,
                 "receiptAfterPayment": true, "receiptAfterLoan": false, "logoUrl": null, "version": 4.0
@@ -407,7 +432,7 @@ mod tests {
         })
     }
 
-    fn snap(v: Value) -> Snapshot {
+    pub(crate) fn snap(v: Value) -> Snapshot {
         serde_json::from_value(super::super::wire::normalize(v)).unwrap()
     }
 
@@ -444,7 +469,7 @@ mod tests {
         assert_eq!((l.business_id.as_str(), l.role, l.today.to_string()), ("biz1", Role::Admin, "2026-03-10".into()));
         let s = settings::all(&conn).unwrap();
         assert_eq!((s["business_name"].as_str(), s["receipt_company_phone"].as_str()), ("Préstamos Uno", "0"));
-        assert_eq!(s.get("receipt_payment_footer").map(String::as_str), Some("Gracias"));
+        assert_eq!(s.get("receipt_payment_footer").map(String::as_str), Some("=Gracias"));
         assert!(!s.contains_key("not_wording"));
     }
 

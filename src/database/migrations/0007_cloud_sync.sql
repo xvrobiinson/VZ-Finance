@@ -40,5 +40,8 @@ CREATE TABLE sync_state (
     -- "Today" in the business's time zone when the copy was made.
     today            TEXT NOT NULL CHECK (today GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]'),
     settings_version INTEGER NOT NULL DEFAULT 0,
+    -- The business language in the cloud (on this PC the language is the
+    -- person's own choice; settings sent back keep the cloud's).
+    language         TEXT NOT NULL DEFAULT 'es',
     applied_at       TEXT NOT NULL
 ) STRICT;
