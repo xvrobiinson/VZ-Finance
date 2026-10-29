@@ -25,10 +25,16 @@ use crate::services::settings::Settings;
 
 #[derive(Clone, Debug)]
 pub enum Change {
-    NewClient(ClientInput),
+    /// With an ID photo (admins). The cloud gets the photo right after the
+    /// client.
+    NewClient {
+        input: ClientInput,
+        photo: PhotoChange,
+    },
     EditClient {
         id: i64,
         input: ClientInput,
+        photo: PhotoChange,
     },
     ArchiveClient {
         id: i64,
@@ -137,12 +143,6 @@ pub enum Change {
         id: i64,
         reason: String,
     },
-    /// An ID photo set or removed (admins). A new client's photo is sent
-    /// once the cloud has the client.
-    ClientPhoto {
-        id: i64,
-        photo: PhotoChange,
-    },
     /// The business logo, or none.
     Logo(Option<Vec<u8>>),
     Settings(Box<Settings>),
@@ -170,12 +170,21 @@ impl Op {
 pub type Saved = Option<i64>;
 
 impl Change {
+    /// Whether it can be saved without a connection and sent later: new
+    /// clients, payments, expenses and income, as in the PWA.
+    pub fn works_offline(&self) -> bool {
+        matches!(
+            self,
+            Change::NewClient { .. } | Change::NewPayment { .. } | Change::NewEntry { kind: EntryKind::Expense | EntryKind::Income, .. }
+        )
+    }
+
     /// Runs the change with the local code.
     pub(crate) fn run(&self, s: &mut Store, today: NaiveDate) -> Result<Saved> {
         use Change::*;
         Ok(match self {
-            NewClient(input) => Some(s.create_client(input)?),
-            EditClient { id, input } => s.update_client(*id, input).map(|_| None)?,
+            NewClient { input, photo } => Some(s.save_client(None, input, photo)?),
+            EditClient { id, input, photo } => s.save_client(Some(*id), input, photo).map(|_| None)?,
             ArchiveClient { id, archived } => s.set_client_archived(*id, *archived).map(|_| None)?,
             DeleteClient { id, reason } => s.delete_client(*id, reason).map(|_| None)?,
             NewLoan { client_id, terms, schedule, notes } => {
@@ -216,19 +225,6 @@ impl Change {
                 s.update_entry(*id, *account, *amount, *on, description, reason, today).map(|_| None)?
             }
             DeleteEntry { id, reason } => s.delete_entry(*id, reason).map(|_| None)?,
-            ClientPhoto { id, photo } => {
-                let c = crate::database::repositories::clients::get(s.conn(), *id)?.ok_or_else(|| anyhow!("client not found"))?;
-                let o = |v: &Option<String>| v.clone().unwrap_or_default();
-                let input = ClientInput {
-                    full_name: c.full_name.clone(),
-                    phone: o(&c.phone),
-                    email: o(&c.email),
-                    id_number: o(&c.id_number),
-                    address: o(&c.address),
-                    notes: c.notes.clone(),
-                };
-                s.save_client(Some(*id), &input, photo).map(|_| None)?
-            }
             Logo(Some(bytes)) => s.set_logo(bytes).map(|_| None)?,
             Logo(None) => s.remove_logo().map(|_| None)?,
             Settings(settings) => s.save_settings(settings).map(|_| None)?,
@@ -241,10 +237,10 @@ impl Change {
         use Change::*;
         let id = |entity, local: i64| remote_id(conn, entity, local, 0);
         let (mutation, args) = match self {
-            NewClient(input) => ("clients:create", client(input)),
-            EditClient { id: local, input } => {
+            NewClient { input, photo } => ("clients:create", with_photo(client(input), photo)),
+            EditClient { id: local, input, photo } => {
                 let (cid, version) = id(Entity::Client, *local)?;
-                let mut a = client(input);
+                let mut a = with_photo(client(input), photo);
                 a["clientId"] = json!(cid);
                 a["expectedVersion"] = json!(version);
                 ("clients:update", a)
@@ -341,14 +337,6 @@ impl Change {
                 let (eid, version) = id(Entity::Entry, *local)?;
                 ("money:removeEntry", json!({ "id": eid, "expectedVersion": version, "reason": reason }))
             }
-            ClientPhoto { id: local, photo } => {
-                let cid = id(Entity::Client, *local)?.0;
-                match photo {
-                    PhotoChange::Set(p) => ("clients:setPhoto", json!({ "clientId": cid, "upload": upload(p.jpeg(), "image/jpeg") })),
-                    PhotoChange::Remove => ("clients:removePhoto", json!({ "clientId": cid })),
-                    PhotoChange::Keep => return Err(anyhow!("no photo change")),
-                }
-            }
             Logo(Some(bytes)) => {
                 let png = picture::logo_png(bytes).map_err(|e| anyhow!(e.message()))?;
                 ("settings:setLogo", json!({ "upload": upload(&png, "image/png") }))
@@ -367,14 +355,17 @@ impl Change {
         let int = |k: &str| a[k].as_i64().ok_or_else(|| anyhow!("{} has no {k}", op.mutation));
         let day = |k: &str| NaiveDate::parse_from_str(a[k].as_str().unwrap_or_default(), "%Y-%m-%d").map_err(|e| anyhow!("{k}: {e}"));
         match op.mutation {
-            "clients:create" => Ok(Change::NewClient(ClientInput {
-                full_name: text("fullName"),
-                phone: text("phone"),
-                email: text("email"),
-                id_number: text("idNumber"),
-                address: text("address"),
-                notes: text("notes"),
-            })),
+            "clients:create" => Ok(Change::NewClient {
+                input: ClientInput {
+                    full_name: text("fullName"),
+                    phone: text("phone"),
+                    email: text("email"),
+                    id_number: text("idNumber"),
+                    address: text("address"),
+                    notes: text("notes"),
+                },
+                photo: PhotoChange::Keep,
+            }),
             "payments:record" => {
                 let loan_id = replica::local(conn, Entity::Loan, a["loanId"].as_str().unwrap_or_default())?
                     .ok_or_else(|| anyhow!("the loan is no longer in the cloud"))?;
@@ -437,6 +428,17 @@ fn upload(bytes: &[u8], content_type: &str) -> Value {
     json!({ "contentType": content_type, "data": base64::engine::general_purpose::STANDARD.encode(bytes) })
 }
 
+/// A client's arguments with the photo change the worker makes once the
+/// client is saved (`photo`: a file to upload; `removePhoto`).
+fn with_photo(mut args: Value, photo: &PhotoChange) -> Value {
+    match photo {
+        PhotoChange::Set(p) => args["photo"] = upload(p.jpeg(), "image/jpeg"),
+        PhotoChange::Remove => args["removePhoto"] = json!(true),
+        PhotoChange::Keep => {}
+    }
+    args
+}
+
 fn client(c: &ClientInput) -> Value {
     json!({ "fullName": c.full_name, "phone": c.phone, "email": c.email, "idNumber": c.id_number, "address": c.address, "notes": c.notes })
 }
@@ -464,6 +466,25 @@ fn instruction(i: Option<&Instruction>) -> Result<Value> {
         }
         Some(Instruction::Fixed(_)) => return Err(anyhow!("a stored split can't be sent")),
     })
+}
+
+/// Whether two settings differ in what the business shares through the
+/// cloud (not this PC's language, theme, charts or sidebar).
+pub fn business_differs(a: &Settings, b: &Settings) -> bool {
+    a.receipt_name != b.receipt_name
+        || a.company_address != b.company_address
+        || a.company_phone != b.company_phone
+        || a.receipt_company != b.receipt_company
+        || a.receipt_client != b.receipt_client
+        || a.receipt_text != b.receipt_text
+        || a.currency_code != b.currency_code
+        || a.number_style != b.number_style
+        || a.date_style != b.date_style
+        || a.default_rate != b.default_rate
+        || a.default_frequency != b.default_frequency
+        || a.late_fee_rate != b.late_fee_rate
+        || a.receipt_after_payment != b.receipt_after_payment
+        || a.receipt_after_loan != b.receipt_after_loan
 }
 
 /// The business settings. The language stays the cloud's: on this PC it is
@@ -515,6 +536,10 @@ mod tests {
         Change::NewPayment { loan_id: 3, amount, fee: 0, on, notes: String::new(), instruction: Some(Instruction::Auto) }
     }
 
+    fn juan() -> ClientInput {
+        ClientInput { full_name: "Juan Pérez".into(), phone: "809-555".into(), id_number: "001".into(), ..Default::default() }
+    }
+
     fn payments(s: &Store) -> usize {
         s.snapshot().unwrap().payments.len()
     }
@@ -523,7 +548,7 @@ mod tests {
     fn an_unlinked_database_saves_as_before() {
         let mut s = Store::in_memory();
         let input = ClientInput { full_name: "Ana".into(), ..Default::default() };
-        let (id, queued) = s.save(&Change::NewClient(input), today()).unwrap();
+        let (id, queued) = s.save(&Change::NewClient { input, photo: PhotoChange::Keep }, today()).unwrap();
         assert!(id.is_some() && queued.is_none());
         assert!(s.outbox_waiting().unwrap().is_empty());
     }
@@ -548,7 +573,7 @@ mod tests {
     fn edits_name_the_version_they_started_from() {
         let mut s = linked();
         let input = ClientInput { full_name: "Juan Pérez".into(), phone: "809-555".into(), ..Default::default() };
-        let (_, q) = s.save(&Change::EditClient { id: 7, input }, today()).unwrap();
+        let (_, q) = s.save(&Change::EditClient { id: 7, input, photo: PhotoChange::Keep }, today()).unwrap();
         let q = q.unwrap();
         assert_eq!(
             (q.op.mutation, q.op.args["clientId"].as_str(), q.op.args["expectedVersion"].as_i64()),
@@ -561,8 +586,8 @@ mod tests {
     fn a_record_the_cloud_lacks_cant_be_changed_yet() {
         let mut s = linked();
         let input = ClientInput { full_name: "Nuevo".into(), ..Default::default() };
-        let (id, _) = s.save(&Change::NewClient(input.clone()), today()).unwrap();
-        let err = s.save(&Change::EditClient { id: id.unwrap(), input }, today()).unwrap_err();
+        let (id, _) = s.save(&Change::NewClient { input: input.clone(), photo: PhotoChange::Keep }, today()).unwrap();
+        let err = s.save(&Change::EditClient { id: id.unwrap(), input, photo: PhotoChange::Keep }, today()).unwrap_err();
         assert!(err.to_string().contains("cloud") || err.to_string().contains("nube"), "{err}");
         assert_eq!(s.outbox_waiting().unwrap().len(), 1);
     }
@@ -572,7 +597,7 @@ mod tests {
         let mut s = linked();
         s.save(&payment(20000), today()).unwrap();
         let input = ClientInput { full_name: "Nuevo".into(), ..Default::default() };
-        s.save(&Change::NewClient(input), today()).unwrap();
+        s.save(&Change::NewClient { input, photo: PhotoChange::Keep }, today()).unwrap();
         // A new copy from the cloud, still without them: they stay on screen.
         s.apply_cloud(&snap(book())).unwrap();
         assert_eq!(payments(&s), 2);
@@ -643,12 +668,12 @@ mod tests {
         let mut s = linked();
         let png = crate::services::picture::tests::png(40, 30);
         let photo = picture::Photo::from_upload(&png).unwrap();
-        let (_, q) = s.save(&Change::ClientPhoto { id: 7, photo: PhotoChange::Set(photo) }, today()).unwrap();
+        let (_, q) = s.save(&Change::EditClient { id: 7, input: juan(), photo: PhotoChange::Set(photo) }, today()).unwrap();
         let a = q.unwrap().op.args;
-        assert_eq!((a["clientId"].as_str(), a["upload"]["contentType"].as_str()), (Some("c7"), Some("image/jpeg")));
+        assert_eq!((a["clientId"].as_str(), a["photo"]["contentType"].as_str()), (Some("c7"), Some("image/jpeg")));
         assert!(s.client_photo(7).unwrap().is_some(), "shown here at once");
-        let (_, q) = s.save(&Change::ClientPhoto { id: 7, photo: PhotoChange::Remove }, today()).unwrap();
-        assert_eq!(q.unwrap().op.mutation, "clients:removePhoto");
+        let (_, q) = s.save(&Change::EditClient { id: 7, input: juan(), photo: PhotoChange::Remove }, today()).unwrap();
+        assert_eq!(q.unwrap().op.args["removePhoto"], true);
 
         let (_, q) = s.save(&Change::Logo(Some(png)), today()).unwrap();
         let q = q.unwrap();

@@ -13,6 +13,7 @@ use crate::app::{Route, VzApp};
 use crate::database::repositories::clients::{Client, ClientInput};
 use crate::i18n::t;
 use crate::services::picture::{Photo, PhotoChange};
+use crate::sync::change::Change;
 use crate::tr;
 use crate::ui::components::icon;
 use crate::ui::kit::Button;
@@ -210,8 +211,13 @@ impl ClientForm {
         }
         let editing = self.editing;
         let photo = self.photo.clone();
-        let result = self.app.update(cx, |app, cx| match app.store.save_client(editing, &input, &photo) {
-            Ok(id) => {
+        let change = match editing {
+            Some(id) => Change::EditClient { id, input: input.clone(), photo },
+            None => Change::NewClient { input: input.clone(), photo },
+        };
+        let result = self.app.update(cx, |app, cx| match app.save(change, window, cx) {
+            Ok(saved) => {
+                let id = saved.or(editing).unwrap_or_default();
                 app.reload(cx);
                 Ok(id)
             }

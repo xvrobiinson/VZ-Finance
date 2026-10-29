@@ -21,6 +21,7 @@ use crate::domain::ledger::{Allocation, ContractStatus, PaymentError, Position, 
 use crate::domain::money::{Cents, MoneyFormat, parse_money};
 use crate::i18n::t;
 use crate::services::{Snapshot, installment_state_before, loan_facts, payments_before, preview_installment_payment, preview_payment};
+use crate::sync::change::Change;
 use crate::tr;
 use crate::ui::components::{Tone, kv, pill, th};
 use crate::ui::kit::{Button, Segmented};
@@ -369,22 +370,18 @@ impl PaymentForm {
         };
         let print = self.print_receipt;
         let result = self.app.update(cx, |app, cx| {
-            let today = app.today;
-            let r = match (editing, &instruction) {
-                (Some(id), Some(i)) => app.store.update_installment_payment(id, amount, date, &notes, i, &reason, today).map(|_| id),
-                (Some(id), None) => app.store.update_payment(id, amount, fee, date, &notes, &reason, today).map(|_| id),
-                (None, Some(i)) => app.store.record_installment_payment(loan_id, amount, date, &notes, i, today),
-                (None, None) => app.store.record_payment(loan_id, amount, fee, date, &notes, today),
+            let change = match editing {
+                Some(id) => Change::EditPayment { id, amount, fee, on: date, notes, instruction, reason },
+                None => Change::NewPayment { loan_id, amount, fee, on: date, notes, instruction },
             };
-            match r {
-                Ok(id) => {
+            match app.save(change, window, cx) {
+                Ok(saved) => {
+                    let id = saved.or(editing).unwrap_or_default();
                     app.reload(cx);
                     let closed = app.snap.loan(loan_id).is_some_and(|l| l.status == ContractStatus::PaidOff);
                     if editing.is_none() && app.settings().receipt_after_payment != print {
                         // Remember the choice for next time.
-                        let s = app.settings().clone();
-                        let _ = app.store.save_settings(&crate::services::settings::Settings { receipt_after_payment: print, ..s });
-                        app.reload(cx);
+                        app.update_settings(|s| s.receipt_after_payment = print, window, cx);
                     }
                     Ok((id, closed))
                 }
@@ -414,7 +411,7 @@ impl PaymentForm {
                     };
                     app.notify_success(msg, window, cx);
                     if print {
-                        app.open_receipt(payment_id, window, cx);
+                        app.payment_receipt_after_save(payment_id, window, cx);
                     }
                 });
             }

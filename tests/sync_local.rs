@@ -241,7 +241,7 @@ fn changes_made_here_reach_the_cloud() {
     let one_million = Change::NewCapital { kind: CapitalKind::Contribution, amount: 100_000_000, on: today, notes: "Inicio".into() };
     check(&mut store, &mut rx, one_million, "capital", &|s| s.capital.len() == 1);
     let ana = ClientInput { full_name: "Ana Gómez".into(), phone: "809-555-0101".into(), ..Default::default() };
-    check(&mut store, &mut rx, Change::NewClient(ana), "client", &|s| s.clients.len() == 1);
+    check(&mut store, &mut rx, Change::NewClient { input: ana, photo: PhotoChange::Keep }, "client", &|s| s.clients.len() == 1);
     let client = store.snapshot().unwrap().clients[0].id;
     let terms = LoanTerms {
         principal: 10_000_000,
@@ -361,7 +361,11 @@ fn changes_made_here_reach_the_cloud() {
 
     // Two edits from the same copy: the second started from a version the
     // first replaced, so the cloud refuses it and the books keep the first.
-    let renamed = |name: &str| Change::EditClient { id: client, input: ClientInput { full_name: name.into(), ..Default::default() } };
+    let renamed = |name: &str| Change::EditClient {
+        id: client,
+        input: ClientInput { full_name: name.into(), ..Default::default() },
+        photo: PhotoChange::Keep,
+    };
     assert!(matches!(save_and_send(&mut store, &worker, renamed("Ana G."), today), Outcome::Accepted(_)));
     match save_and_send(&mut store, &worker, renamed("Ana María"), today) {
         Outcome::Refused(e) => assert_eq!(e["code"], "conflict"),
@@ -403,7 +407,10 @@ fn photos_and_the_logo_go_both_ways() {
     let today = store.cloud_link().unwrap().unwrap().today;
 
     let ana = ClientInput { full_name: "Ana Gómez".into(), ..Default::default() };
-    assert!(matches!(save_and_send(&mut store, &worker, Change::NewClient(ana), today), Outcome::Accepted(_)));
+    assert!(matches!(
+        save_and_send(&mut store, &worker, Change::NewClient { input: ana, photo: PhotoChange::Keep }, today),
+        Outcome::Accepted(_)
+    ));
     apply_when(&mut rx, &mut store, "the client", |s| s.clients.len() == 1);
     let client = store.snapshot().unwrap().clients[0].id;
 
@@ -412,7 +419,16 @@ fn photos_and_the_logo_go_both_ways() {
     let mut png = Vec::new();
     picture.write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png).unwrap();
     let photo = Photo::from_upload(&png).unwrap();
-    let outcome = save_and_send(&mut store, &worker, Change::ClientPhoto { id: client, photo: PhotoChange::Set(photo) }, today);
+    let outcome = save_and_send(
+        &mut store,
+        &worker,
+        Change::EditClient {
+            id: client,
+            input: ClientInput { full_name: "Ana Gómez".into(), ..Default::default() },
+            photo: PhotoChange::Set(photo),
+        },
+        today,
+    );
     assert!(matches!(outcome, Outcome::Accepted(_)), "{outcome:?}");
     let outcome = save_and_send(&mut store, &worker, Change::Logo(Some(png)), today);
     assert!(matches!(outcome, Outcome::Accepted(_)), "{outcome:?}");
@@ -462,7 +478,10 @@ fn a_late_fee_is_waived_from_the_desktop() {
     let money = Change::NewCapital { kind: CapitalKind::Contribution, amount: 50_000_000, on: start, notes: String::new() };
     assert!(matches!(save_and_send(&mut store, &worker, money, today), Outcome::Accepted(_)));
     let ana = ClientInput { full_name: "Ana Gómez".into(), ..Default::default() };
-    assert!(matches!(save_and_send(&mut store, &worker, Change::NewClient(ana), today), Outcome::Accepted(_)));
+    assert!(matches!(
+        save_and_send(&mut store, &worker, Change::NewClient { input: ana, photo: PhotoChange::Keep }, today),
+        Outcome::Accepted(_)
+    ));
     apply_when(&mut rx, &mut store, "the client", |s| s.clients.len() == 1 && s.capital.len() == 1);
     let terms = LoanTerms {
         principal: 1_000_000,
@@ -485,4 +504,42 @@ fn a_late_fee_is_waived_from_the_desktop() {
     assert!(matches!(outcome, Outcome::Accepted(_)), "{outcome:?}");
     apply_when(&mut rx, &mut store, "the waiver", |s| s.late_fees[0].waived_at.is_some());
     worker.stop();
+}
+
+/// Not a check: signs `VZ_SYNC_EMAIL` in to the local backend and leaves the
+/// session in Credential Manager, so a debug build started with
+/// VZ_SYNC_CLOUD=http://127.0.0.1:3210 VZ_SYNC_ORIGIN=http://localhost:5173
+/// opens signed in (for screenshots). `vault::forget` removes it again.
+#[test]
+#[ignore = "prepares a local session for screenshots; see above"]
+fn remember_a_local_session_for_the_app() {
+    let email = std::env::var("VZ_SYNC_EMAIL").expect("set VZ_SYNC_EMAIL");
+    let session = sign_in(&email);
+    vault::save(CLOUD, &Stored { email, session }).unwrap();
+}
+
+/// A session renewed by the cloud keeps working: the renewal may carry only
+/// some of the cookies, so the stored session merges them.
+#[test]
+#[ignore = "needs a local PWA backend; see the top of this file"]
+fn a_renewed_session_keeps_working() {
+    let email = format!("desktop-renew-{}@example.com", std::process::id());
+    let mut session = sign_in(&email);
+    for round in 0..3 {
+        let (_, renewed) = auth::token(&endpoints(), &session).unwrap_or_else(|e| panic!("round {round}: {e}"));
+        if let Some(r) = renewed {
+            let names =
+                |s: &Session| s.as_str().split("; ").filter_map(|c| c.split_once('=')).map(|(n, _)| n.to_string()).collect::<Vec<_>>();
+            println!("round {round}: had {:?}, renewal sent {:?}", names(&session), names(&r));
+            session = session.merged(&r);
+        }
+    }
+}
+
+/// Undoes `remember_a_local_session_for_the_app`.
+#[test]
+#[ignore = "removes the screenshot session; see above"]
+fn forget_the_local_session() {
+    vault::forget(CLOUD);
+    assert!(vault::load(CLOUD).is_none());
 }

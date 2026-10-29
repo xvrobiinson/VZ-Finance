@@ -56,7 +56,13 @@ gpui_kit::assets::icon_assets!(
         ArrowRightLeft,
         SlidersHorizontal,
         ReceiptText,
-        Coins
+        Coins,
+        Cloud,
+        CloudCheck,
+        CloudOff,
+        CloudAlert,
+        CloudUpload,
+        Mail
     ]
 );
 

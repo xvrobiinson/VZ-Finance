@@ -16,6 +16,7 @@ pub mod auth;
 pub mod change;
 pub mod figures;
 pub mod outbox;
+pub mod refusal;
 pub mod replica;
 pub mod vault;
 pub mod wire;

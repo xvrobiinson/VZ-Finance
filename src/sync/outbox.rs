@@ -84,8 +84,6 @@ fn mutation_name(name: &str) -> &'static str {
         "money:updateEntry",
         "money:removeEntry",
         "settings:update",
-        "clients:setPhoto",
-        "clients:removePhoto",
         "settings:setLogo",
     ];
     ALL.iter().find(|m| **m == name).copied().unwrap_or("unknown")

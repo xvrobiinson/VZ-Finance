@@ -170,7 +170,31 @@ async fn send_change(mut client: ConvexClient, mutation: &str, mut args: serde_j
             Err(o) => return o,
         }
     }
-    call(&mut client, mutation, args).await
+    // A client's photo change goes right after the client is saved.
+    let photo = args.as_object_mut().and_then(|a| a.remove("photo"));
+    let remove_photo = args.as_object_mut().and_then(|a| a.remove("removePhoto")).is_some();
+    let business = args["businessId"].clone();
+    let outcome = call(&mut client, mutation, args.clone()).await;
+    let Outcome::Accepted(mut result) = outcome else { return outcome };
+    if photo.is_some() || remove_photo {
+        let client_id = args.get("clientId").or(result.get("clientId")).cloned().unwrap_or_default();
+        let done = match photo {
+            Some(file) => match upload(&mut client, "clients:setPhoto", &business, &file).await {
+                Ok(storage_id) => {
+                    let a = serde_json::json!({ "businessId": business, "clientId": client_id, "storageId": storage_id });
+                    call(&mut client, "clients:setPhoto", a).await
+                }
+                Err(o) => o,
+            },
+            None => call(&mut client, "clients:removePhoto", serde_json::json!({ "businessId": business, "clientId": client_id })).await,
+        };
+        if !matches!(done, Outcome::Accepted(_)) {
+            log::info!("sync: the photo change after {mutation} wasn't saved: {done:?}");
+            // The client is saved; the app says the photo needs doing again.
+            result["photoNotSaved"] = true.into();
+        }
+    }
+    Outcome::Accepted(result)
 }
 
 async fn upload(
@@ -272,7 +296,7 @@ fn token_fetcher(
                 Ok((token, renewed)) => {
                     if let Some(session) = renewed {
                         let mut s = stored.lock().unwrap();
-                        s.session = session;
+                        s.session = s.session.merged(&session);
                         if let Err(e) = vault::save(&endpoints.cloud, &s) {
                             log::warn!("renewed session not saved: {e}");
                         }
@@ -307,13 +331,20 @@ async fn run(config: Config, stored: Stored, mut commands: mpsc::UnboundedReceiv
     let send = |e: Event| {
         let _ = out.unbounded_send(e);
     };
+    // The business to follow can be chosen before the cloud is reached.
+    let mut wanted: Option<String> = None;
     let (mut client, mut states) = loop {
         if let Some(c) = connect(&config, &out).await {
             break c;
         }
         tokio::select! {
             _ = tokio::time::sleep(RETRY) => {}
-            cmd = commands.recv() => if matches!(cmd, None | Some(Command::Stop)) { return },
+            cmd = commands.recv() => match cmd {
+                None | Some(Command::Stop) => return,
+                Some(Command::Open(id)) => wanted = Some(id),
+                // A change can't be sent yet; dropping the reply says so.
+                Some(_) => {}
+            },
         }
     };
 
@@ -339,7 +370,17 @@ async fn run(config: Config, stored: Stored, mut commands: mpsc::UnboundedReceiv
     };
     let mut books: Option<convex::QuerySubscription> = None;
     let mut open: Option<String> = None;
+    if let Some(id) = wanted {
+        match client.subscribe("data:snapshot", args(&[("businessId", &id)])).await {
+            Ok(s) => {
+                books = Some(s);
+                open = Some(id);
+            }
+            Err(e) => send(Event::Problem(format!("books: {e}"))),
+        }
+    }
     let mut online = true;
+    send(Event::Online(true));
     let mut renewal = tokio::time::interval(TOKEN_RENEWAL);
     renewal.tick().await;
 

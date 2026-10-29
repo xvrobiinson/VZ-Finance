@@ -12,6 +12,7 @@ use crate::domain::money::{MoneyFormat, parse_money};
 use crate::domain::portfolio::{Account, CapitalKind};
 use crate::i18n::t;
 use crate::services::{Record, Snapshot};
+use crate::sync::change::Change;
 use crate::tr;
 use crate::ui::kit::Segmented;
 use crate::ui::theme::{palette, space};
@@ -84,13 +85,12 @@ impl CapitalForm {
         let notes = value(&self.notes, cx);
         let reason = value(&self.reason, cx);
         let result = self.app.update(cx, |app, cx| {
-            let today = app.today;
-            let r = match editing {
-                Some(id) => app.store.update_capital(id, kind, amount, date, &notes, &reason, today),
-                None => app.store.add_capital(kind, amount, date, &notes, today).map(|_| ()),
+            let change = match editing {
+                Some(id) => Change::EditCapital { id, kind, amount, on: date, notes, reason },
+                None => Change::NewCapital { kind, amount, on: date, notes },
             };
-            match r {
-                Ok(()) => {
+            match app.save(change, window, cx) {
+                Ok(_) => {
                     app.reload(cx);
                     Ok(())
                 }

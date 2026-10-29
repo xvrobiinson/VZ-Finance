@@ -9,6 +9,7 @@ use super::VzApp;
 use crate::domain::portfolio::{CapitalKind, EntryKind};
 use crate::i18n::t;
 use crate::services::Store;
+use crate::sync::change::Change;
 use crate::tr;
 use crate::ui::forms::adjust::AdjustForm;
 use crate::ui::forms::capital::CapitalForm;
@@ -256,22 +257,24 @@ impl VzApp {
                         .show_cancel(true),
                 )
                 .on_ok(move |_, window, cx| {
-                    let _ = app.update(cx, |app, cx| match app.store.set_client_archived(client_id, archiving) {
-                        Ok(()) => {
-                            app.reload(cx);
-                            app.notify_success(
-                                if archiving {
-                                    t("Client archived", "Cliente archivado")
-                                } else {
-                                    t("Client restored", "Cliente restaurado")
-                                },
-                                window,
-                                cx,
-                            );
-                        }
-                        Err(e) => {
-                            let m = app.error_message(&e);
-                            app.notify_error(m, window, cx);
+                    let _ = app.update(cx, |app, cx| {
+                        match app.save(Change::ArchiveClient { id: client_id, archived: archiving }, window, cx) {
+                            Ok(_) => {
+                                app.reload(cx);
+                                app.notify_success(
+                                    if archiving {
+                                        t("Client archived", "Cliente archivado")
+                                    } else {
+                                        t("Client restored", "Cliente restaurado")
+                                    },
+                                    window,
+                                    cx,
+                                );
+                            }
+                            Err(e) => {
+                                let m = app.error_message(&e);
+                                app.notify_error(m, window, cx);
+                            }
                         }
                     });
                     true
@@ -280,8 +283,8 @@ impl VzApp {
     }
 
     pub fn reinstate_loan(&mut self, loan_id: i64, window: &mut Window, cx: &mut Context<Self>) {
-        match self.store.reinstate(loan_id, self.today) {
-            Ok(()) => {
+        match self.save(Change::Reinstate { id: loan_id }, window, cx) {
+            Ok(_) => {
                 self.reload(cx);
                 self.notify_success(t("Loan reinstated.", "Préstamo reactivado."), window, cx);
             }
@@ -321,9 +324,9 @@ impl VzApp {
     pub fn use_logo_file(&mut self, path: &std::path::Path, window: &mut Window, cx: &mut Context<Self>) {
         let result = std::fs::read(path)
             .map_err(|e| anyhow::Error::from(e).context(tr!("Could not read the file", "No se pudo leer el archivo")))
-            .and_then(|bytes| self.store.set_logo(&bytes));
+            .and_then(|bytes| self.save(Change::Logo(Some(bytes)), window, cx));
         match result {
-            Ok(()) => {
+            Ok(_) => {
                 log::info!("logo saved");
                 self.reload(cx);
                 self.notify_success(
@@ -344,8 +347,8 @@ impl VzApp {
     }
 
     pub fn remove_logo(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        match self.store.remove_logo() {
-            Ok(()) => {
+        match self.save(Change::Logo(None), window, cx) {
+            Ok(_) => {
                 self.reload(cx);
                 self.notify_success(t("Logo removed", "Logo eliminado"), window, cx);
             }
@@ -356,7 +359,27 @@ impl VzApp {
         }
     }
 
+    /// Restoring a backup or resetting would replace books the cloud keeps;
+    /// on a linked PC they are refused. Returns true when refused.
+    fn refuse_when_linked(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        if !self.is_linked() {
+            return false;
+        }
+        self.notify_error(
+            t(
+                "This PC shows a business from the cloud. To restore or reset, first switch to the books on this PC in Settings.",
+                "Esta PC muestra un negocio de la nube. Para restaurar o reiniciar, primero cambia a los registros de esta PC en Configuración.",
+            ),
+            window,
+            cx,
+        );
+        true
+    }
+
     pub fn choose_restore(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.refuse_when_linked(window, cx) {
+            return;
+        }
         let request = crate::file_picker::Request {
             title: t("Choose a backup to restore", "Elige una copia para restaurar").into(),
             ok_label: t("Restore", "Restaurar").into(),
@@ -495,6 +518,9 @@ impl VzApp {
     /// Asks for a typed confirmation, saves a copy and deletes every client,
     /// loan, payment and money movement.
     pub fn open_reset_form(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.refuse_when_linked(window, cx) {
+            return;
+        }
         let app = cx.entity().downgrade();
         let form = cx.new(|cx| crate::ui::forms::reset::ResetForm::new(app, window, cx));
         let first = Cell::new(true);

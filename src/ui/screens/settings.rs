@@ -662,6 +662,7 @@ impl VzApp {
                 "Compatible con Windows 10 (versión 1809 o posterior) y Windows 11, de 64 bits.",
             )));
 
+        let sync = self.sync_settings(&p, cx);
         let privacy = v_flex()
             .gap(px(space::M))
             .child(
@@ -671,8 +672,8 @@ impl VzApp {
                     .child(div().typeset(text::BODY_STRONG).child(t("Offline and private", "Sin internet y privado"))),
             )
             .child(div().text_color(p.muted).child(t(
-                "The app makes no network requests, sends no telemetry and needs no account. All data stays in the database file above.",
-                "La app no usa internet, no envía datos y no necesita cuenta. Todo queda en el archivo de base de datos de arriba.",
+                "Without signing in, the app makes no network requests, sends no telemetry and needs no account. Signed in, it talks only to the Acervus Finance cloud, to keep the business you chose in step. It never sends telemetry.",
+                "Sin iniciar sesión, la app no usa internet, no envía datos y no necesita cuenta. Con sesión iniciada, solo se comunica con la nube de Acervus Finance para mantener al día el negocio que elegiste. Nunca envía datos de uso.",
             )))
             .child(div().text_color(p.muted).child(t(
                 "The database is not encrypted by the app. Protect it with Windows BitLocker or device encryption, and keep backups somewhere safe.",
@@ -716,6 +717,12 @@ impl VzApp {
                 )
                 .pb_0(),
             )
+            .child(section(
+                &p,
+                t("Cloud sync", "Sincronización en la nube"),
+                t("Your business on this PC and the phone app", "Tu negocio en esta PC y en la app del teléfono"),
+                sync,
+            ))
             .child(section(
                 &p,
                 t("Business", "Negocio"),

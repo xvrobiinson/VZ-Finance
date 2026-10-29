@@ -152,7 +152,7 @@ impl ReceiptTextForm {
         let result = self.app.update(cx, |app, cx| {
             let mut s = app.settings().clone();
             s.receipt_text = text;
-            match app.store.save_settings(&s) {
+            match app.save_settings(s, window, cx) {
                 Ok(()) => {
                     app.reload(cx);
                     Ok(())

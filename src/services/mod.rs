@@ -245,6 +245,7 @@ impl Store {
         &self.path
     }
 
+    #[cfg(test)]
     pub(crate) fn conn(&self) -> &Connection {
         &self.conn
     }
@@ -340,6 +341,26 @@ impl Store {
             }
         }
         Ok(())
+    }
+
+    /// A value kept in this database for this PC (not a business setting).
+    pub fn pref(&self, key: &str) -> Result<Option<String>> {
+        Ok(settings_repo::all(&self.conn)?.remove(key))
+    }
+
+    pub fn set_pref(&mut self, key: &str, value: Option<&str>) -> Result<()> {
+        match value {
+            Some(v) => settings_repo::set(&self.conn, key, v),
+            None => {
+                self.conn.execute("DELETE FROM app_settings WHERE key = ?1", [key])?;
+                Ok(())
+            }
+        }
+    }
+
+    /// The local id of a cloud record in a linked database.
+    pub fn cloud_local_id(&self, entity: crate::sync::replica::Entity, remote_id: &str) -> Result<Option<i64>> {
+        crate::sync::replica::local(&self.conn, entity, remote_id)
     }
 
     /// The changes waiting to be sent to the cloud, oldest first.

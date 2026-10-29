@@ -14,6 +14,7 @@ use crate::domain::money::{Cents, MoneyFormat, parse_money};
 use crate::domain::portfolio::Account;
 use crate::i18n::t;
 use crate::services::Snapshot;
+use crate::sync::change::Change;
 use crate::tr;
 use crate::ui::theme::{Typeset as _, palette, space, text};
 
@@ -63,16 +64,14 @@ impl AdjustForm {
             return;
         };
         let reason = value(&self.reason, cx);
-        let result = self.app.update(cx, |app, cx| {
-            let today = app.today;
-            match app.store.adjust_balances(capital, interest, date, &reason, today) {
+        let result =
+            self.app.update(cx, |app, cx| match app.save(Change::AdjustBalances { capital, interest, on: date, reason }, window, cx) {
                 Ok(_) => {
                     app.reload(cx);
                     Ok(())
                 }
                 Err(e) => Err(app.error_message(&e)),
-            }
-        });
+            });
         match result {
             Ok(Ok(())) => {
                 window.close_dialog(cx);

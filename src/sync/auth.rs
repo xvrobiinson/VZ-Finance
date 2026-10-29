@@ -58,6 +58,23 @@ impl Session {
     pub fn as_str(&self) -> &str {
         &self.0
     }
+
+    /// This session with the cookies of a renewal: the server may send only
+    /// the ones that changed, so the others are kept. A cookie the server
+    /// clears (empty value) is dropped.
+    pub fn merged(&self, renewal: &Session) -> Session {
+        let pairs = |s: &str| -> Vec<(String, String)> {
+            s.split("; ").filter_map(|c| c.split_once('=')).map(|(n, v)| (n.to_string(), v.to_string())).collect()
+        };
+        let mut out = pairs(&self.0);
+        for (name, value) in pairs(&renewal.0) {
+            out.retain(|(n, _)| *n != name);
+            if !value.is_empty() {
+                out.push((name, value));
+            }
+        }
+        Session(out.into_iter().map(|(n, v)| format!("{n}={v}")).collect::<Vec<_>>().join("; "))
+    }
 }
 
 impl std::fmt::Debug for Session {
@@ -239,6 +256,15 @@ mod tests {
                  better-auth.session_data=xyz; Path=/";
         assert_eq!(cookie_value(h), "better-auth.session_token=abc.def; better-auth.session_data=xyz");
         assert_eq!(cookie_value(""), "");
+    }
+
+    #[test]
+    fn a_renewal_keeps_the_other_cookies() {
+        let s = Session("better-auth.session_token=abc; better-auth.convex_jwt=old".into());
+        let r = s.merged(&Session("better-auth.convex_jwt=new".into()));
+        assert_eq!(r.as_str(), "better-auth.session_token=abc; better-auth.convex_jwt=new");
+        let cleared = r.merged(&Session("better-auth.convex_jwt=".into()));
+        assert_eq!(cleared.as_str(), "better-auth.session_token=abc");
     }
 
     #[test]

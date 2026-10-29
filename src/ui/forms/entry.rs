@@ -17,6 +17,7 @@ use crate::domain::money::{MoneyFormat, parse_money};
 use crate::domain::portfolio::{Account, EntryKind};
 use crate::i18n::t;
 use crate::services::{Record, Snapshot};
+use crate::sync::change::Change;
 use crate::tr;
 use crate::ui::kit::Segmented;
 use crate::ui::theme::{Typeset as _, palette, space, text};
@@ -167,15 +168,13 @@ impl EntryForm {
         let signed = if kind == EntryKind::Adjustment && !self.increase { -amount } else { amount };
         let reason = value(&self.reason, cx);
         let result = self.app.update(cx, |app, cx| {
-            let today = app.today;
-            let r = match (editing, kind) {
-                (Some(id), _) => app.store.update_entry(id, account, signed, date, &description, &reason, today),
-                (None, EntryKind::Transfer) => app.store.add_transfer(account, amount, date, &description, today).map(|_| ()),
-                (None, EntryKind::Income) => app.store.add_income(account, amount, date, &description, today).map(|_| ()),
-                (None, _) => app.store.add_expense(account, amount, date, &description, today).map(|_| ()),
+            let change = match (editing, kind) {
+                (Some(id), _) => Change::EditEntry { id, account, amount: signed, on: date, description, reason },
+                (None, EntryKind::Transfer | EntryKind::Income) => Change::NewEntry { kind, account, amount, on: date, description },
+                (None, _) => Change::NewEntry { kind: EntryKind::Expense, account, amount, on: date, description },
             };
-            match r {
-                Ok(()) => {
+            match app.save(change, window, cx) {
+                Ok(_) => {
                     app.reload(cx);
                     Ok(())
                 }

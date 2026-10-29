@@ -105,6 +105,15 @@ impl VzApp {
     /// Page actions. Wide windows show all three; narrower ones fold the
     /// secondary actions into a "More" menu so the primary never wraps.
     fn header_actions(&self, w: Width, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        // Trying out the sync chip here first (kit-first rule).
+        let sync: Vec<AnyElement> =
+            self.sync_chip("ov-sync", cx).into_iter().map(|c| div().flex().items_center().h(px(32.)).child(c).into_any_element()).collect();
+        let mut actions = self.main_actions(w, cx);
+        actions.splice(0..0, sync);
+        actions
+    }
+
+    fn main_actions(&self, w: Width, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let pay = Button::new("ov-pay")
             .primary()
             .icon(IconName::Plus)

@@ -25,6 +25,7 @@ use crate::domain::money::{Cents, MoneyFormat, ParseError, Rate, parse_money};
 use crate::domain::portfolio::{Account, Book};
 use crate::i18n::t;
 use crate::services::{Record, Snapshot};
+use crate::sync::change::Change;
 use crate::tr;
 use crate::ui::components::{icon, kv, num};
 use crate::ui::kit::{Button, Segmented, Stat};
@@ -391,17 +392,16 @@ impl LoanForm {
         let print = self.print_receipt && editing.is_none();
         let remember = self.print_receipt;
         let result = self.app.update(cx, |app, cx| {
-            let today = app.today;
-            let r = match editing {
-                Some(id) => app.store.update_loan(id, client_id, &terms, schedule, &notes, &reason, today).map(|_| id),
-                None => app.store.create_loan_with_schedule(client_id, &terms, schedule, &notes, today),
+            let change = match editing {
+                Some(id) => Change::EditLoan { id, client_id, terms: terms.clone(), schedule, notes, reason },
+                None => Change::NewLoan { client_id, terms: terms.clone(), schedule, notes },
             };
-            match r {
-                Ok(id) => {
+            match app.save(change, window, cx) {
+                Ok(saved) => {
+                    let id = saved.or(editing).unwrap_or_default();
                     if editing.is_none() && app.settings().receipt_after_loan != remember {
                         // Remember the choice for next time.
-                        let s = app.settings().clone();
-                        let _ = app.store.save_settings(&crate::services::settings::Settings { receipt_after_loan: remember, ..s });
+                        app.update_settings(|s| s.receipt_after_loan = remember, window, cx);
                     }
                     app.reload(cx);
                     Ok(id)
@@ -426,7 +426,7 @@ impl LoanForm {
                     app.notify_success(tr!("Loan of {amount} to {name} created", "Préstamo de {amount} a {name} creado"), window, cx);
                     app.navigate(Route::Loan(id), window, cx);
                     if print {
-                        app.open_loan_receipt(id, window, cx);
+                        app.loan_receipt_after_save(id, window, cx);
                     }
                 });
             }

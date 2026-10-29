@@ -10,6 +10,7 @@ use super::date_field::{DateChanged, DateField};
 use super::{danger_footer, date_field, error_banner, field, picked_date, value};
 use crate::app::{Route, VzApp};
 use crate::i18n::t;
+use crate::sync::change::Change;
 use crate::ui::theme::{Typeset as _, palette, space, text};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -128,17 +129,17 @@ impl ReasonForm {
         let kind = self.kind;
         let result = self.app.update(cx, |app, cx| {
             let today = app.today;
-            let r = match kind {
-                ReasonKind::MarkDefaulted(id) => app.store.mark_defaulted(id, date.unwrap_or(today), &reason, today),
-                ReasonKind::DeleteLoan(id) => app.store.delete_loan(id, &reason),
-                ReasonKind::DeletePayment(id) => app.store.delete_payment(id, &reason, today),
-                ReasonKind::DeleteCapital(id) => app.store.delete_capital(id, &reason),
-                ReasonKind::DeleteEntry(id) => app.store.delete_entry(id, &reason),
-                ReasonKind::DeleteClient(id) => app.store.delete_client(id, &reason),
-                ReasonKind::WaiveFee(loan, seq) => app.store.set_late_fee_waived(loan, seq, true, &reason, today),
+            let change = match kind {
+                ReasonKind::MarkDefaulted(id) => Change::MarkDefaulted { id, on: date.unwrap_or(today), note: reason },
+                ReasonKind::DeleteLoan(id) => Change::DeleteLoan { id, reason },
+                ReasonKind::DeletePayment(id) => Change::DeletePayment { id, reason },
+                ReasonKind::DeleteCapital(id) => Change::DeleteCapital { id, reason },
+                ReasonKind::DeleteEntry(id) => Change::DeleteEntry { id, reason },
+                ReasonKind::DeleteClient(id) => Change::DeleteClient { id, reason },
+                ReasonKind::WaiveFee(loan_id, seq) => Change::WaiveLateFee { loan_id, seq, waived: true, reason },
             };
-            match r {
-                Ok(()) => {
+            match app.save(change, window, cx) {
+                Ok(_) => {
                     app.reload(cx);
                     Ok(())
                 }

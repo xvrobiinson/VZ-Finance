@@ -1,8 +1,11 @@
 //! The root view: owns the store and the current snapshot, routes between
 //! screens, and hosts the sidebar. Screens render from the snapshot only.
 
+mod cloud;
 mod dialogs;
 mod sidebar;
+
+pub use cloud::SyncStatus;
 
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -138,6 +141,12 @@ pub struct VzApp {
     /// A client photo someone chose to show, with the client it belongs to.
     /// Hidden again after any change to the data.
     pub(crate) shown_photo: Option<(i64, Arc<Image>)>,
+    /// The link to the cloud, while signed in.
+    pub(crate) cloud: Option<cloud::Cloud>,
+    pub(crate) sign_in: cloud::SignIn,
+    /// The books kept on this PC (the database opened at launch); a linked
+    /// business has its own.
+    local_path: PathBuf,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -181,7 +190,7 @@ impl VzApp {
         let loan_search = cx.new(|cx| InputState::new(window, cx));
         let selected = CURRENCIES.iter().position(|c| c.code == snap.settings.currency_code).map(IndexPath::new);
         let currency_select = cx.new(|cx| SelectState::new(currency_choices(), selected, window, cx));
-        let subs = vec![
+        let mut subs = vec![
             cx.subscribe_in(&currency_select, window, |this, _, ev: &SelectEvent<Vec<Choice>>, window, cx| {
                 if let SelectEvent::Confirm(Some(i)) = ev {
                     let code = CURRENCIES[*i as usize].code.to_string();
@@ -222,6 +231,18 @@ impl VzApp {
         let focus = cx.focus_handle();
         focus.focus(window, cx);
         let logo = logo_image(&snap, None);
+        let local_path = store.path().to_path_buf();
+        let sign_in = cloud::SignIn::new(window, cx);
+        subs.push(cx.subscribe_in(&sign_in.email, window, |this, _, ev: &InputEvent, window, cx| {
+            if matches!(ev, InputEvent::PressEnter { .. }) {
+                this.send_sign_in_code(window, cx);
+            }
+        }));
+        subs.push(cx.subscribe_in(&sign_in.code, window, |this, _, ev: &InputEvent, window, cx| {
+            if matches!(ev, InputEvent::PressEnter { .. }) {
+                this.finish_sign_in(window, cx);
+            }
+        }));
         let mut app = Self {
             store,
             snap: Rc::new(snap),
@@ -248,9 +269,13 @@ impl VzApp {
             load_error,
             logo,
             shown_photo: None,
+            cloud: None,
+            sign_in,
+            local_path,
             _subscriptions: subs,
         };
         app.apply_language(window, cx);
+        app.resume_cloud(window, cx);
         // Debug builds only: VZ_FINANCE_START opens a screen or dialog at
         // launch, so screenshots can be taken without clicking anything.
         if cfg!(debug_assertions)
@@ -269,13 +294,15 @@ impl VzApp {
         }
         // Left open past midnight: what is overdue and the late fees change
         // with the date, so bring everything up to date when it does.
-        cx.spawn(async move |this, cx| {
+        cx.spawn_in(window, async move |this, cx| {
             loop {
                 cx.background_executor().timer(std::time::Duration::from_secs(60)).await;
-                let alive = this.update(cx, |app, cx| {
+                let alive = this.update_in(cx, |app, window, cx| {
                     if crate::utils::dates::today() != app.today {
                         app.reload(cx);
                     }
+                    // Changes that got no answer are tried again.
+                    app.pump(window, cx);
                 });
                 if alive.is_err() {
                     break;
@@ -290,6 +317,16 @@ impl VzApp {
         &self.snap.settings
     }
 
+    /// Shows the saved company details in their fields again (after the app
+    /// switches between the books on this PC and a business in the cloud).
+    pub(crate) fn reset_setting_inputs(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let s = self.snap.settings.clone();
+        self.receipt_name_input.update(cx, |i, cx| i.set_value(s.receipt_name.clone(), window, cx));
+        self.company_address_input.update(cx, |i, cx| i.set_value(s.company_address.clone(), window, cx));
+        self.company_phone_input.update(cx, |i, cx| i.set_value(s.company_phone.clone(), window, cx));
+        self.apply_language(window, cx);
+    }
+
     /// Re-labels the persistent controls after a language change.
     fn apply_language(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         i18n::set(self.snap.settings.language);
@@ -301,6 +338,8 @@ impl VzApp {
         self.loan_search.update(cx, |s, cx| {
             s.set_placeholder(t("Search by loan #, client, amount or status", "Buscar por préstamo #, cliente, monto o estado"), window, cx)
         });
+        self.sign_in.email.update(cx, |s, cx| s.set_placeholder(t("you@example.com", "tu@correo.com"), window, cx));
+        self.sign_in.code.update(cx, |s, cx| s.set_placeholder(t("6-digit code", "Código de 6 dígitos"), window, cx));
         let selected = CURRENCIES.iter().position(|c| c.code == self.snap.settings.currency_code).map(IndexPath::new);
         self.currency_select.update(cx, |s, cx| {
             s.set_items(currency_choices(), window, cx);
@@ -312,8 +351,9 @@ impl VzApp {
 
     pub fn reload(&mut self, cx: &mut Context<Self>) {
         self.today = today();
-        if self.refreshed_on != self.today {
-            // A new day: installments may have become overdue.
+        if self.refreshed_on != self.today && !self.is_linked() {
+            // A new day: installments may have become overdue. (The cloud
+            // does this for a linked business.)
             if let Err(e) = self.store.refresh(self.today) {
                 log::error!("could not bring late fees up to date: {e:#}");
             }
@@ -455,7 +495,7 @@ impl VzApp {
         let mut s = self.snap.settings.clone();
         let old = s.clone();
         f(&mut s);
-        if let Err(e) = self.store.save_settings(&s) {
+        if let Err(e) = self.save_settings(s.clone(), window, cx) {
             let msg = self.error_message(&e);
             self.notify_error(msg, window, cx);
             return;
@@ -467,6 +507,15 @@ impl VzApp {
         if s.language != old.language {
             self.apply_language(window, cx);
         }
+    }
+
+    /// Saves settings; a business setting changed on a linked PC also goes to
+    /// the cloud. (Theme, charts and the sidebar are this PC's own.)
+    pub(crate) fn save_settings(&mut self, s: Settings, window: &mut Window, cx: &mut Context<Self>) -> anyhow::Result<()> {
+        if self.is_linked() && crate::sync::change::business_differs(&self.snap.settings, &s) {
+            return self.save(crate::sync::change::Change::Settings(Box::new(s)), window, cx).map(|_| ());
+        }
+        self.store.save_settings(&s)
     }
 
     /// Saves the name printed on receipts. Empty means the app name.

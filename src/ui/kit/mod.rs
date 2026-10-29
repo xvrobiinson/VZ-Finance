@@ -8,6 +8,7 @@
 
 mod button;
 mod card;
+mod chip;
 mod dropdown;
 pub mod interact;
 mod list_row;
@@ -19,6 +20,7 @@ mod stat_strip;
 
 pub use button::{Button, ButtonKind, ButtonSize};
 pub use card::Card;
+pub use chip::Chip;
 pub use dropdown::{Dropdown, DropdownItem};
 pub use list_row::ListRow;
 pub use overlay::{Overlay, OverlayAlign};

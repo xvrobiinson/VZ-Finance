@@ -8,6 +8,7 @@ use super::ncolumn;
 use crate::app::VzApp;
 use crate::domain::installments::{InstallmentStatus, PlanState};
 use crate::i18n::t;
+use crate::sync::change::Change;
 use crate::tr;
 use crate::ui::components::{Tone, pill, sel, table_header, th};
 use crate::ui::forms::reason::ReasonKind;
@@ -163,8 +164,8 @@ impl VzApp {
     }
 
     fn restore_late_fee(&mut self, loan_id: i64, seq: u32, window: &mut Window, cx: &mut Context<Self>) {
-        match self.store.set_late_fee_waived(loan_id, seq, false, "", self.today) {
-            Ok(()) => {
+        match self.save(Change::WaiveLateFee { loan_id, seq, waived: false, reason: String::new() }, window, cx) {
+            Ok(_) => {
                 self.reload(cx);
                 self.notify_success(t("Late fee restored", "Cargo por mora restaurado"), window, cx);
             }

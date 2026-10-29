@@ -7,6 +7,7 @@ pub mod loans;
 pub mod overview;
 pub mod payments;
 pub mod settings;
+mod sync;
 
 use gpui_kit::assets::IconName;
 use gpui_kit::component::{h_flex, v_flex};
