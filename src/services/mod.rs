@@ -309,6 +309,16 @@ impl Store {
         })
     }
 
+    /// Replaces the books with the cloud's copy (`sync::replica::apply`).
+    pub fn apply_cloud(&mut self, snap: &crate::sync::wire::Snapshot) -> Result<()> {
+        crate::sync::replica::apply(&mut self.conn, snap)
+    }
+
+    /// The cloud business this database follows, if it is linked.
+    pub fn cloud_link(&self) -> Result<Option<crate::sync::replica::Link>> {
+        crate::sync::replica::link(&self.conn)
+    }
+
     /// Deletes every client, loan, payment and money movement, keeping
     /// settings and the logo. A copy of everything is saved first and its
     /// path returned.

@@ -12,7 +12,9 @@ use std::time::{Duration, Instant};
 use convex::{ConvexClient, FunctionResult, Value};
 use futures::StreamExt;
 use futures::channel::mpsc::UnboundedReceiver;
+use vz_finance::services::Store;
 use vz_finance::sync::auth::{self, AuthError, Endpoints, Session};
+use vz_finance::sync::figures::figures;
 use vz_finance::sync::vault::{self, Stored};
 use vz_finance::sync::wire::Role;
 use vz_finance::sync::worker::{Config, Event, Worker};
@@ -136,4 +138,47 @@ fn signs_in_follows_the_books_and_signs_out() {
     assert_eq!(auth::token(&endpoints(), &session).err(), Some(AuthError::SignedOut));
     vault::forget(CLOUD);
     assert!(vault::load(CLOUD).is_none());
+}
+
+/// The desktop's copy of an imported book shows the same figures as the
+/// desktop that exported it. Import first, in the PWA repo:
+///
+///   cargo run --example seed_demo -- <demo.db>
+///   cargo run --example export_for_cloud -- <demo.db> <export-dir>
+///   node scripts/import-desktop.mjs <export-dir> --url http://127.0.0.1:3210
+///       --origin http://localhost:5173 --email <email> --code-from-log <log>
+///
+/// then run this with VZ_SYNC_EXPORT=<export-dir> and VZ_SYNC_EMAIL=<email>.
+#[test]
+#[ignore = "needs a local PWA backend with an imported book; see above"]
+fn an_imported_book_arrives_with_the_same_figures() {
+    let dir = std::path::PathBuf::from(std::env::var("VZ_SYNC_EXPORT").expect("set VZ_SYNC_EXPORT"));
+    let email = std::env::var("VZ_SYNC_EMAIL").expect("set VZ_SYNC_EMAIL");
+    let expected: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(dir.join("figures.json")).unwrap()).unwrap();
+
+    let stored = Stored { email: email.clone(), session: sign_in(&email) };
+    let config = Config { endpoints: endpoints(), client_version: "0.7.0".into() };
+    let (worker, mut rx) = Worker::start(config, stored).unwrap();
+    let list = wait_for(&mut rx, "the business list", |e| match e {
+        Event::Businesses(list) if !list.is_empty() => Some(list),
+        Event::Problem(p) => panic!("{p}"),
+        _ => None,
+    });
+    worker.open(&list[0].business_id);
+    let snap = wait_for(&mut rx, "the books", |e| match e {
+        Event::Snapshot(s) => Some(s),
+        Event::Problem(p) => panic!("{p}"),
+        _ => None,
+    });
+    worker.stop();
+    assert_eq!(snap.today, expected["asOf"], "import and check on the same day");
+
+    let tmp = tempfile::tempdir().unwrap();
+    let mut store = Store::open(tmp.path().join("data").join("linked.db")).unwrap();
+    store.apply_cloud(&snap).unwrap();
+    let today = chrono::NaiveDate::parse_from_str(&snap.today, "%Y-%m-%d").unwrap();
+    assert_eq!(store.refresh(today).unwrap(), 0, "the cloud's late fees are the desktop's");
+    let got = figures(&store.snapshot().unwrap().book, today);
+    assert_eq!(got["summary"], expected["summary"]);
+    assert_eq!(got["loans"], expected["loans"]);
 }
