@@ -429,6 +429,8 @@ impl VzApp {
     }
 
     pub fn navigate(&mut self, route: Route, window: &mut Window, cx: &mut Context<Self>) {
+        // Analytics shows the business's totals: admins only.
+        let route = if route == Route::Analytics && !self.can(Need::Manage) { Route::Overview } else { route };
         if route != self.route {
             self.history.push(self.route);
             if self.history.len() > 50 {
@@ -804,7 +806,8 @@ impl Render for VzApp {
             Route::Loans => self.render_loans(window, cx),
             Route::Loan(id) => self.render_loan(id, window, cx),
             Route::Payments => self.render_payments(window, cx),
-            Route::Analytics => self.render_analytics(window, cx),
+            Route::Analytics if self.can(Need::Manage) => self.render_analytics(window, cx),
+            Route::Analytics => self.render_overview(window, cx),
             Route::Settings => self.render_settings(window, cx),
         };
         let banner = self.load_error.clone().map(|e| {

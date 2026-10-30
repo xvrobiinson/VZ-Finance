@@ -142,7 +142,9 @@ impl VzApp {
 
         let business = crate::APP_NAME;
         let items = nav();
-        let nav = items.iter().map(|(route, icon_name, label, keys)| {
+        // Analytics shows the business's totals: admins only.
+        let analytics = self.can(crate::sync::wire::Need::Manage);
+        let nav = items.iter().filter(|(route, ..)| *route != Route::Analytics || analytics).map(|(route, icon_name, label, keys)| {
             let route = *route;
             let badge = (route == Route::Loans && overdue > 0).then(|| pill(&p, overdue.to_string(), Tone::Negative).h(px(20.)).px(px(6.)));
             NavItem::new(

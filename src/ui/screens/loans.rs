@@ -213,7 +213,12 @@ impl VzApp {
         let subtitle = {
             let active = count(s.active_loans, "active loan", "active loans", "préstamo activo", "préstamos activos");
             let out = money.format(s.outstanding_principal);
-            tr!("{active} · {out} of capital lent out", "{active} · {out} de capital prestado")
+            // The business's totals are for admins (collectors see their work).
+            if self.can(Need::Manage) {
+                tr!("{active} · {out} of capital lent out", "{active} · {out} de capital prestado")
+            } else {
+                active
+            }
         };
         let header = page_header(
             &p,

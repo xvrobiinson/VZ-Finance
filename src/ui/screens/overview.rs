@@ -44,15 +44,18 @@ impl VzApp {
             .child(page_header(&p, t("Overview", "Resumen"), Some(self.finding(&p, &s)), self.header_actions(w, cx)).pb_0())
             .children(self.render_setup(&p, w, cx))
             .child(self.kpi_strip(&p, &s, w, cx))
-            .child(
-                div()
-                    .flex()
-                    .gap(gap)
-                    .when(side_by_side, |d| d.flex_row().items_stretch())
-                    .when(!side_by_side, |d| d.flex_col())
-                    .child(self.growth_card(&p, w, cx))
-                    .child(self.allocation_card(&p, &s, side_by_side, cx)),
-            )
+            // The business's totals are for admins; collectors see their work.
+            .when(self.can(Need::Manage), |d| {
+                d.child(
+                    div()
+                        .flex()
+                        .gap(gap)
+                        .when(side_by_side, |d| d.flex_row().items_stretch())
+                        .when(!side_by_side, |d| d.flex_col())
+                        .child(self.growth_card(&p, w, cx))
+                        .child(self.allocation_card(&p, &s, side_by_side, cx)),
+                )
+            })
             .child(
                 div()
                     .flex()
@@ -287,6 +290,26 @@ impl VzApp {
             Width::Ultra => 6,
         };
 
+        let overdue_sub = match s.overdue_loans {
+            0 => t("Nothing past due", "Nada vencido").to_string(),
+            1 => t("1 loan behind", "1 préstamo atrasado").to_string(),
+            n => tr!("{n} loans behind", "{n} préstamos atrasados"),
+        };
+        let overdue = Stat::new(t("Overdue amount", "Monto atrasado"), money.format(s.overdue_amount))
+            .icon(IconName::CircleAlert)
+            .when(s.overdue_amount > 0, |st| st.tone(p.negative))
+            .caption(sel(overdue_sub));
+        // Collectors see what their work needs, not the business's totals.
+        if !self.can(Need::Manage) {
+            let cells = vec![
+                Stat::new(t("Active loans", "Préstamos activos"), s.active_loans.to_string()).icon(IconName::HandCoins).lead(true),
+                Stat::new(t("Due soon", "Por vencer"), s.due_soon_loans.to_string())
+                    .icon(IconName::Calendar)
+                    .caption(sel(t("Payments in the next few days", "Pagos en los próximos días"))),
+                overdue,
+            ];
+            return StatStrip::new(if w == Width::Compact { 2 } else { 3 }).dense(w == Width::Compact).stats(cells);
+        }
         let gain = s.gain();
         let invested = s.net_invested();
         let gain_sub: AnyElement = if invested > 0 {
@@ -329,12 +352,6 @@ impl VzApp {
         } else {
             t("Interest and fees on hand", "Interés y cargos en mano").to_string()
         };
-        let overdue_sub = match s.overdue_loans {
-            0 => t("Nothing past due", "Nada vencido").to_string(),
-            1 => t("1 loan behind", "1 préstamo atrasado").to_string(),
-            n => tr!("{n} loans behind", "{n} préstamos atrasados"),
-        };
-
         let adjust = Button::new("kpi-adjust")
             .ghost()
             .size(ButtonSize::Mini)
@@ -378,13 +395,7 @@ impl VzApp {
                     .caption(sel(interest_sub)),
                 false,
             ),
-            cell(
-                Stat::new(t("Overdue amount", "Monto atrasado"), money.format(s.overdue_amount))
-                    .icon(IconName::CircleAlert)
-                    .when(s.overdue_amount > 0, |st| st.tone(p.negative))
-                    .caption(sel(overdue_sub)),
-                false,
-            ),
+            cell(overdue, false),
         ];
         StatStrip::new(per_row).dense(w == Width::Compact).stats(cells)
     }

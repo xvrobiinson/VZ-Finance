@@ -48,7 +48,8 @@ impl VzApp {
         let header = page_header(
             &p,
             t("Payments", "Pagos"),
-            Some(
+            // The business's totals are for admins (collectors see their work).
+            Some(if self.can(Need::Manage) {
                 h_flex()
                     .flex_wrap()
                     .gap(px(4.))
@@ -56,8 +57,10 @@ impl VzApp {
                     .child(sel(tr!("{n} · {received} received, of which", "{n} · {received} recibido, de los cuales")))
                     .child(div().text_color(p.positive).child(sel(money.format(income))))
                     .child(sel(t("is interest", "son interés")))
-                    .into_any_element(),
-            ),
+                    .into_any_element()
+            } else {
+                sel(n).into_any_element()
+            }),
             self.can(Need::Record)
                 .then(|| {
                     Button::new("pay-new")
