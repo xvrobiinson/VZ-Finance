@@ -11,6 +11,7 @@ use crate::domain::ledger::{ContractStatus, DisplayStatus, PeriodState, owed_at_
 use crate::domain::money::{Cents, percent_label};
 use crate::domain::portfolio::LoanBook;
 use crate::i18n::{count, t};
+use crate::sync::wire::Need;
 use crate::tr;
 use crate::ui::components::{Tone, avatar, empty_state, icon, kv, page_header, pill, progress_bar, sel, table_header, table_row, th};
 use crate::ui::forms::reason::ReasonKind;
@@ -218,15 +219,18 @@ impl VzApp {
             &p,
             t("Loans", "Préstamos"),
             Some(subtitle.into_any_element()),
-            vec![
-                Button::new("loans-new")
-                    .primary()
-                    .icon(IconName::Plus)
-                    .label(t("New loan", "Nuevo préstamo"))
-                    .tooltip("Ctrl+L")
-                    .on_click(cx.listener(|this, _, w, cx| this.open_loan_form(None, w, cx)))
-                    .into_any_element(),
-            ],
+            self.can(Need::Manage)
+                .then(|| {
+                    Button::new("loans-new")
+                        .primary()
+                        .icon(IconName::Plus)
+                        .label(t("New loan", "Nuevo préstamo"))
+                        .tooltip("Ctrl+L")
+                        .on_click(cx.listener(|this, _, w, cx| this.open_loan_form(None, w, cx)))
+                        .into_any_element()
+                })
+                .into_iter()
+                .collect(),
         );
 
         let rows = visible.iter().map(|x| {
@@ -298,13 +302,13 @@ impl VzApp {
                     "Create a loan to start tracking its interest and payments. You'll see the interest per period before anything is saved.",
                     "Crea un préstamo para seguir sus intereses y pagos. Verás el interés por período antes de guardar.",
                 ),
-                Some(
+                self.can(Need::Manage).then(|| {
                     Button::new("loans-empty-new")
                         .primary()
                         .label(t("New loan", "Nuevo préstamo"))
                         .on_click(cx.listener(|this, _, w, cx| this.open_loan_form(None, w, cx)))
-                        .into_any_element(),
-                ),
+                        .into_any_element()
+                }),
             )
             .into_any_element()
         } else if visible.is_empty() && !query.trim().is_empty() {
@@ -608,8 +612,9 @@ impl VzApp {
         let edit = cx.listener(move |this, _, w, cx| this.edit_loan(id, w, cx));
         let delete = cx.listener(move |this, _, w, cx| this.open_reason_form(ReasonKind::DeleteLoan(id), w, cx));
         let default = cx.listener(move |this, _, w, cx| this.open_reason_form(ReasonKind::MarkDefaulted(id), w, cx));
+        let manage = self.can(Need::Manage);
         let main = match status {
-            ContractStatus::Active => Some(
+            ContractStatus::Active if self.can(Need::Record) => Some(
                 Button::new("loan-pay")
                     .primary()
                     .icon(IconName::Plus)
@@ -617,7 +622,7 @@ impl VzApp {
                     .on_click(cx.listener(move |this, _, w, cx| this.open_payment_form(Some(id), w, cx)))
                     .into_any_element(),
             ),
-            ContractStatus::Defaulted => Some(
+            ContractStatus::Defaulted if manage => Some(
                 Button::new("loan-reinstate")
                     .label(t("Reinstate loan", "Reactivar préstamo"))
                     .on_click(cx.listener(move |this, _, w, cx| this.reinstate_loan(id, w, cx)))
@@ -626,7 +631,17 @@ impl VzApp {
             _ => None,
         };
         let active = status == ContractStatus::Active;
-        let mut out = if w >= Width::Wide {
+        let mut out = if !manage {
+            // Reading roles keep the receipt, the one action that changes nothing.
+            vec![
+                Button::new("loan-receipt")
+                    .ghost()
+                    .icon(IconName::Printer)
+                    .label(t("Loan receipt", "Recibo del préstamo"))
+                    .on_click(receipt)
+                    .into_any_element(),
+            ]
+        } else if w >= Width::Wide {
             let mut v = vec![
                 Button::new("loan-receipt")
                     .ghost()
@@ -768,6 +783,7 @@ impl VzApp {
         let full = w >= Width::Wide;
         let split = w > Width::Compact;
         let actions_w = if full { 190. } else { 140. };
+        let manage = self.can(Need::Manage);
         let payments: Vec<_> = self.snap.payments_for_loan(id).cloned().collect();
         let tx_rows = payments.iter().rev().map(|x| {
             let reversed = x.is_reversed();
@@ -827,7 +843,7 @@ impl VzApp {
                         .gap(px(2.))
                         .when(reversed, |d| d.child(pill(p, t("Reversed", "Anulado"), Tone::Neutral)))
                         .child(if full { receipt.label(t("Receipt", "Recibo")) } else { receipt.tooltip(t("Receipt", "Recibo")) })
-                        .when(!reversed, |d| {
+                        .when(!reversed && manage, |d| {
                             d.child(row_icon_button(
                                 ("pay-edit", pid as u64),
                                 IconName::Pencil,
@@ -836,13 +852,15 @@ impl VzApp {
                                 move |this, w, cx| this.edit_payment(pid, w, cx),
                             ))
                         })
-                        .child(row_icon_button(
-                            ("pay-del", pid as u64),
-                            IconName::Trash,
-                            t("Delete payment", "Eliminar pago"),
-                            cx,
-                            move |this, w, cx| this.open_reason_form(ReasonKind::DeletePayment(pid), w, cx),
-                        )),
+                        .when(manage, |d| {
+                            d.child(row_icon_button(
+                                ("pay-del", pid as u64),
+                                IconName::Trash,
+                                t("Delete payment", "Eliminar pago"),
+                                cx,
+                                move |this, w, cx| this.open_reason_form(ReasonKind::DeletePayment(pid), w, cx),
+                            ))
+                        }),
                 )
         });
         let body = if payments.is_empty() {
@@ -854,7 +872,7 @@ impl VzApp {
                     "Each payment shows how much went to interest and how much to capital.",
                     "Cada pago muestra cuánto fue a interés y cuánto a capital.",
                 ),
-                active.then(|| {
+                (active && self.can(Need::Record)).then(|| {
                     Button::new("loan-empty-pay")
                         .primary()
                         .label(t("Record payment", "Registrar pago"))

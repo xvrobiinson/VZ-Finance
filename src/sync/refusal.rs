@@ -18,7 +18,7 @@ pub fn describe(e: &Value, s: &Settings) -> String {
     };
     let text = match e["code"].as_str().unwrap_or_default() {
         "unauthenticated" => t("Your session ended. Sign in again.", "Tu sesión terminó. Inicia sesión de nuevo."),
-        "forbidden" => t("Your role doesn't allow this. Ask an admin.", "Tu rol no permite esto. Pídeselo a un administrador."),
+        "forbidden" => forbidden(),
         "not_found" => t("That record no longer exists.", "Ese registro ya no existe."),
         "invalid" => invalid(e),
         "conflict" => t(
@@ -75,6 +75,11 @@ pub fn describe(e: &Value, s: &Settings) -> String {
         _ => t("Something went wrong. Try again.", "Algo salió mal. Inténtalo de nuevo."),
     };
     text.to_string()
+}
+
+/// A change the person's role doesn't allow.
+pub fn forbidden() -> &'static str {
+    t("Your role doesn't allow this. Ask an admin.", "Tu rol no permite esto. Pídeselo a un administrador.")
 }
 
 fn invalid(e: &Value) -> &'static str {

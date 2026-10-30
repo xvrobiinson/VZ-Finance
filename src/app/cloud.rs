@@ -23,7 +23,7 @@ use crate::sync::change::{Change, Saved};
 use crate::sync::outbox::Outcome;
 use crate::sync::replica::{self, Entity as Record};
 use crate::sync::vault::{self, Stored};
-use crate::sync::wire::{Membership, Snapshot};
+use crate::sync::wire::{Membership, Need, Role, Snapshot};
 use crate::sync::worker::{Config, Event, Worker};
 use crate::tr;
 
@@ -69,10 +69,34 @@ impl SignIn {
     }
 }
 
-/// A receipt to open once the cloud has the record and its number.
-enum Receipt {
-    Payment,
-    Loan,
+/// What to do once the cloud has a new record and its number.
+#[derive(Clone, Copy)]
+enum Then {
+    PaymentReceipt,
+    LoanReceipt,
+    /// The record's page is open under the number this PC gave it: show it
+    /// under the cloud's number instead.
+    Reopen(super::Route),
+}
+
+impl Then {
+    fn record(self) -> Option<Record> {
+        use super::Route;
+        match self {
+            Then::PaymentReceipt => Some(Record::Payment),
+            Then::LoanReceipt | Then::Reopen(Route::Loan(_)) => Some(Record::Loan),
+            Then::Reopen(Route::Client(_)) => Some(Record::Client),
+            Then::Reopen(_) => None,
+        }
+    }
+}
+
+/// A saved change the app waits on: its operation id until the cloud
+/// answers, then the record's cloud id until the copy with it arrives.
+struct Waiting {
+    op: String,
+    remote: Option<String>,
+    then: Then,
 }
 
 /// The signed-in link to the cloud.
@@ -88,12 +112,12 @@ pub(crate) struct Cloud {
     /// The last copy of the linked business's books.
     last: Option<Box<Snapshot>>,
     sending: bool,
-    /// The operation id of the change saved last, for its receipt.
+    /// The operation id of the change saved last (none when it wasn't sent
+    /// to the cloud), for its receipt and page.
     last_op: Option<String>,
     pub(crate) update_required: Option<String>,
-    /// Receipts waiting for the cloud: by operation id until it answers,
-    /// then by the record's cloud id until the copy with it arrives.
-    receipts: Vec<(String, Option<String>, Receipt)>,
+    /// Receipts and pages waiting for the cloud's number.
+    waiting: Vec<Waiting>,
     /// Backups to Google Drive.
     pub(crate) drive: super::drive::Drive,
     _events: Task<()>,
@@ -150,7 +174,7 @@ impl VzApp {
             sending: false,
             last_op: None,
             update_required: None,
-            receipts: Vec::new(),
+            waiting: Vec::new(),
             drive: Default::default(),
             _events: events,
         });
@@ -162,6 +186,23 @@ impl VzApp {
     /// True when this PC follows a business in the cloud.
     pub(crate) fn is_linked(&self) -> bool {
         self.cloud.as_ref().is_some_and(|c| c.linked.is_some())
+    }
+
+    /// The person's role in the business this PC follows; `None` on this
+    /// PC's own books, where everything is allowed.
+    pub(crate) fn role(&self) -> Option<Role> {
+        let c = self.cloud.as_ref().filter(|c| c.linked.is_some())?;
+        match &c.last {
+            Some(snap) => Some(snap.me.role),
+            // Before the first copy arrives: the role kept with the books.
+            None => Some(self.store.cloud_link().ok().flatten().map_or(Role::Viewer, |l| l.role)),
+        }
+    }
+
+    /// Whether the person may make changes that need `need`. Screens hide
+    /// what it doesn't allow (the cloud refuses it anyway).
+    pub(crate) fn can(&self, need: Need) -> bool {
+        self.role().is_none_or(|r| r.allows(need))
     }
 
     pub(crate) fn sync_status(&self) -> Option<SyncStatus> {
@@ -462,9 +503,12 @@ impl VzApp {
                 .into());
             }
         }
+        if !self.can(change.need()) {
+            return Err(Invalid(crate::sync::refusal::forbidden().into()).into());
+        }
         let (saved, queued) = self.store.save(&change, self.today)?;
-        if let (Some(q), Some(c)) = (&queued, &mut self.cloud) {
-            c.last_op = Some(q.op_id.clone());
+        if let Some(c) = &mut self.cloud {
+            c.last_op = queued.as_ref().map(|q| q.op_id.clone());
         }
         if queued.is_some() {
             self.pump(window, cx);
@@ -475,30 +519,67 @@ impl VzApp {
     /// Opens a new payment's receipt: at once on this PC's own books, or once
     /// the cloud has the payment and its number.
     pub(crate) fn payment_receipt_after_save(&mut self, payment_id: i64, window: &mut Window, cx: &mut Context<Self>) {
-        self.receipt_after_save(payment_id, Receipt::Payment, window, cx);
+        self.receipt_after_save(payment_id, Then::PaymentReceipt, window, cx);
     }
 
     pub(crate) fn loan_receipt_after_save(&mut self, loan_id: i64, window: &mut Window, cx: &mut Context<Self>) {
-        self.receipt_after_save(loan_id, Receipt::Loan, window, cx);
+        self.receipt_after_save(loan_id, Then::LoanReceipt, window, cx);
     }
 
-    fn receipt_after_save(&mut self, local_id: i64, kind: Receipt, window: &mut Window, cx: &mut Context<Self>) {
-        let pending = self.cloud.as_mut().filter(|c| c.linked.is_some()).and_then(|c| c.last_op.take().map(|op| (c, op)));
-        match pending {
-            Some((c, op)) => {
-                c.receipts.push((op, None, kind));
-                if !c.online {
-                    self.notify_success(
-                        t("The receipt will open once this reaches the cloud.", "El recibo se abrirá cuando esto llegue a la nube."),
-                        window,
-                        cx,
-                    );
-                }
+    fn receipt_after_save(&mut self, local_id: i64, then: Then, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.wait_for_cloud(then) {
+            self.then(then, local_id, window, cx);
+            return;
+        }
+        if self.cloud.as_ref().is_some_and(|c| !c.online) {
+            self.notify_success(
+                t("The receipt will open once this reaches the cloud.", "El recibo se abrirá cuando esto llegue a la nube."),
+                window,
+                cx,
+            );
+        }
+    }
+
+    /// Opens the page of a record just saved. On a linked PC the record has
+    /// this PC's number until the cloud accepts it; the page then follows it
+    /// to the cloud's number (or goes back to the list if it's refused).
+    pub(crate) fn open_saved(&mut self, route: super::Route, window: &mut Window, cx: &mut Context<Self>) {
+        self.navigate(route, window, cx);
+        self.wait_for_cloud(Then::Reopen(route));
+    }
+
+    /// Waits for the cloud's answer to the change saved last, when it went to
+    /// the cloud. False when there is nothing to wait for.
+    fn wait_for_cloud(&mut self, then: Then) -> bool {
+        let Some(c) = self.cloud.as_mut().filter(|c| c.linked.is_some()) else { return false };
+        let Some(op) = c.last_op.clone() else { return false };
+        c.waiting.push(Waiting { op, remote: None, then });
+        true
+    }
+
+    fn then(&mut self, then: Then, id: i64, window: &mut Window, cx: &mut Context<Self>) {
+        use super::Route;
+        match then {
+            Then::PaymentReceipt => self.open_receipt(id, window, cx),
+            Then::LoanReceipt => self.open_loan_receipt(id, window, cx),
+            Then::Reopen(old) => {
+                let new = match old {
+                    Route::Loan(_) => Route::Loan(id),
+                    Route::Client(_) => Route::Client(id),
+                    other => other,
+                };
+                self.replace_route(old, new);
             }
-            None => match kind {
-                Receipt::Payment => self.open_receipt(local_id, window, cx),
-                Receipt::Loan => self.open_loan_receipt(local_id, window, cx),
-            },
+        }
+    }
+
+    /// Points the page and the back history at `new` where they showed `old`.
+    fn replace_route(&mut self, old: super::Route, new: super::Route) {
+        if self.route == old {
+            self.route = new;
+        }
+        for r in self.history.iter_mut().filter(|r| **r == old) {
+            *r = new;
         }
     }
 
@@ -569,21 +650,15 @@ impl VzApp {
         self.reload(cx);
         let Some(c) = &mut self.cloud else { return };
         let mut ready = Vec::new();
-        for (op, remote, kind) in std::mem::take(&mut c.receipts) {
-            let entity = match kind {
-                Receipt::Payment => Record::Payment,
-                Receipt::Loan => Record::Loan,
-            };
-            match remote.as_deref().and_then(|r| self.store.cloud_local_id(entity, r).ok().flatten()) {
-                Some(id) => ready.push((kind, id)),
-                None => c.receipts.push((op, remote, kind)),
+        for w in std::mem::take(&mut c.waiting) {
+            let local = w.remote.as_deref().zip(w.then.record()).and_then(|(r, e)| self.store.cloud_local_id(e, r).ok().flatten());
+            match local {
+                Some(id) => ready.push((w.then, id)),
+                None => c.waiting.push(w),
             }
         }
-        for (kind, id) in ready {
-            match kind {
-                Receipt::Payment => self.open_receipt(id, window, cx),
-                Receipt::Loan => self.open_loan_receipt(id, window, cx),
-            }
+        for (then, id) in ready {
+            self.then(then, id, window, cx);
         }
     }
 
@@ -622,19 +697,30 @@ impl VzApp {
                                 cx,
                             );
                         }
-                        let remote =
-                            ["paymentId", "loanId"].iter().find_map(|k| result[*k].as_str()).or(result.as_str()).map(str::to_string);
-                        if let Some(c) = &mut app.cloud
-                            && let Some(r) = c.receipts.iter_mut().find(|r| r.0 == q.op_id)
-                        {
-                            r.1 = remote;
+                        let remote = ["paymentId", "loanId", "clientId"]
+                            .iter()
+                            .find_map(|k| result[*k].as_str())
+                            .or(result.as_str())
+                            .map(str::to_string);
+                        if let Some(c) = &mut app.cloud {
+                            for w in c.waiting.iter_mut().filter(|w| w.op == q.op_id) {
+                                w.remote = remote.clone();
+                            }
                         }
                     }
                     Outcome::Refused(e) => {
                         let why = crate::sync::refusal::describe(e, app.settings());
                         app.notify_error(tr!("The cloud didn't accept a change: {why}", "La nube no aceptó un cambio: {why}"), window, cx);
-                        if let Some(c) = &mut app.cloud {
-                            c.receipts.retain(|r| r.0 != q.op_id);
+                        let gone: Vec<Then> = app.cloud.as_mut().map_or(Vec::new(), |c| {
+                            let (gone, keep) = std::mem::take(&mut c.waiting).into_iter().partition(|w| w.op == q.op_id);
+                            c.waiting = keep;
+                            gone.into_iter().map(|w: Waiting| w.then).collect()
+                        });
+                        // A page showing the refused record goes back to its list.
+                        for then in gone {
+                            if let Then::Reopen(route) = then {
+                                app.replace_route(route, route.section());
+                            }
                         }
                     }
                     Outcome::NoAnswer | Outcome::NotSent => {}

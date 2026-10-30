@@ -26,6 +26,7 @@ use crate::domain::portfolio::{Account, EntryKind};
 use crate::i18n::{self, t};
 use crate::services::settings::{CURRENCIES, Settings};
 use crate::services::{CashShortfall, InsufficientCash, Invalid, Snapshot, Store};
+use crate::sync::wire::Need;
 use crate::tr;
 use crate::ui::forms::loan::Choice;
 use crate::ui::theme::{self, Typeset as _, palette, space};
@@ -278,7 +279,10 @@ impl VzApp {
             _subscriptions: subs,
         };
         app.apply_language(window, cx);
-        app.resume_cloud(window, cx);
+        // Tests never use the sign-in saved on this PC: it is a real account.
+        if !cfg!(test) {
+            app.resume_cloud(window, cx);
+        }
         // Debug builds only: VZ_FINANCE_START opens a screen or dialog at
         // launch, so screenshots can be taken without clicking anything.
         if cfg!(debug_assertions)
@@ -815,19 +819,24 @@ impl Render for VzApp {
             .id("vz-root")
             .key_context(CONTEXT)
             .track_focus(&self.focus)
-            .on_action(cx.listener(|this, _: &NewPayment, w, cx| {
-                let loan = this.context_loan();
-                this.open_payment_form(loan, w, cx)
-            }))
-            .on_action(cx.listener(|this, _: &NewLoan, w, cx| {
-                let client = match this.route {
-                    Route::Client(id) if this.snap.client(id).is_some_and(|c| !c.is_archived()) => Some(id),
-                    _ => None,
-                };
-                this.open_loan_form(client, w, cx)
-            }))
-            .on_action(cx.listener(|this, _: &NewClient, w, cx| this.open_client_form(None, w, cx)))
-            .on_action(cx.listener(|this, _: &NewExpense, w, cx| this.open_entry_form(EntryKind::Expense, None, w, cx)))
+            // Shortcuts for what the person's role may do.
+            .when(self.can(Need::Record), |d| {
+                d.on_action(cx.listener(|this, _: &NewPayment, w, cx| {
+                    let loan = this.context_loan();
+                    this.open_payment_form(loan, w, cx)
+                }))
+                .on_action(cx.listener(|this, _: &NewClient, w, cx| this.open_client_form(None, w, cx)))
+                .on_action(cx.listener(|this, _: &NewExpense, w, cx| this.open_entry_form(EntryKind::Expense, None, w, cx)))
+            })
+            .when(self.can(Need::Manage), |d| {
+                d.on_action(cx.listener(|this, _: &NewLoan, w, cx| {
+                    let client = match this.route {
+                        Route::Client(id) if this.snap.client(id).is_some_and(|c| !c.is_archived()) => Some(id),
+                        _ => None,
+                    };
+                    this.open_loan_form(client, w, cx)
+                }))
+            })
             .on_action(cx.listener(Self::toggle_sidebar))
             .on_action(cx.listener(Self::go_back))
             .on_action(cx.listener(Self::backup_now))

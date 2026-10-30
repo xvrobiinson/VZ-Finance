@@ -24,7 +24,9 @@ left. Still on gpui-component on purpose: the form dialogs' engine, `Input`,
 date picker's hand-built toggle.
 
 Kit contents: `Button` (Primary, Secondary, Ghost, Danger, DangerGhost;
-Mini/Small/Medium; `.loading`, `.selected`, `.suffix`), `Card`, `Stat`,
+Mini/Small/Medium; `.loading`, `.selected`, `.suffix`, `.prefix` for a mark
+in its own colors, `.wide` for a full-width button; approved 2026-10-30),
+`Card`, `Stat`,
 `StatStrip`, `ListRow` (`.muted`), `Segmented` (`Segmented::pick`, cells
 fit their labels), `Dropdown` + `DropdownItem` (`.danger`, `.disabled`,
 `.hint`), `Overlay`, `SortHeader` + `Sort` (sortable column header, `.right`

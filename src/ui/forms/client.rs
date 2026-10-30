@@ -42,6 +42,8 @@ pub struct ClientForm {
     /// A picture is being read and prepared.
     reading_photo: bool,
     photo_error: Option<String>,
+    /// ID photos are for admins (in the cloud only admins may see them).
+    photos_allowed: bool,
     on_created: Option<OnCreated>,
     /// Saved once; repeated clicks or Enter presses do nothing more.
     saved: bool,
@@ -107,12 +109,19 @@ impl ClientForm {
             preview: photo.map(jpeg_image),
             reading_photo: false,
             photo_error: None,
+            photos_allowed: true,
             on_created,
             saved: false,
             error: None,
             show_errors: false,
             _subs: subs,
         }
+    }
+
+    /// Without the ID photo field (for roles that may not add photos).
+    pub fn photos(mut self, allowed: bool) -> Self {
+        self.photos_allowed = allowed;
+        self
     }
 
     fn input(&self, cx: &App) -> ClientInput {
@@ -236,7 +245,7 @@ impl ClientForm {
                         cx,
                     );
                     if editing.is_none() && on_created.is_none() {
-                        app.navigate(Route::Client(id), window, cx);
+                        app.open_saved(Route::Client(id), window, cx);
                     }
                 });
                 if let Some(f) = on_created {
@@ -332,7 +341,7 @@ impl Render for ClientForm {
                     .child(grow_field(field(&p, t("Address", "Dirección"), Input::new(&self.address), None, None)))
                     .child(grow_field(field(&p, t("Email", "Correo"), Input::new(&self.email), None, email_error))),
             )
-            .child(self.photo_field(cx))
+            .when(self.photos_allowed, |d| d.child(self.photo_field(cx)))
             .child(field(&p, t("Notes", "Notas"), Textarea::new(&self.notes), None, None))
             .child(footer(
                 &p,

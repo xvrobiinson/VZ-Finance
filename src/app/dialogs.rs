@@ -85,7 +85,8 @@ impl VzApp {
             }
         });
         let app = cx.entity().downgrade();
-        let form = cx.new(|cx| ClientForm::new(app, existing.clone(), photo, on_created, window, cx));
+        let photos = self.can(crate::sync::wire::Need::Manage);
+        let form = cx.new(|cx| ClientForm::new(app, existing.clone(), photo, on_created, window, cx).photos(photos));
         let title = if existing.is_some() { t("Edit client", "Editar cliente") } else { t("New client", "Nuevo cliente") };
         let first = Cell::new(true);
         let dialog_form = form.clone();

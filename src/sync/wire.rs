@@ -40,6 +40,25 @@ pub enum Role {
     Viewer,
 }
 
+/// What a change needs from the person's role, as the cloud checks it
+/// (`convex/lib/access.ts` in the PWA repo).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Need {
+    /// New clients, payments, expenses and income: collectors and admins.
+    Record,
+    /// Everything else: admins only.
+    Manage,
+}
+
+impl Role {
+    pub fn allows(self, need: Need) -> bool {
+        match need {
+            Need::Record => self != Role::Viewer,
+            Need::Manage => self == Role::Admin,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Snapshot {

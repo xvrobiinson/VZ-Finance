@@ -7,6 +7,7 @@ use gpui_kit::*;
 use super::{ncolumn, row_icon_button};
 use crate::app::{Route, VzApp};
 use crate::i18n::{count, t};
+use crate::sync::wire::Need;
 use crate::tr;
 use crate::ui::components::{Tone, avatar, empty_state, icon, page_header, pill, sel, table_header, table_row, th};
 use crate::ui::forms::reason::ReasonKind;
@@ -57,20 +58,24 @@ impl VzApp {
                     .child(sel(t("is interest", "son interés")))
                     .into_any_element(),
             ),
-            vec![
-                Button::new("pay-new")
-                    .primary()
-                    .icon(IconName::Plus)
-                    .label(t("Record payment", "Registrar pago"))
-                    .tooltip("Ctrl+P")
-                    .on_click(cx.listener(|this, _, w, cx| this.open_payment_form(None, w, cx)))
-                    .into_any_element(),
-            ],
+            self.can(Need::Record)
+                .then(|| {
+                    Button::new("pay-new")
+                        .primary()
+                        .icon(IconName::Plus)
+                        .label(t("Record payment", "Registrar pago"))
+                        .tooltip("Ctrl+P")
+                        .on_click(cx.listener(|this, _, w, cx| this.open_payment_form(None, w, cx)))
+                        .into_any_element()
+                })
+                .into_iter()
+                .collect(),
         );
 
         // Wide rows label the receipt button and show the reversed pill;
         // narrower ones keep three icon buttons.
         let actions_w = if wide { 240. } else { 96. };
+        let manage = self.can(Need::Manage);
         let body = if self.snap.payments.is_empty() {
             empty_state(
                 &p,
@@ -80,7 +85,7 @@ impl VzApp {
                     "Record what a client pays you. Each payment is split into interest (your income) and capital (your money coming back).",
                     "Registra lo que te paga un cliente. Cada pago se divide en interés (tu ganancia) y capital (tu dinero que regresa).",
                 ),
-                (!self.snap.loans.is_empty()).then(|| {
+                (!self.snap.loans.is_empty() && self.can(Need::Record)).then(|| {
                     Button::new("pay-empty")
                         .primary()
                         .label(t("Record payment", "Registrar pago"))
@@ -162,7 +167,7 @@ impl VzApp {
                                         this.open_receipt(pid, w, cx)
                                     })),
                             )
-                            .when(!rev, |d| {
+                            .when(!rev && manage, |d| {
                                 d.child(row_icon_button(
                                     ("pl-edit", pid as u64),
                                     IconName::Pencil,
@@ -171,13 +176,15 @@ impl VzApp {
                                     move |this, w, cx| this.edit_payment(pid, w, cx),
                                 ))
                             })
-                            .child(row_icon_button(
-                                ("pl-del", pid as u64),
-                                IconName::Trash,
-                                t("Delete payment", "Eliminar pago"),
-                                cx,
-                                move |this, w, cx| this.open_reason_form(ReasonKind::DeletePayment(pid), w, cx),
-                            )),
+                            .when(manage, |d| {
+                                d.child(row_icon_button(
+                                    ("pl-del", pid as u64),
+                                    IconName::Trash,
+                                    t("Delete payment", "Eliminar pago"),
+                                    cx,
+                                    move |this, w, cx| this.open_reason_form(ReasonKind::DeletePayment(pid), w, cx),
+                                ))
+                            }),
                     )
                     .on_click(cx.listener(move |this, _, w, cx| this.open_row(Route::Loan(lid), w, cx)))
             });

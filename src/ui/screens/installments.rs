@@ -9,6 +9,7 @@ use crate::app::VzApp;
 use crate::domain::installments::{InstallmentStatus, PlanState};
 use crate::i18n::t;
 use crate::sync::change::Change;
+use crate::sync::wire::Need;
 use crate::tr;
 use crate::ui::components::{Tone, pill, sel, table_header, th};
 use crate::ui::forms::reason::ReasonKind;
@@ -103,6 +104,7 @@ impl VzApp {
         }
         let money = self.settings().money();
         let ds = self.settings().date_style;
+        let manage = self.can(Need::Manage);
         let state = self.snap.book_loan(loan_id).and_then(|b| b.plan_state(self.today));
         let rows = fees.iter().map(|f| {
             let seq = f.seq;
@@ -146,7 +148,7 @@ impl VzApp {
                         .child(sel(money.format(f.amount))),
                 )
                 .trailing(div().w(px(100.)).flex_none().flex().justify_end().child(pill(p, status, tone)))
-                .trailing(div().w(px(90.)).flex_none().flex().justify_end().child(action))
+                .when(manage, |r| r.trailing(div().w(px(90.)).flex_none().flex().justify_end().child(action)))
         });
         Some(
             Card::new()

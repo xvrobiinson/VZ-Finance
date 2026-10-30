@@ -12,6 +12,7 @@ use crate::database::repositories::clients::Client;
 use crate::domain::ledger::{ContractStatus, DisplayStatus};
 use crate::domain::money::Cents;
 use crate::i18n::{count, t};
+use crate::sync::wire::Need;
 use crate::tr;
 use crate::ui::components::{Tone, avatar, empty_state, icon, kv, page_header, pill, sel, table_header, table_row, th};
 use crate::ui::forms::reason::ReasonKind;
@@ -145,15 +146,18 @@ impl VzApp {
             &p,
             t("Clients", "Clientes"),
             Some(sel(subtitle).into_any_element()),
-            vec![
-                Button::new("new-client")
-                    .primary()
-                    .icon(IconName::UserPlus)
-                    .label(t("New client", "Nuevo cliente"))
-                    .tooltip("Ctrl+N")
-                    .on_click(cx.listener(|this, _, w, cx| this.open_client_form(None, w, cx)))
-                    .into_any_element(),
-            ],
+            self.can(Need::Record)
+                .then(|| {
+                    Button::new("new-client")
+                        .primary()
+                        .icon(IconName::UserPlus)
+                        .label(t("New client", "Nuevo cliente"))
+                        .tooltip("Ctrl+N")
+                        .on_click(cx.listener(|this, _, w, cx| this.open_client_form(None, w, cx)))
+                        .into_any_element()
+                })
+                .into_iter()
+                .collect(),
         );
 
         let toolbar = h_flex()
@@ -193,13 +197,13 @@ impl VzApp {
                         "Add the people you lend to. Each client keeps their loans, payments and notes together.",
                         "Agrega a las personas a quienes prestas. Cada cliente guarda juntos sus préstamos, pagos y notas.",
                     ),
-                    Some(
+                    self.can(Need::Record).then(|| {
                         Button::new("empty-new-client")
                             .primary()
                             .label(t("Add your first client", "Agrega tu primer cliente"))
                             .on_click(cx.listener(|this, _, w, cx| this.open_client_form(None, w, cx)))
-                            .into_any_element(),
-                    ),
+                            .into_any_element()
+                    }),
                 )
                 .into_any_element()
             } else if visible.is_empty() {
@@ -398,7 +402,7 @@ impl VzApp {
                 IconName::HandCoins,
                 t("No loans yet", "Aún no hay préstamos"),
                 t("Create a loan to track its interest and payments here.", "Crea un préstamo para seguir aquí sus intereses y pagos."),
-                (!archived).then(|| {
+                (!archived && self.can(Need::Manage)).then(|| {
                     Button::new("cl-empty-loan")
                         .primary()
                         .label(t("New loan", "Nuevo préstamo"))
@@ -469,13 +473,15 @@ impl VzApp {
 
         let notes_card = Card::new()
             .title(t("Notes", "Notas"))
-            .action(
-                Button::new("edit-notes")
-                    .ghost()
-                    .small()
-                    .label(t("Edit", "Editar"))
-                    .on_click(cx.listener(move |this, _, w, cx| this.open_client_form(Some(id), w, cx))),
-            )
+            .when(self.can(Need::Manage), |c| {
+                c.action(
+                    Button::new("edit-notes")
+                        .ghost()
+                        .small()
+                        .label(t("Edit", "Editar"))
+                        .on_click(cx.listener(move |this, _, w, cx| this.open_client_form(Some(id), w, cx))),
+                )
+            })
             .child(
                 div()
                     .px(px(space::XL))
@@ -595,7 +601,7 @@ impl VzApp {
     fn client_actions(&self, id: i64, archived: bool, st: &ClientStats, w: Width, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let has_loans = st.total_loans > 0;
         let first_active = self.snap.loans_for_client(id).find(|l| l.status == ContractStatus::Active).map(|l| l.id);
-        let pay = (st.active_loans > 0).then(|| {
+        let pay = (st.active_loans > 0 && self.can(Need::Record)).then(|| {
             Button::new("client-pay")
                 .primary()
                 .icon(IconName::Plus)
@@ -612,6 +618,9 @@ impl VzApp {
         let new_loan = cx.listener(move |this, _, w, cx| this.open_loan_form(Some(id), w, cx));
         let archive_icon = if archived { IconName::ArchiveRestore } else { IconName::Archive };
         let archive_label = if archived { t("Restore", "Restaurar") } else { t("Archive", "Archivar") };
+        if !self.can(Need::Manage) {
+            return pay.into_iter().collect();
+        }
 
         if w >= Width::Wide {
             let mut actions = vec![

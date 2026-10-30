@@ -424,7 +424,7 @@ impl LoanForm {
                     let name = app.snap.client_name(client_id).to_string();
                     let amount = app.settings().money().format(terms.principal);
                     app.notify_success(tr!("Loan of {amount} to {name} created", "Préstamo de {amount} a {name} creado"), window, cx);
-                    app.navigate(Route::Loan(id), window, cx);
+                    app.open_saved(Route::Loan(id), window, cx);
                     if print {
                         app.loan_receipt_after_save(id, window, cx);
                     }

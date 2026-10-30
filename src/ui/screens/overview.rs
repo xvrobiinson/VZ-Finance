@@ -17,6 +17,7 @@ use crate::domain::money::{Cents, percent_label};
 use crate::domain::portfolio::{CapitalKind, EntryKind, HistoryPoint, Summary};
 use crate::i18n::{count, t};
 use crate::services::settings::ChartRange;
+use crate::sync::wire::Need;
 use crate::tr;
 use crate::ui::components::{avatar, empty_state, icon, kbd, kv, page_header, sel};
 use crate::ui::kit::{Button, ButtonSize, Card, Dropdown, DropdownItem, ListRow, Segmented, Stat, StatStrip};
@@ -114,6 +115,9 @@ impl VzApp {
     }
 
     fn main_actions(&self, w: Width, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        if !self.can(Need::Record) {
+            return Vec::new();
+        }
         let pay = Button::new("ov-pay")
             .primary()
             .icon(IconName::Plus)
@@ -123,37 +127,45 @@ impl VzApp {
             .into_any_element();
         let expense = cx.listener(|this, _, w, cx| this.open_entry_form(EntryKind::Expense, None, w, cx));
         let loan = cx.listener(|this, _, w, cx| this.open_loan_form(None, w, cx));
+        let manage = self.can(Need::Manage);
         if w >= Width::Wide {
-            return vec![
+            let mut actions = vec![
                 Button::new("ov-expense")
                     .icon(IconName::ReceiptText)
                     .label(t("New record", "Nuevo registro"))
                     .tooltip("Ctrl+E")
                     .on_click(expense)
                     .into_any_element(),
-                Button::new("ov-new-loan").label(t("New loan", "Nuevo préstamo")).tooltip("Ctrl+L").on_click(loan).into_any_element(),
-                pay,
             ];
+            if manage {
+                actions.push(
+                    Button::new("ov-new-loan").label(t("New loan", "Nuevo préstamo")).tooltip("Ctrl+L").on_click(loan).into_any_element(),
+                );
+            }
+            actions.push(pay);
+            return actions;
         }
-        let more = Dropdown::new("ov-more")
-            .icon(IconName::Ellipsis)
-            .tooltip(t("More actions", "Más acciones"))
-            .align_end()
-            .item(DropdownItem::new(t("New loan", "Nuevo préstamo"), loan).icon(IconName::HandCoins).hint("Ctrl+L"))
-            .item(DropdownItem::new(t("New record", "Nuevo registro"), expense).icon(IconName::ReceiptText).hint("Ctrl+E"))
-            .item(
-                DropdownItem::new(
-                    t("Add capital", "Agregar capital"),
-                    cx.listener(|this, _, w, cx| this.open_capital_form(CapitalKind::Contribution, w, cx)),
+        let more = Dropdown::new("ov-more").icon(IconName::Ellipsis).tooltip(t("More actions", "Más acciones")).align_end();
+        let more = if manage {
+            more.item(DropdownItem::new(t("New loan", "Nuevo préstamo"), loan).icon(IconName::HandCoins).hint("Ctrl+L"))
+                .item(DropdownItem::new(t("New record", "Nuevo registro"), expense).icon(IconName::ReceiptText).hint("Ctrl+E"))
+                .item(
+                    DropdownItem::new(
+                        t("Add capital", "Agregar capital"),
+                        cx.listener(|this, _, w, cx| this.open_capital_form(CapitalKind::Contribution, w, cx)),
+                    )
+                    .icon(IconName::Landmark),
                 )
-                .icon(IconName::Landmark),
-            );
+        } else {
+            more.item(DropdownItem::new(t("New record", "Nuevo registro"), expense).icon(IconName::ReceiptText).hint("Ctrl+E"))
+        };
         vec![more.into_any_element(), pay]
     }
 
     /// First-run checklist, shown until the first loan exists.
     fn render_setup(&self, p: &Palette, w: Width, cx: &mut Context<Self>) -> Option<AnyElement> {
-        if !self.snap.loans.is_empty() {
+        // The first steps are an admin's to take.
+        if !self.snap.loans.is_empty() || !self.can(Need::Manage) {
             return None;
         }
         let has_capital = !self.snap.capital.is_empty();
@@ -335,7 +347,7 @@ impl VzApp {
             cell(
                 Stat::new(t("Total portfolio value", "Valor total de la cartera"), money.format(pv))
                     .icon(IconName::Wallet)
-                    .accessory(adjust)
+                    .when(self.can(Need::Manage), |s| s.accessory(adjust))
                     .caption(gain_sub),
                 true,
             ),
@@ -636,7 +648,7 @@ impl VzApp {
                                 .child(div().text_color(p.negative).font_features(tabular()).child(sel(money.format(s.defaulted_principal + s.defaulted_interest)))),
                         )
                     })
-                    .child(
+                    .when(self.can(Need::Manage), |d| d.child(
                         h_flex()
                             .gap(px(space::S))
                             .flex_wrap()
@@ -654,7 +666,7 @@ impl VzApp {
                                     .label(t("Adjust balances", "Ajustar saldos"))
                                     .on_click(cx.listener(|this, _, w, cx| this.open_adjust_form(w, cx))),
                             ),
-                    )
+                    ))
                     .child(div().typeset(text::CAPTION).line_height(px(17.)).text_color(p.faint).child(t(
                         "Portfolio value = available capital + available interest + capital lent out + interest already due but not yet collected. Defaulted balances are left out.",
                         "Valor de la cartera = capital disponible + interés disponible + capital prestado + interés ya vencido sin cobrar. Los saldos incobrables no se cuentan.",
@@ -729,6 +741,7 @@ impl VzApp {
     fn attention_card(&self, p: &Palette, cx: &mut Context<Self>) -> AnyElement {
         let money = self.settings().money();
         let ds = self.settings().date_style;
+        let record = self.can(Need::Record);
         let mut items: Vec<_> = self
             .snap
             .book
@@ -783,12 +796,14 @@ impl VzApp {
                         )
                         .child(status_detail_pill(p, *st, q, self.today).h(px(20.))),
                 )
-                .trailing(Button::new(("attn-pay", loan_id as u64)).ghost().small().label(t("Record", "Cobrar")).on_click(cx.listener(
-                    move |this, _, w, cx| {
-                        cx.stop_propagation();
-                        this.open_payment_form(Some(loan_id), w, cx)
-                    },
-                )))
+                .when(record, |r| {
+                    r.trailing(Button::new(("attn-pay", loan_id as u64)).ghost().small().label(t("Record", "Cobrar")).on_click(
+                        cx.listener(move |this, _, w, cx| {
+                            cx.stop_propagation();
+                            this.open_payment_form(Some(loan_id), w, cx)
+                        }),
+                    ))
+                })
                 .on_click(cx.listener(move |this, _, w, cx| this.open_row(Route::Loan(loan_id), w, cx)))
         });
         let body = if count == 0 {

@@ -11,6 +11,7 @@ use crate::domain::money::percent_label;
 use crate::domain::portfolio::{Account, CapitalKind, EntryKind};
 use crate::i18n::t;
 use crate::services::settings::ChartRange;
+use crate::sync::wire::Need;
 use crate::tr;
 use crate::ui::components::{empty_state, kv, page_header, sel, table_header, th};
 use crate::ui::forms::reason::ReasonKind;
@@ -301,6 +302,7 @@ impl VzApp {
             .chain(self.snap.entries.iter().map(|e| (e.occurred_on, e.id, Mv::Entry(e.id))))
             .collect();
         movements.sort_by_key(|(d, id, _)| std::cmp::Reverse((*d, *id)));
+        let manage = self.can(Need::Manage);
         let move_rows: Vec<AnyElement> = movements
             .iter()
             .filter_map(|(date, _, mv)| {
@@ -379,29 +381,31 @@ impl VzApp {
                         )
                         .when(!compact, |d| d.child(div().flex_1().min_w_0().truncate().text_color(p.muted).child(sel(note))))
                         .child(ncolumn(140.).whitespace_nowrap().font_features(tabular()).text_color(color).child(sel(amount_text)))
-                        .child(
-                            h_flex()
-                                .w(px(64.))
-                                .flex_none()
-                                .justify_end()
-                                .child(row_icon_button(
-                                    SharedString::from(format!("mv-edit-{key}")),
-                                    IconName::Pencil,
-                                    t("Edit", "Editar"),
-                                    cx,
-                                    move |this, w, cx| match edit_mv {
-                                        (true, id) => this.edit_capital(id, w, cx),
-                                        (false, id) => this.open_entry_form(EntryKind::Expense, Some(id), w, cx),
-                                    },
-                                ))
-                                .child(row_icon_button(
-                                    SharedString::from(format!("mv-del-{key}")),
-                                    IconName::Trash,
-                                    t("Delete", "Eliminar"),
-                                    cx,
-                                    move |this, w, cx| this.open_reason_form(delete, w, cx),
-                                )),
-                        )
+                        .when(manage, |d| {
+                            d.child(
+                                h_flex()
+                                    .w(px(64.))
+                                    .flex_none()
+                                    .justify_end()
+                                    .child(row_icon_button(
+                                        SharedString::from(format!("mv-edit-{key}")),
+                                        IconName::Pencil,
+                                        t("Edit", "Editar"),
+                                        cx,
+                                        move |this, w, cx| match edit_mv {
+                                            (true, id) => this.edit_capital(id, w, cx),
+                                            (false, id) => this.open_entry_form(EntryKind::Expense, Some(id), w, cx),
+                                        },
+                                    ))
+                                    .child(row_icon_button(
+                                        SharedString::from(format!("mv-del-{key}")),
+                                        IconName::Trash,
+                                        t("Delete", "Eliminar"),
+                                        cx,
+                                        move |this, w, cx| this.open_reason_form(delete, w, cx),
+                                    )),
+                            )
+                        })
                         .into_any_element(),
                 )
             })
@@ -423,8 +427,11 @@ impl VzApp {
                     .label(t("Adjust balances", "Ajustar saldos"))
                     .on_click(cx.listener(|this, _, w, cx| this.open_adjust_form(w, cx))),
             );
-        let ledger_card = Card::new().overflow_hidden().title(t("Money movements", "Movimientos de dinero")).action(ledger_actions).child(
-            if movements.is_empty() {
+        let ledger_card = Card::new()
+            .overflow_hidden()
+            .title(t("Money movements", "Movimientos de dinero"))
+            .when(manage, |c| c.action(ledger_actions))
+            .child(if movements.is_empty() {
                 empty_state(
                     &p,
                     IconName::Landmark,
@@ -433,19 +440,18 @@ impl VzApp {
                         "Record the money you set aside for lending. It is your invested capital, not profit.",
                         "Registra el dinero que apartaste para prestar. Es tu capital invertido, no ganancia.",
                     ),
-                    Some(
+                    manage.then(|| {
                         Button::new("ledger-add")
                             .primary()
                             .label(t("Add capital", "Agregar capital"))
                             .on_click(cx.listener(|this, _, w, cx| this.open_capital_form(CapitalKind::Contribution, w, cx)))
-                            .into_any_element(),
-                    ),
+                            .into_any_element()
+                    }),
                 )
                 .into_any_element()
             } else {
                 v_flex().children(move_rows).into_any_element()
-            },
-        );
+            });
 
         let changes: Vec<_> = self.snap.changes.iter().collect();
         let history = (!changes.is_empty()).then(|| self.history_card(&p, &changes, 40));
@@ -478,6 +484,20 @@ impl VzApp {
     /// Page actions. Wide windows show all three; narrower ones fold the
     /// secondary ones into a "More" menu so the primary never wraps.
     fn analytics_actions(&self, w: Width, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        if !self.can(Need::Manage) {
+            // Collectors still add expenses and income.
+            return self
+                .can(Need::Record)
+                .then(|| {
+                    Button::new("an-expense")
+                        .icon(IconName::ReceiptText)
+                        .label(t("New record", "Nuevo registro"))
+                        .on_click(cx.listener(|this, _, w, cx| this.open_entry_form(EntryKind::Expense, None, w, cx)))
+                        .into_any_element()
+                })
+                .into_iter()
+                .collect();
+        }
         let add = Button::new("an-add")
             .primary()
             .icon(IconName::Plus)

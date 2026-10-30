@@ -178,7 +178,6 @@ impl Button {
         self
     }
 
-    /// Anything after the label, such as a dropdown's chevron.
     /// Something drawn before the label in its own colors (a brand mark),
     /// where `.icon()` takes the text color.
     pub fn prefix(mut self, el: impl IntoElement) -> Self {
@@ -193,6 +192,7 @@ impl Button {
         self
     }
 
+    /// Anything after the label, such as a dropdown's chevron.
     pub fn suffix(mut self, el: impl IntoElement) -> Self {
         self.suffix = Some(el.into_any_element());
         self

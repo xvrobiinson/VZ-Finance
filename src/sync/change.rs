@@ -13,6 +13,7 @@ use rusqlite::Connection;
 use serde_json::{Value, json};
 
 use super::replica::{self, Entity};
+use super::wire::Need;
 use crate::database::repositories::clients::ClientInput;
 use crate::domain::installments::{Installment, Instruction};
 use crate::domain::loans::LoanTerms;
@@ -177,6 +178,16 @@ impl Change {
             self,
             Change::NewClient { .. } | Change::NewPayment { .. } | Change::NewEntry { kind: EntryKind::Expense | EntryKind::Income, .. }
         )
+    }
+
+    /// What the change needs from the person's role: the same kinds as
+    /// `works_offline`, except that an ID photo is for admins only.
+    pub fn need(&self) -> Need {
+        match self {
+            Change::NewClient { photo: PhotoChange::Set(_), .. } => Need::Manage,
+            c if c.works_offline() => Need::Record,
+            _ => Need::Manage,
+        }
     }
 
     /// Runs the change with the local code.
@@ -542,6 +553,30 @@ mod tests {
 
     fn payments(s: &Store) -> usize {
         s.snapshot().unwrap().payments.len()
+    }
+
+    #[test]
+    fn roles_allow_what_the_cloud_allows() {
+        use crate::sync::wire::Role;
+        let on = today();
+        let entry = |kind| Change::NewEntry { kind, account: Account::Capital, amount: 100, on, description: String::new() };
+        let new_client = |photo| Change::NewClient { input: juan(), photo };
+        let photo = PhotoChange::Set(picture::Photo::from_upload(&picture::tests::png(40, 30)).unwrap());
+        for (change, need) in [
+            (payment(100), Need::Record),
+            (new_client(PhotoChange::Keep), Need::Record),
+            (new_client(photo), Need::Manage),
+            (entry(EntryKind::Expense), Need::Record),
+            (entry(EntryKind::Income), Need::Record),
+            (entry(EntryKind::Transfer), Need::Manage),
+            (Change::Reinstate { id: 3 }, Need::Manage),
+            (Change::DeletePayment { id: 1, reason: "x".into() }, Need::Manage),
+        ] {
+            assert_eq!(change.need(), need, "{change:?}");
+        }
+        assert!(Role::Collector.allows(Need::Record) && !Role::Collector.allows(Need::Manage));
+        assert!(!Role::Viewer.allows(Need::Record));
+        assert!(Role::Admin.allows(Need::Manage));
     }
 
     #[test]

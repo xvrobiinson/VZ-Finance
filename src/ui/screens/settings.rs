@@ -12,6 +12,7 @@ use crate::domain::loans::{Frequency, RATE_PRESETS};
 use crate::domain::money::{NumberStyle, Rate};
 use crate::i18n::{Lang, t};
 use crate::services::settings::{ChartRange, ThemePref};
+use crate::sync::wire::Need;
 use crate::ui::components::{icon, kbd, page_header, sel};
 use crate::ui::kit::{Button, Card, Dropdown, DropdownItem, Segmented};
 use crate::ui::theme::{Palette, RADIUS_CONTROL, Typeset as _, Width, palette, space, tabular, text};
@@ -146,9 +147,18 @@ impl VzApp {
         let phone_changed = self.company_phone_input.read(cx).value().trim() != s.company_phone;
         let accent = p.accent;
 
+        // The business's own settings are an admin's; the rest is this PC's.
+        let manage = self.can(Need::Manage);
+        let admins_only = || {
+            div().typeset(text::CAPTION).text_color(p.muted).child(t(
+                "Company details, formats, lending defaults and receipt choices are changed by an admin.",
+                "Los datos de la empresa, los formatos, los valores de préstamos y las opciones de recibos los cambia un administrador.",
+            ))
+        };
         let business = v_flex()
             .gap(px(space::L))
-            .child(row(
+            .when(!manage, |d| d.child(admins_only()))
+            .when(manage, |d| d.child(row(
                 &p,
                 t("Company name", "Nombre de la empresa"),
                 Some(t(
@@ -234,7 +244,7 @@ impl VzApp {
                                 .on_click(cx.listener(|this, _, w, cx| this.remove_logo(w, cx))),
                         )
                     }),
-            ))
+            )))
             .child(row(
                 &p,
                 t("Language", "Idioma"),
@@ -311,9 +321,11 @@ impl VzApp {
                     )),
             );
 
-        let receipts = v_flex()
-            .gap(px(space::L))
-            .child(row(
+        let receipts =
+            v_flex()
+                .gap(px(space::L))
+                .when(manage, |d| {
+                    d.child(row(
                 &p,
                 t("Open the receipt after each payment", "Abrir el recibo después de cada pago"),
                 Some(t("It opens in your browser, ready to print", "Se abre en tu navegador, listo para imprimir")),
@@ -424,17 +436,18 @@ impl VzApp {
                     }),
                 ),
             ))
-            .child(row(
-                &p,
-                t("Receipts folder", "Carpeta de recibos"),
-                Some(t("Every receipt is also saved here", "Cada recibo también se guarda aquí")),
-                Button::new("open-receipts").ghost().icon(IconName::FolderOpen).label(t("Open folder", "Abrir carpeta")).on_click(
-                    cx.listener(move |this, _, w, cx| {
-                        let _ = std::fs::create_dir_all(&receipts_dir);
-                        this.open_path(receipts_dir.clone(), false, w, cx);
-                    }),
-                ),
-            ));
+                })
+                .child(row(
+                    &p,
+                    t("Receipts folder", "Carpeta de recibos"),
+                    Some(t("Every receipt is also saved here", "Cada recibo también se guarda aquí")),
+                    Button::new("open-receipts").ghost().icon(IconName::FolderOpen).label(t("Open folder", "Abrir carpeta")).on_click(
+                        cx.listener(move |this, _, w, cx| {
+                            let _ = std::fs::create_dir_all(&receipts_dir);
+                            this.open_path(receipts_dir.clone(), false, w, cx);
+                        }),
+                    ),
+                ));
 
         let dashboard = v_flex()
             .gap(px(space::L))
@@ -729,13 +742,16 @@ impl VzApp {
                 t("Company details, logo and language", "Datos de la empresa, logo e idioma"),
                 business,
             ))
-            .child(section(&p, t("General", "General"), t("Currency, numbers and dates", "Moneda, números y fechas"), general))
-            .child(section(
-                &p,
-                t("Lending", "Préstamos"),
-                t("Defaults and how interest works", "Valores iniciales y cómo funciona el interés"),
-                lending,
-            ))
+            .when(manage, |d| {
+                d.child(section(&p, t("General", "General"), t("Currency, numbers and dates", "Moneda, números y fechas"), general)).child(
+                    section(
+                        &p,
+                        t("Lending", "Préstamos"),
+                        t("Defaults and how interest works", "Valores iniciales y cómo funciona el interés"),
+                        lending,
+                    ),
+                )
+            })
             .child(section(&p, t("Receipts", "Recibos"), t("Printing payment receipts", "Impresión de recibos de pago"), receipts))
             .child(section(&p, t("Dashboard", "Panel"), t("Charts and appearance", "Gráficos y apariencia"), dashboard))
             .child(section(
