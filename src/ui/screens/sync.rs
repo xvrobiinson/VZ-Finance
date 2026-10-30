@@ -106,40 +106,13 @@ impl VzApp {
         }
 
         let Some(linked) = cloud.linked.clone() else {
-            let rows: Vec<AnyElement> = match &cloud.businesses {
-                None => vec![div().text_color(p.muted).child(t("Getting your businesses…", "Buscando tus negocios…")).into_any_element()],
-                Some(list) if list.is_empty() => vec![
-                    div()
-                        .text_color(p.muted)
-                        .child(t(
-                            "You don't belong to a business yet. Create one in the phone app, or ask an admin to invite you.",
-                            "Aún no perteneces a un negocio. Crea uno en la app del teléfono o pide a un administrador que te invite.",
-                        ))
-                        .into_any_element(),
-                ],
-                Some(list) => list
-                    .iter()
-                    .map(|b| {
-                        let id = b.business_id.clone();
-                        ListRow::new(SharedString::from(format!("sync-business-{id}")))
-                            .title(b.name.clone())
-                            .subtitle(role_label(b.role))
-                            .trailing(
-                                Button::new(SharedString::from(format!("sync-use-{id}")))
-                                    .label(t("Use on this PC", "Usar en esta PC"))
-                                    .on_click(cx.listener(move |this, _, w, cx| this.link_business(&id, w, cx))),
-                            )
-                            .into_any_element()
-                    })
-                    .collect(),
-            };
             return body
                 .child(signed_in)
                 .child(div().text_color(p.text).child(t(
                     "Choose the business to show on this PC. Its books come from the cloud and stay in step with the phone app; the books already on this PC are kept as they are.",
                     "Elige el negocio que se verá en esta PC. Sus registros vienen de la nube y se mantienen al día con la app del teléfono; los registros que ya hay en esta PC se guardan tal cual.",
                 )))
-                .child(v_flex().mx(px(-space::XL)).children(rows))
+                .child(self.business_list(p, cx))
                 .child(self.drive_settings(p, cx))
                 .into_any_element();
         };
@@ -197,7 +170,73 @@ impl VzApp {
                         .on_click(cx.listener(|this, _, w, cx| this.use_local_books(true, w, cx))),
                 ),
             )
+            .child(self.business_list(p, cx))
             .child(self.drive_settings(p, cx))
+            .into_any_element()
+    }
+
+    /// Every business the person belongs to: show one on this PC, start a
+    /// new one, or (admins) delete one for everyone.
+    fn business_list(&self, p: &Palette, cx: &mut Context<Self>) -> AnyElement {
+        let Some(cloud) = &self.cloud else { return div().into_any_element() };
+        let online = cloud.online;
+        let note = |s: &'static str| div().text_color(p.muted).child(s).into_any_element();
+        let rows: Vec<AnyElement> = match &cloud.businesses {
+            None => vec![note(t("Getting your businesses…", "Buscando tus negocios…"))],
+            Some(list) if list.is_empty() => vec![note(t(
+                "You don't belong to a business yet. Create one, or ask an admin to invite you.",
+                "Aún no perteneces a un negocio. Crea uno o pide a un administrador que te invite.",
+            ))],
+            Some(list) => list
+                .iter()
+                .map(|b| {
+                    let (id, name) = (b.business_id.clone(), b.name.clone());
+                    let shown = cloud.linked.as_deref() == Some(id.as_str());
+                    let row =
+                        ListRow::new(SharedString::from(format!("sync-business-{id}"))).title(name.clone()).subtitle(role_label(b.role));
+                    let row = if shown {
+                        row.trailing(div().text_color(p.muted).child(t("On this PC", "En esta PC")))
+                    } else {
+                        let id = id.clone();
+                        row.trailing(
+                            Button::new(SharedString::from(format!("sync-use-{id}")))
+                                .label(t("Use on this PC", "Usar en esta PC"))
+                                .on_click(cx.listener(move |this, _, w, cx| this.link_business(&id, w, cx))),
+                        )
+                    };
+                    let row = if b.role == Role::Admin {
+                        row.trailing(
+                            Button::new(SharedString::from(format!("sync-delete-{id}")))
+                                .danger_ghost()
+                                .icon(IconName::Trash)
+                                .tooltip(t("Delete business", "Eliminar negocio"))
+                                .disabled(!online)
+                                .on_click(cx.listener(move |this, _, w, cx| this.open_delete_business(id.clone(), name.clone(), w, cx))),
+                        )
+                    } else {
+                        row
+                    };
+                    row.into_any_element()
+                })
+                .collect(),
+        };
+        v_flex()
+            .gap(px(space::S))
+            .child(
+                h_flex()
+                    .justify_between()
+                    .items_center()
+                    .child(div().typeset(text::BODY_STRONG).text_color(p.text).child(t("Businesses", "Negocios")))
+                    .child(
+                        Button::new("sync-new-business")
+                            .icon(IconName::Plus)
+                            .label(t("New business", "Nuevo negocio"))
+                            .disabled(!online)
+                            .tooltip(t("Needs a connection", "Necesita conexión"))
+                            .on_click(cx.listener(|this, _, w, cx| this.open_new_business(w, cx))),
+                    ),
+            )
+            .child(v_flex().mx(px(-space::XL)).children(rows))
             .into_any_element()
     }
 

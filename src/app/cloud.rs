@@ -12,6 +12,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use futures::StreamExt as _;
+use futures::channel::oneshot;
 use gpui_kit::component::input::InputState;
 use gpui_kit::*;
 
@@ -441,6 +442,47 @@ impl VzApp {
         self.pump(window, cx);
     }
 
+    /// Sends a call about businesses themselves (creating or deleting one);
+    /// None when not signed in.
+    pub(crate) fn cloud_call(&self, mutation: &'static str, args: serde_json::Value) -> Option<oneshot::Receiver<Outcome>> {
+        self.cloud.as_ref().map(|c| c.worker.call(mutation, args))
+    }
+
+    /// What the person needs to know when a call about businesses failed.
+    pub(crate) fn call_failed(&self, outcome: &Outcome) -> String {
+        match outcome {
+            Outcome::Refused(e) => crate::sync::refusal::describe(e, self.settings()),
+            _ => t(
+                "No connection to the cloud. Try again when you're online.",
+                "No hay conexión con la nube. Inténtalo de nuevo cuando estés en línea.",
+            )
+            .to_string(),
+        }
+    }
+
+    /// After a business was deleted from this PC: back to the books kept
+    /// here if it was the one shown.
+    pub(crate) fn business_deleted(&mut self, business_id: &str, window: &mut Window, cx: &mut Context<Self>) {
+        if self.cloud.as_ref().is_some_and(|c| c.linked.as_deref() == Some(business_id)) {
+            self.use_local_books(true, window, cx);
+        }
+        if let Some(c) = &mut self.cloud
+            && let Some(list) = &mut c.businesses
+        {
+            list.retain(|b| b.business_id != business_id);
+        }
+        self.notify_success(t("Business deleted", "Negocio eliminado"), window, cx);
+    }
+
+    /// The time zone for a new business: the open one's, else the first
+    /// the person belongs to.
+    pub(crate) fn new_business_timezone(&self) -> String {
+        let c = self.cloud.as_ref();
+        c.and_then(|c| c.last.as_ref().map(|s| s.business.timezone.clone()))
+            .or_else(|| c.and_then(|c| c.businesses.as_ref()?.first().map(|b| b.timezone.clone())))
+            .unwrap_or_else(|| "America/Santo_Domingo".into())
+    }
+
     /// Stops following the cloud on this PC and shows the books kept here.
     /// `forget`: also stop opening the business at the next launch.
     pub(crate) fn use_local_books(&mut self, forget: bool, window: &mut Window, cx: &mut Context<Self>) {
@@ -606,7 +648,23 @@ impl VzApp {
                 );
                 self.sign_out(window, cx);
             }
-            Event::Businesses(list) => c.businesses = Some(list),
+            Event::Businesses(list) => {
+                // An empty list can also mean the sign-in didn't reach the
+                // cloud, so only a list without this business counts.
+                let gone = c.linked.as_ref().is_some_and(|id| !list.is_empty() && !list.iter().any(|b| &b.business_id == id));
+                c.businesses = Some(list);
+                if gone {
+                    self.notify_error(
+                        t(
+                            "The business shown on this PC was deleted, or you were removed from it. This PC shows its own books again.",
+                            "El negocio que se veía en esta PC se eliminó, o te quitaron de él. Esta PC vuelve a mostrar sus propios registros.",
+                        ),
+                        window,
+                        cx,
+                    );
+                    self.use_local_books(true, window, cx);
+                }
+            }
             Event::Snapshot(snap) => {
                 if c.linked.as_deref() != Some(snap.business.id.as_str()) {
                     return;

@@ -62,6 +62,7 @@ pub enum Event {
 enum Command {
     Open(String),
     Send { mutation: &'static str, args: serde_json::Value, reply: oneshot::Sender<Outcome> },
+    Call { mutation: &'static str, args: serde_json::Value, reply: oneshot::Sender<Outcome> },
     Download(Vec<Download>),
     Stop,
 }
@@ -101,6 +102,14 @@ impl Worker {
     pub fn send(&self, q: &Queued) -> oneshot::Receiver<Outcome> {
         let (reply, rx) = oneshot::channel();
         let _ = self.commands.send(Command::Send { mutation: q.op.mutation, args: q.op.args.clone(), reply });
+        rx
+    }
+
+    /// Calls a mutation that isn't a change to the open business's books
+    /// (creating or deleting a business), with `args` as given.
+    pub fn call(&self, mutation: &'static str, args: serde_json::Value) -> oneshot::Receiver<Outcome> {
+        let (reply, rx) = oneshot::channel();
+        let _ = self.commands.send(Command::Call { mutation, args, reply });
         rx
     }
 
@@ -416,6 +425,12 @@ async fn run(config: Config, stored: Stored, mut commands: mpsc::UnboundedReceiv
                         tokio::spawn(async move { let _ = reply.send(send_change(client, mutation, args).await); });
                     }
                     _ => { let _ = reply.send(Outcome::NotSent); }
+                },
+                Some(Command::Call { mutation, args, reply }) => if online {
+                    let client = client.clone();
+                    tokio::spawn(async move { let _ = reply.send(send_change(client, mutation, args).await); });
+                } else {
+                    let _ = reply.send(Outcome::NotSent);
                 },
                 Some(Command::Download(files)) => if let Some(business) = open.clone() {
                     for file in files {

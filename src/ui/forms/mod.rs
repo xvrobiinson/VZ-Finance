@@ -2,6 +2,7 @@
 //! persistent input state is created once when the dialog opens.
 
 pub mod adjust;
+pub mod business;
 pub mod capital;
 pub mod client;
 pub mod date_field;

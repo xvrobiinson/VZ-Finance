@@ -53,7 +53,9 @@ submit_impl!(
     EntryForm,
     AdjustForm,
     crate::ui::forms::reset::ResetForm,
-    crate::ui::forms::receipt_text::ReceiptTextForm
+    crate::ui::forms::receipt_text::ReceiptTextForm,
+    crate::ui::forms::business::NewBusinessForm,
+    crate::ui::forms::business::DeleteBusinessForm
 );
 
 impl VzApp {
@@ -529,6 +531,30 @@ impl VzApp {
             let handle = form.read(cx).confirm.focus_handle(cx);
             focus_once(&first, &handle, window, cx);
             dialog.title(t("Reset all data", "Borrar todos los datos")).w(px(520.)).child(form.clone()).on_ok(confirm(&form))
+        });
+    }
+
+    /// Starts a new business in the cloud and shows it on this PC.
+    pub fn open_new_business(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let app = cx.entity().downgrade();
+        let form = cx.new(|cx| crate::ui::forms::business::NewBusinessForm::new(app, window, cx));
+        let first = Cell::new(true);
+        window.open_dialog(cx, move |dialog, window, cx| {
+            let handle = form.read(cx).name.focus_handle(cx);
+            focus_once(&first, &handle, window, cx);
+            dialog.title(t("New business", "Nuevo negocio")).w(px(520.)).child(form.clone()).on_ok(confirm(&form))
+        });
+    }
+
+    /// Deletes a business for everyone, once its name is typed.
+    pub fn open_delete_business(&mut self, business_id: String, name: String, window: &mut Window, cx: &mut Context<Self>) {
+        let app = cx.entity().downgrade();
+        let form = cx.new(|cx| crate::ui::forms::business::DeleteBusinessForm::new(app, business_id, name, window, cx));
+        let first = Cell::new(true);
+        window.open_dialog(cx, move |dialog, window, cx| {
+            let handle = form.read(cx).confirm.focus_handle(cx);
+            focus_once(&first, &handle, window, cx);
+            dialog.title(t("Delete this business?", "¿Eliminar este negocio?")).w(px(520.)).child(form.clone()).on_ok(confirm(&form))
         });
     }
 }

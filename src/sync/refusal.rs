@@ -99,6 +99,7 @@ fn invalid(e: &Value) -> &'static str {
         "before_start" => t("The date is before the loan started", "La fecha es anterior al inicio del préstamo"),
         "before_last_payment" => t("The date is before the latest payment", "La fecha es anterior al último pago"),
         "photo" => t("Use a JPEG, PNG or WebP picture under 4 MB", "Usa una foto JPEG, PNG o WebP de menos de 4 MB"),
+        "confirm_name" => t("Type the business name exactly as shown", "Escribe el nombre del negocio tal como aparece"),
         "logo" => t("Use a PNG, JPEG or WebP picture under 1 MB", "Usa una imagen PNG, JPEG o WebP de menos de 1 MB"),
         _ => t("Check the values and try again", "Revisa los valores e inténtalo de nuevo"),
     }
