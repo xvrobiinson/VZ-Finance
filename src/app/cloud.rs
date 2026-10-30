@@ -77,7 +77,7 @@ enum Receipt {
 
 /// The signed-in link to the cloud.
 pub(crate) struct Cloud {
-    endpoints: Endpoints,
+    pub(crate) endpoints: Endpoints,
     pub(crate) email: String,
     worker: Worker,
     pub(crate) online: bool,
@@ -94,6 +94,8 @@ pub(crate) struct Cloud {
     /// Receipts waiting for the cloud: by operation id until it answers,
     /// then by the record's cloud id until the copy with it arrives.
     receipts: Vec<(String, Option<String>, Receipt)>,
+    /// Backups to Google Drive.
+    pub(crate) drive: super::drive::Drive,
     _events: Task<()>,
 }
 
@@ -149,6 +151,7 @@ impl VzApp {
             last_op: None,
             update_required: None,
             receipts: Vec::new(),
+            drive: Default::default(),
             _events: events,
         });
         if let Some(id) = linked {
@@ -275,7 +278,10 @@ impl VzApp {
                         log::warn!("browser not opened: {why}");
                         return Err(auth::AuthError::Refused(t("The browser could not be opened", "No se pudo abrir el navegador").into()));
                     }
-                    auth::finish_google(&ep2, g, &stop2)
+                    auth::finish_google(&ep2, g, &stop2).and_then(|done| match done {
+                        auth::GoogleDone::SignedIn(email, session) => Ok((email, session)),
+                        auth::GoogleDone::Linked => Err(auth::AuthError::GoogleNotFinished),
+                    })
                 });
                 let _ = tx.send(result);
             });

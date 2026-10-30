@@ -125,6 +125,25 @@ pub enum AuthError {
     /// Google sign-in was stopped in the browser, or took too long.
     #[error("{}", t("Google sign-in didn't finish. Try again.", "El inicio de sesión con Google no terminó. Inténtalo de nuevo."))]
     GoogleNotFinished,
+    /// Adding Google to an account needs the Google account with the same
+    /// email.
+    #[error(
+        "{}",
+        t(
+            "Choose the Google account with the same email you use for Acervus Finance.",
+            "Elige la cuenta de Google con el mismo correo que usas en Acervus Finance."
+        )
+    )]
+    GoogleOtherEmail,
+    /// This account has no Google connection (or it lacks a permission).
+    #[error(
+        "{}",
+        t(
+            "Google Drive isn't connected. Turn Drive backups on again.",
+            "Google Drive no está conectado. Activa de nuevo las copias en Drive."
+        )
+    )]
+    GoogleNotLinked,
 }
 
 #[derive(Deserialize)]
@@ -253,7 +272,7 @@ const HANDOFF: &str = "/desktop-sign-in.html";
 /// How long the app waits for the browser.
 const GOOGLE_WAIT: Duration = Duration::from_secs(10 * 60);
 
-/// A Google sign-in waiting for the browser.
+/// A Google round trip waiting for the browser.
 pub struct GoogleSignIn {
     listener: TcpListener,
     state: String,
@@ -261,16 +280,41 @@ pub struct GoogleSignIn {
     pub url: String,
 }
 
+/// How a Google round trip ended.
+#[derive(Debug, PartialEq, Eq)]
+pub enum GoogleDone {
+    /// Signed in: the person's email and the new session.
+    SignedIn(String, Session),
+    /// Google was added to the account already signed in, with the
+    /// permissions asked for.
+    Linked,
+}
+
 /// Starts a Google sign-in: opens the local port and asks the server for
 /// Google's address.
 pub fn start_google(ep: &Endpoints) -> Result<GoogleSignIn, AuthError> {
+    start_round_trip(ep, "/sign-in/social", None, &[])
+}
+
+/// Starts adding Google, with `scopes` on top of the sign-in ones, to the
+/// signed-in account (the Drive backups' permission). The Google account
+/// must have the account's email.
+pub fn start_google_link(ep: &Endpoints, session: &Session, scopes: &[&str]) -> Result<GoogleSignIn, AuthError> {
+    start_round_trip(ep, "/link-social", Some(session), scopes)
+}
+
+fn start_round_trip(ep: &Endpoints, path: &str, session: Option<&Session>, scopes: &[&str]) -> Result<GoogleSignIn, AuthError> {
     let local = |e: std::io::Error| AuthError::Refused(e.to_string());
     let listener = TcpListener::bind(("127.0.0.1", 0)).map_err(local)?;
     let port = listener.local_addr().map_err(local)?.port();
     let state = vault::random_token(40).map_err(AuthError::Refused)?;
-    let back = format!("{}{HANDOFF}?port={port}&state={state}", ep.origin);
-    let body = json!({ "provider": "google", "callbackURL": back, "errorCallbackURL": back, "disableRedirect": true });
-    let reply = call(ep, "POST", "/sign-in/social", None, Some(body))?;
+    let mode = if session.is_some() { "&mode=link" } else { "" };
+    let back = format!("{}{HANDOFF}?port={port}&state={state}{mode}", ep.origin);
+    let mut body = json!({ "provider": "google", "callbackURL": back, "errorCallbackURL": back, "disableRedirect": true });
+    if !scopes.is_empty() {
+        body["scopes"] = json!(scopes);
+    }
+    let reply = call(ep, "POST", path, session, Some(body))?;
     let url = reply.body.get("url").and_then(|u| u.as_str()).filter(|u| u.starts_with("https://")).map(str::to_string);
     match (reply.status, url) {
         (200, Some(url)) => Ok(GoogleSignIn { listener, state, url }),
@@ -279,9 +323,9 @@ pub fn start_google(ep: &Endpoints) -> Result<GoogleSignIn, AuthError> {
     }
 }
 
-/// Waits for the browser to come back, then signs in. Returns the person's
-/// email and the session. `stop` ends the wait early (the person cancelled).
-pub fn finish_google(ep: &Endpoints, g: GoogleSignIn, stop: &AtomicBool) -> Result<(String, Session), AuthError> {
+/// Waits for the browser to come back, then finishes: signs in, or confirms
+/// the link. `stop` ends the wait early (the person cancelled).
+pub fn finish_google(ep: &Endpoints, g: GoogleSignIn, stop: &AtomicBool) -> Result<GoogleDone, AuthError> {
     g.listener.set_nonblocking(true).map_err(|e| AuthError::Refused(e.to_string()))?;
     let deadline = Instant::now() + GOOGLE_WAIT;
     loop {
@@ -302,12 +346,18 @@ pub fn finish_google(ep: &Endpoints, g: GoogleSignIn, stop: &AtomicBool) -> Resu
             continue;
         };
         let result = match back {
-            Return::Token(ott) => verify_token(ep, &ott),
-            Return::Failed => Err(AuthError::GoogleNotFinished),
+            Return::Token(ott) => verify_token(ep, &ott).map(|(email, session)| GoogleDone::SignedIn(email, session)),
+            Return::Linked => Ok(GoogleDone::Linked),
+            Return::Failed(why) if why.starts_with("email_doesn") => Err(AuthError::GoogleOtherEmail),
+            Return::Failed(_) => Err(AuthError::GoogleNotFinished),
         };
         let page = match &result {
-            Ok(_) => page(
+            Ok(GoogleDone::SignedIn(..)) => page(
                 t("You're signed in", "Sesión iniciada"),
+                t("Go back to Acervus Finance. You can close this tab.", "Vuelve a Acervus Finance. Puedes cerrar esta pestaña."),
+            ),
+            Ok(GoogleDone::Linked) => page(
+                t("Google is connected", "Google está conectado"),
                 t("Go back to Acervus Finance. You can close this tab.", "Vuelve a Acervus Finance. Puedes cerrar esta pestaña."),
             ),
             Err(e) => page(t("Sign-in didn't finish", "No se completó el inicio de sesión"), &e.to_string()),
@@ -321,7 +371,9 @@ pub fn finish_google(ep: &Endpoints, g: GoogleSignIn, stop: &AtomicBool) -> Resu
 #[derive(Debug, PartialEq, Eq)]
 enum Return {
     Token(String),
-    Failed,
+    Linked,
+    /// With the server's error code, when it gave one.
+    Failed(String),
 }
 
 impl Return {
@@ -333,9 +385,12 @@ impl Return {
         if get("state")? != state {
             return None;
         }
-        Some(match get("ott") {
-            Some(ott) if !ott.is_empty() && ott.chars().all(|c| c.is_ascii_alphanumeric() || "_-".contains(c)) => Return::Token(ott.into()),
-            _ => Return::Failed,
+        let token = |v: &str| !v.is_empty() && v.chars().all(|c| c.is_ascii_alphanumeric() || "_-".contains(c));
+        Some(match (get("error"), get("linked"), get("ott")) {
+            (Some(why), ..) => Return::Failed(why.chars().take(64).collect()),
+            (None, Some("1"), _) => Return::Linked,
+            (None, _, Some(ott)) if token(ott) => Return::Token(ott.into()),
+            _ => Return::Failed(String::new()),
         })
     }
 }
@@ -394,6 +449,57 @@ fn verify_token(ep: &Endpoints, ott: &str) -> Result<(String, Session), AuthErro
     }
 }
 
+/// A short-lived Google access token for the signed-in account, and the
+/// permissions it carries. Its value is never printed.
+#[derive(Clone)]
+pub struct GoogleToken {
+    token: String,
+    pub scopes: Vec<String>,
+}
+
+impl GoogleToken {
+    pub fn new(token: String, scopes: Vec<String>) -> Self {
+        Self { token, scopes }
+    }
+
+    /// The `Authorization` header value.
+    pub fn bearer(&self) -> String {
+        format!("Bearer {}", self.token)
+    }
+
+    pub fn has(&self, scope: &str) -> bool {
+        self.scopes.iter().any(|s| s == scope)
+    }
+}
+
+impl std::fmt::Debug for GoogleToken {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "GoogleToken(…, {:?})", self.scopes)
+    }
+}
+
+/// A current Google access token for the signed-in account; the server
+/// renews it with the refresh token it keeps (encrypted) when needed.
+pub fn google_token(ep: &Endpoints, session: &Session) -> Result<GoogleToken, AuthError> {
+    let reply = call(ep, "POST", "/get-access-token", Some(session), Some(json!({ "providerId": "google" })))?;
+    let token = reply.body.get("accessToken").and_then(|t| t.as_str()).filter(|t| !t.is_empty());
+    match (reply.status, token) {
+        (200, Some(token)) => {
+            let scopes = reply
+                .body
+                .get("scopes")
+                .and_then(|s| s.as_array())
+                .map(|a| a.iter().filter_map(|s| s.as_str()).flat_map(|s| s.split([',', ' '])).map(str::to_string).collect())
+                .unwrap_or_default();
+            Ok(GoogleToken { token: token.to_string(), scopes })
+        }
+        (401, _) => Err(AuthError::SignedOut),
+        // No Google account linked, or its refresh token was revoked.
+        (400, _) | (200, None) => Err(AuthError::GoogleNotLinked),
+        _ => Err(refusal(&reply)),
+    }
+}
+
 /// Ends the session on the server. Failing (offline) is not an error: the
 /// session is forgotten on this PC either way.
 pub fn sign_out(ep: &Endpoints, session: &Session) {
@@ -436,8 +542,14 @@ mod tests {
         let state = "S".repeat(40);
         let ok = format!("/done?state={state}&ott=abcDEF123_-");
         assert_eq!(Return::parse(&ok, &state), Some(Return::Token("abcDEF123_-".into())));
-        assert_eq!(Return::parse(&format!("/done?state={state}&error=access_denied"), &state), Some(Return::Failed));
-        assert_eq!(Return::parse(&format!("/done?state={state}&ott=<script>"), &state), Some(Return::Failed));
+        assert_eq!(
+            Return::parse(&format!("/done?state={state}&error=access_denied"), &state),
+            Some(Return::Failed("access_denied".into()))
+        );
+        assert_eq!(Return::parse(&format!("/done?state={state}&ott=<script>"), &state), Some(Return::Failed(String::new())));
+        assert_eq!(Return::parse(&format!("/done?state={state}&linked=1"), &state), Some(Return::Linked));
+        // An error wins over anything else in the address.
+        assert_eq!(Return::parse(&format!("/done?state={state}&linked=1&error=x"), &state), Some(Return::Failed("x".into())));
         assert_eq!(Return::parse("/done?state=other&ott=abc", &state), None);
         assert_eq!(Return::parse("/favicon.ico", &state), None);
     }

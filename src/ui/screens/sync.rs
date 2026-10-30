@@ -140,6 +140,7 @@ impl VzApp {
                     "Elige el negocio que se verá en esta PC. Sus registros vienen de la nube y se mantienen al día con la app del teléfono; los registros que ya hay en esta PC se guardan tal cual.",
                 )))
                 .child(v_flex().mx(px(-space::XL)).children(rows))
+                .child(self.drive_settings(p, cx))
                 .into_any_element();
         };
 
@@ -196,7 +197,79 @@ impl VzApp {
                         .on_click(cx.listener(|this, _, w, cx| this.use_local_books(true, w, cx))),
                 ),
             )
+            .child(self.drive_settings(p, cx))
             .into_any_element()
+    }
+
+    /// Backups to Google Drive: off with a "Turn on" button, waiting for the
+    /// browser, or on with the last upload and "Back up now".
+    fn drive_settings(&self, p: &Palette, cx: &mut Context<Self>) -> AnyElement {
+        let Some(c) = &self.cloud else { return div().into_any_element() };
+        let d = &c.drive;
+        let title = div().typeset(text::BODY_STRONG).text_color(p.text).child(t("Backups to Google Drive", "Copias en Google Drive"));
+        let error = d.error.clone().map(|e| div().text_color(p.negative).child(e));
+        let body = if d.linking.is_some() {
+            v_flex()
+                .gap(px(space::S))
+                .child(div().text_color(p.muted).child(t(
+                    "Finish in your browser: choose your Google account and allow access to the files this app creates.",
+                    "Termina en el navegador: elige tu cuenta de Google y permite el acceso a los archivos que crea esta app.",
+                )))
+                .child(
+                    h_flex()
+                        .gap(px(space::S))
+                        .child(Button::new("drive-waiting").label(t("Waiting for your browser…", "Esperando el navegador…")).loading(true))
+                        .child(
+                            Button::new("drive-cancel")
+                                .ghost()
+                                .label(t("Cancel", "Cancelar"))
+                                .on_click(cx.listener(|this, _, _, cx| this.cancel_drive_link(cx))),
+                        ),
+                )
+        } else if !self.drive_on() {
+            v_flex()
+                .gap(px(space::S))
+                .child(div().text_color(p.muted).child(t(
+                    "Also keep a copy of these books in your own Google Drive, every day and whenever you back up. The app can see only the files it saves there; the newest 30 are kept.",
+                    "Guarda también una copia de estos registros en tu propio Google Drive, cada día y cada vez que hagas una copia. La app solo ve los archivos que guarda ahí; se guardan las 30 más recientes.",
+                )))
+                .children(error)
+                .child(
+                    h_flex().child(
+                        Button::new("drive-on")
+                            .icon(IconName::CloudUpload)
+                            .label(t("Turn on", "Activar"))
+                            .on_click(cx.listener(|this, _, w, cx| this.turn_on_drive(w, cx))),
+                    ),
+                )
+        } else {
+            let last = match self.drive_last() {
+                Some(when) => {
+                    let when = when.format("%Y-%m-%d %H:%M").to_string();
+                    tr!("On. Last backup in Drive: {when}.", "Activadas. Última copia en Drive: {when}.")
+                }
+                None => t("On. No backup in Drive yet.", "Activadas. Aún no hay copias en Drive.").to_string(),
+            };
+            v_flex().gap(px(space::S)).child(div().text_color(p.muted).child(last)).children(error).child(
+                h_flex()
+                    .gap(px(space::S))
+                    .child(
+                        Button::new("drive-now")
+                            .icon(IconName::CloudUpload)
+                            .label(t("Back up to Drive now", "Copiar a Drive ahora"))
+                            .loading(d.uploading)
+                            .on_click(cx.listener(|this, _, w, cx| this.drive_backup(false, w, cx))),
+                    )
+                    .child(
+                        Button::new("drive-off")
+                            .ghost()
+                            .label(t("Turn off", "Desactivar"))
+                            .tooltip(t("Backups already in Drive stay there.", "Las copias que ya están en Drive se quedan ahí."))
+                            .on_click(cx.listener(|this, _, _, cx| this.turn_off_drive(cx))),
+                    ),
+            )
+        };
+        v_flex().gap(px(space::S)).pt(px(space::M)).border_t_1().border_color(p.rule).child(title).child(body).into_any_element()
     }
 
     /// Signed out: what signing in does, and the button that opens the

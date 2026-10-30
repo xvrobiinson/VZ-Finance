@@ -8,12 +8,14 @@
 //! - `change`, `outbox`: changes saved on this PC, queued for the cloud.
 //! - `figures`: the engine's figures in the shape the cloud compares.
 //! - `worker`: the background connection that reports to the app.
+//! - `drive`: backups to the person's Google Drive.
 //!
 //! Without a signed-in session none of this runs and the app makes no
 //! network requests, as before.
 
 pub mod auth;
 pub mod change;
+pub mod drive;
 pub mod figures;
 pub mod outbox;
 pub mod refusal;

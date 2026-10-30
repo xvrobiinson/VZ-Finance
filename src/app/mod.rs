@@ -3,6 +3,7 @@
 
 mod cloud;
 mod dialogs;
+mod drive;
 mod sidebar;
 pub(crate) use sidebar::mark;
 
@@ -306,6 +307,7 @@ impl VzApp {
                     }
                     // Changes that got no answer are tried again.
                     app.pump(window, cx);
+                    app.maybe_drive_backup(window, cx);
                 });
                 if alive.is_err() {
                     break;
@@ -766,6 +768,9 @@ impl VzApp {
                 let shown = path.display().to_string();
                 self.notify_success(tr!("Backup saved and verified: {shown}", "Copia guardada y verificada: {shown}"), window, cx);
                 self.reload(cx);
+                if self.cloud.is_some() && self.drive_on() {
+                    self.drive_backup(false, window, cx);
+                }
             }
             Err(e) => {
                 log::error!("backup failed: {e:#}");
