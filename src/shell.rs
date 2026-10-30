@@ -22,6 +22,27 @@ pub fn reveal(path: &Path) -> mpsc::Receiver<Result<(), String>> {
     run(path.to_path_buf(), imp::reveal)
 }
 
+/// Opens a web address in the person's browser. Only `https://` addresses,
+/// so nothing else can be started through here.
+pub fn browse(url: &str) -> mpsc::Receiver<Result<(), String>> {
+    let (tx, rx) = mpsc::channel();
+    if !url.starts_with("https://") || url.chars().any(|c| c.is_whitespace() || c == '"') {
+        let _ = tx.send(Err("not a web address".into()));
+        return rx;
+    }
+    let url = url.to_string();
+    let spawned = std::thread::Builder::new().name("shell".into()).spawn({
+        let tx = tx.clone();
+        move || {
+            let _ = tx.send(imp::browse(&url));
+        }
+    });
+    if let Err(e) = spawned {
+        let _ = tx.send(Err(e.to_string()));
+    }
+    rx
+}
+
 fn run(path: PathBuf, f: fn(&Path) -> Result<(), String>) -> mpsc::Receiver<Result<(), String>> {
     let (tx, rx) = mpsc::channel();
     if !path.exists() {
@@ -139,6 +160,11 @@ mod imp {
         })
     }
 
+    pub fn browse(url: &str) -> Result<(), String> {
+        let _com = Apartment::new();
+        execute(&HSTRING::from(url), None)
+    }
+
     /// What is being opened, for the log: never the path, which can hold a
     /// client's name.
     fn kind(path: &Path) -> String {
@@ -159,6 +185,9 @@ mod imp {
     pub fn reveal(_: &Path) -> Result<(), String> {
         Err("only available on Windows".into())
     }
+    pub fn browse(_: &str) -> Result<(), String> {
+        Err("only available on Windows".into())
+    }
 }
 
 #[cfg(test)]
@@ -170,5 +199,12 @@ mod tests {
         let missing = std::env::temp_dir().join("acervus-does-not-exist").join("receipt.html");
         assert!(open(&missing).recv().unwrap().is_err());
         assert!(reveal(&missing).recv().unwrap().is_err());
+    }
+
+    #[test]
+    fn only_web_addresses_open_in_the_browser() {
+        assert!(browse("C:\\Windows\\System32\\calc.exe").recv().unwrap().is_err());
+        assert!(browse("http://example.com").recv().unwrap().is_err());
+        assert!(browse("https://example.com\" --evil").recv().unwrap().is_err());
     }
 }

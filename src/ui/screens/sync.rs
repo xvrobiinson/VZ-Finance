@@ -4,7 +4,6 @@
 //! `app::cloud`.
 
 use gpui_kit::assets::IconName;
-use gpui_kit::component::input::Input;
 use gpui_kit::component::{h_flex, v_flex};
 use gpui_kit::*;
 
@@ -14,9 +13,6 @@ use crate::sync::wire::Role;
 use crate::tr;
 use crate::ui::kit::{Button, Chip, ListRow};
 use crate::ui::theme::{Palette, Typeset as _, space, text};
-
-/// Width of the email and code fields.
-const FIELD_W: f32 = 260.0;
 
 fn role_label(r: Role) -> &'static str {
     match r {
@@ -203,56 +199,24 @@ impl VzApp {
             .into_any_element()
     }
 
-    /// Signing in: the email, then the 6-digit code sent to it.
+    /// Signed out: what signing in does, and the button that opens the
+    /// sign-in screen.
     fn sign_in_form(&mut self, p: &Palette, cx: &mut Context<Self>) -> AnyElement {
-        let s = &self.sign_in;
-        let error = s.error.clone().map(|e| div().text_color(p.negative).child(e));
-        let form = match &s.code_sent_to {
-            None => v_flex()
-                .gap(px(space::M))
-                .child(div().text_color(p.text).child(t(
-                    "Sign in to see your business from the phone app on this PC and keep both in step. We'll email you a 6-digit code.",
-                    "Inicia sesión para ver en esta PC tu negocio de la app del teléfono y mantener ambos al día. Te enviaremos un código de 6 dígitos por correo.",
-                )))
-                .child(
-                    h_flex().gap(px(space::S)).child(div().w(px(FIELD_W)).child(Input::new(&s.email))).child(
-                        Button::new("sync-send-code")
-                            .primary()
-                            .icon(IconName::Mail)
-                            .label(t("Send code", "Enviar código"))
-                            .loading(s.busy)
-                            .on_click(cx.listener(|this, _, w, cx| this.send_sign_in_code(w, cx))),
-                    ),
+        v_flex()
+            .gap(px(space::M))
+            .child(div().text_color(p.text).child(t(
+                "Sign in to see your business from the phone app on this PC and keep both in step. Use an emailed code or your Google account.",
+                "Inicia sesión para ver en esta PC tu negocio de la app del teléfono y mantener ambos al día. Usa un código por correo o tu cuenta de Google.",
+            )))
+            .child(
+                h_flex().child(
+                    Button::new("sync-open-sign-in")
+                        .primary()
+                        .icon(IconName::LogIn)
+                        .label(t("Sign in", "Iniciar sesión"))
+                        .on_click(cx.listener(|this, _, w, cx| this.open_sign_in(w, cx))),
                 ),
-            Some(email) => {
-                let email = email.clone();
-                v_flex()
-                    .gap(px(space::M))
-                    .child(div().text_color(p.text).child(tr!(
-                        "We emailed a code to {email}. It may take a minute; check spam too.",
-                        "Enviamos un código a {email}. Puede tardar un minuto; revisa también el correo no deseado."
-                    )))
-                    .child(
-                        h_flex()
-                            .gap(px(space::S))
-                            .child(div().w(px(FIELD_W)).child(Input::new(&s.code)))
-                            .child(
-                                Button::new("sync-sign-in")
-                                    .primary()
-                                    .label(t("Sign in", "Iniciar sesión"))
-                                    .loading(s.busy)
-                                    .on_click(cx.listener(|this, _, w, cx| this.finish_sign_in(w, cx))),
-                            )
-                            .child(
-                                Button::new("sync-other-email")
-                                    .ghost()
-                                    .label(t("Use another email", "Usar otro correo"))
-                                    .on_click(cx.listener(|this, _, _, cx| this.restart_sign_in(cx))),
-                            ),
-                    )
-            }
-        };
-        form.children(error)
+            )
             .child(div().typeset(text::CAPTION).text_color(p.muted).child(t(
                 "Without signing in, the app works only with the books on this PC and makes no network requests.",
                 "Sin iniciar sesión, la app trabaja solo con los registros de esta PC y no usa internet.",

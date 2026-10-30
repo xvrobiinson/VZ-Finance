@@ -7,6 +7,7 @@ pub mod loans;
 pub mod overview;
 pub mod payments;
 pub mod settings;
+mod sign_in;
 mod sync;
 
 use gpui_kit::assets::IconName;

@@ -4,6 +4,7 @@
 mod cloud;
 mod dialogs;
 mod sidebar;
+pub(crate) use sidebar::mark;
 
 pub use cloud::SyncStatus;
 
@@ -17,6 +18,7 @@ use gpui_kit::component::input::{InputEvent, InputState};
 use gpui_kit::component::notification::Notification;
 use gpui_kit::component::select::{SelectEvent, SelectState};
 use gpui_kit::component::{WindowExt as _, v_flex};
+use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use crate::domain::portfolio::{Account, EntryKind};
@@ -289,6 +291,7 @@ impl VzApp {
                 "new-record" => app.open_entry_form(EntryKind::Expense, None, window, cx),
                 "new-income" => app.open_entry_form(EntryKind::Income, None, window, cx),
                 "wording" => app.open_receipt_text_form(window, cx),
+                "sign-in" => app.open_sign_in(window, cx),
                 _ => {}
             });
         }
@@ -843,16 +846,21 @@ impl Render for VzApp {
             .bg(p.ground)
             .text_color(p.text)
             .typeset(theme::text::BODY)
-            .child(self.render_sidebar(window, cx))
-            .child(
-                v_flex().flex_1().min_w_0().h_full().children(banner).child(
-                    div()
-                        .id(SharedString::from(format!("scroll-{:?}", self.route.section())))
-                        .flex_1()
-                        .min_h_0()
-                        .overflow_y_scroll()
-                        .child(div().w_full().px(px(gutter)).pt(px(gutter.min(space::XXL - 4.))).pb(px(48.)).child(content)),
-                ),
-            )
+            .map(|d| {
+                // The sign-in screen takes the whole window while open.
+                if self.sign_in.open {
+                    return d.child(self.render_sign_in(window, cx));
+                }
+                d.child(self.render_sidebar(window, cx)).child(
+                    v_flex().flex_1().min_w_0().h_full().children(banner).child(
+                        div()
+                            .id(SharedString::from(format!("scroll-{:?}", self.route.section())))
+                            .flex_1()
+                            .min_h_0()
+                            .overflow_y_scroll()
+                            .child(div().w_full().px(px(gutter)).pt(px(gutter.min(space::XXL - 4.))).pb(px(48.)).child(content)),
+                    ),
+                )
+            })
     }
 }

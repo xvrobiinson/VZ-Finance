@@ -8,6 +8,9 @@
 //! of the cloud's books) and every save also goes to the cloud. Stopping
 //! (or signing out) switches back to the books on this PC, untouched.
 
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use futures::StreamExt as _;
 use gpui_kit::component::input::InputState;
 use gpui_kit::*;
@@ -46,6 +49,10 @@ pub(crate) struct SignIn {
     pub(crate) code_sent_to: Option<String>,
     pub(crate) busy: bool,
     pub(crate) error: Option<String>,
+    /// A Google sign-in is waiting for the browser; setting it stops the wait.
+    pub(crate) google: Option<Arc<AtomicBool>>,
+    /// The sign-in screen is showing.
+    pub(crate) open: bool,
 }
 
 impl SignIn {
@@ -56,6 +63,8 @@ impl SignIn {
             code_sent_to: None,
             busy: false,
             error: None,
+            google: None,
+            open: false,
         }
     }
 }
@@ -233,6 +242,7 @@ impl VzApp {
                         }
                         app.sign_in.code_sent_to = None;
                         app.start_cloud(ep, stored, None, window, cx);
+                        app.signed_in(window, cx);
                     }
                     Err(e) => app.sign_in.error = Some(e.to_string()),
                 }
@@ -240,6 +250,96 @@ impl VzApp {
             });
         })
         .detach();
+    }
+
+    /// Signs in with Google in the person's browser; the app waits until the
+    /// browser comes back (or the person cancels).
+    pub(crate) fn sign_in_with_google(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.sign_in.google.is_some() {
+            return;
+        }
+        let stop = Arc::new(AtomicBool::new(false));
+        self.sign_in.google = Some(stop.clone());
+        self.sign_in.error = None;
+        cx.notify();
+        let ep = endpoints();
+        cx.spawn_in(window, async move |this, cx| {
+            let (tx, rx) = futures::channel::oneshot::channel();
+            let (ep2, stop2) = (ep.clone(), stop.clone());
+            // The wait can take minutes, so it gets its own thread rather than
+            // one of the app's shared ones.
+            let spawned = std::thread::Builder::new().name("google-sign-in".into()).spawn(move || {
+                let result = auth::start_google(&ep2).and_then(|g| {
+                    let opened = crate::shell::browse(&g.url).recv().unwrap_or_else(|_| Err("stopped".into()));
+                    if let Err(why) = opened {
+                        log::warn!("browser not opened: {why}");
+                        return Err(auth::AuthError::Refused(t("The browser could not be opened", "No se pudo abrir el navegador").into()));
+                    }
+                    auth::finish_google(&ep2, g, &stop2)
+                });
+                let _ = tx.send(result);
+            });
+            let result = match spawned {
+                Ok(_) => rx.await.unwrap_or(Err(auth::AuthError::GoogleNotFinished)),
+                Err(e) => Err(auth::AuthError::Refused(e.to_string())),
+            };
+            let _ = this.update_in(cx, |app, window, cx| {
+                // Cancelled: this attempt's result no longer matters.
+                if stop.load(Ordering::Relaxed) {
+                    return;
+                }
+                app.sign_in.google = None;
+                match result {
+                    Ok((email, session)) => {
+                        let stored = Stored { email, session };
+                        if let Err(e) = vault::save(&ep.cloud, &stored) {
+                            log::warn!("sign-in not remembered: {e}");
+                        }
+                        app.sign_in.code_sent_to = None;
+                        app.start_cloud(ep, stored, None, window, cx);
+                        app.signed_in(window, cx);
+                    }
+                    Err(e) => app.sign_in.error = Some(e.to_string()),
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// Stops waiting for a Google sign-in.
+    pub(crate) fn cancel_google(&mut self, cx: &mut Context<Self>) {
+        if let Some(stop) = self.sign_in.google.take() {
+            stop.store(true, Ordering::Relaxed);
+        }
+        cx.notify();
+    }
+
+    /// Shows the sign-in screen.
+    pub(crate) fn open_sign_in(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.cloud.is_some() {
+            return;
+        }
+        self.sign_in.open = true;
+        self.sign_in.error = None;
+        self.sign_in.email.update(cx, |s, cx| s.focus(window, cx));
+        cx.notify();
+    }
+
+    /// Leaves the sign-in screen; a Google sign-in still waiting is stopped.
+    pub(crate) fn close_sign_in(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.cancel_google(cx);
+        self.sign_in.open = false;
+        self.sign_in.busy = false;
+        window.focus(&self.focus, cx);
+        cx.notify();
+    }
+
+    /// After signing in: back to the app, in Settings, where the person
+    /// picks the business for this PC.
+    fn signed_in(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.sign_in.open = false;
+        self.navigate(super::Route::Settings, window, cx);
     }
 
     /// Back to the email step (wrong address, or no code arrived).

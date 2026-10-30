@@ -62,7 +62,9 @@ gpui_kit::assets::icon_assets!(
         CloudOff,
         CloudAlert,
         CloudUpload,
-        Mail
+        Mail,
+        LogIn,
+        KeyRound
     ]
 );
 

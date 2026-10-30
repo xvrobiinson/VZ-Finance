@@ -136,7 +136,9 @@ pub struct Button {
     id: ElementId,
     label: Option<SharedString>,
     icon: Option<IconName>,
+    prefix: Option<AnyElement>,
     suffix: Option<AnyElement>,
+    wide: bool,
     kind: ButtonKind,
     size: ButtonSize,
     tooltip: Option<SharedString>,
@@ -152,7 +154,9 @@ impl Button {
             id: id.into(),
             label: None,
             icon: None,
+            prefix: None,
             suffix: None,
+            wide: false,
             kind: ButtonKind::default(),
             size: ButtonSize::default(),
             tooltip: None,
@@ -175,6 +179,20 @@ impl Button {
     }
 
     /// Anything after the label, such as a dropdown's chevron.
+    /// Something drawn before the label in its own colors (a brand mark),
+    /// where `.icon()` takes the text color.
+    pub fn prefix(mut self, el: impl IntoElement) -> Self {
+        self.prefix = Some(el.into_any_element());
+        self
+    }
+
+    /// Fills the width of its column, label centered (a form standing alone,
+    /// like signing in).
+    pub fn wide(mut self) -> Self {
+        self.wide = true;
+        self
+    }
+
     pub fn suffix(mut self, el: impl IntoElement) -> Self {
         self.suffix = Some(el.into_any_element());
         self
@@ -250,7 +268,7 @@ impl RenderOnce for Button {
         let focus = focus_state(&self.id, window, cx);
         let live = !self.disabled && !self.loading;
         let size = self.size;
-        let square = self.label.is_none() && self.suffix.is_none();
+        let square = self.label.is_none() && self.suffix.is_none() && self.prefix.is_none();
         let lit = (hovered && live) || self.selected;
         let ink = if self.kind == ButtonKind::Ghost && !lit && self.label.is_none() { p.muted } else { c.ink };
         let shadows = depth(&p, self.kind);
@@ -263,6 +281,7 @@ impl RenderOnce for Button {
             .h(px(size.height()))
             .when(square, |d| d.w(px(size.height())).justify_center())
             .when(!square, |d| d.px(px(size.pad())))
+            .when(self.wide, |d| d.w_full().justify_center())
             .gap(px(6.))
             .rounded(px(if size == ButtonSize::Mini { RADIUS_CHIP } else { RADIUS_CONTROL }))
             .border_1()
@@ -272,7 +291,7 @@ impl RenderOnce for Button {
             .typeset(text::LABEL)
             .whitespace_nowrap()
             .when(self.loading, |d| d.child(Spinner::new().color(ink).with_size(px(size.icon()))))
-            .when(!self.loading, |d| d.children(self.icon.map(|i| icon(i, ink, size.icon()))))
+            .when(!self.loading, |d| d.children(self.icon.map(|i| icon(i, ink, size.icon()))).children(self.prefix))
             .children(self.label)
             .children(self.suffix)
             .when(live, |d| {

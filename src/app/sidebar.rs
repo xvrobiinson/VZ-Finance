@@ -26,7 +26,7 @@ fn nav() -> [(Route, IconName, &'static str, &'static str); 6] {
 }
 
 /// The product mark: three ascending bars, the shape of a growing portfolio.
-fn mark(p: &Palette) -> Div {
+pub(crate) fn mark(p: &Palette) -> Div {
     let mut faded = p.accent;
     faded.a = 0.45;
     let mut mid = p.accent;

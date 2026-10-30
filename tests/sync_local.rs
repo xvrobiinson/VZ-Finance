@@ -536,6 +536,29 @@ fn a_renewed_session_keeps_working() {
     }
 }
 
+/// The server takes the desktop's Google request: the way back (the PWA's
+/// handoff page with this PC's port) is accepted and the browser is sent to
+/// Google, which then returns to the server. Needs `GOOGLE_CLIENT_ID` and
+/// `GOOGLE_CLIENT_SECRET` set on the local backend (any value will do: Google
+/// itself isn't reached).
+#[test]
+#[ignore = "needs a local PWA backend; see the top of this file"]
+fn google_sign_in_starts_with_the_way_back_to_this_pc() {
+    let g = auth::start_google(&endpoints()).unwrap();
+    assert!(g.url.starts_with("https://accounts.google.com/"), "{}", g.url);
+    let redirect = format!("redirect_uri={}", urlencode(&format!("{}/api/auth/callback/google", endpoints().site)));
+    assert!(g.url.contains(&redirect), "{}", g.url);
+}
+
+fn urlencode(s: &str) -> String {
+    s.bytes()
+        .map(|b| match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => (b as char).to_string(),
+            _ => format!("%{b:02X}"),
+        })
+        .collect()
+}
+
 /// Undoes `remember_a_local_session_for_the_app`.
 #[test]
 #[ignore = "removes the screenshot session; see above"]

@@ -58,6 +58,20 @@ pub fn unprotect(data: &[u8]) -> Result<Vec<u8>, String> {
     imp::unprotect(data)
 }
 
+/// A value nobody can guess (Windows' cryptographic random generator), as
+/// `len` letters and digits.
+pub fn random_token(len: usize) -> Result<String, String> {
+    const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+    let mut out = String::with_capacity(len);
+    while out.len() < len {
+        let mut bytes = [0u8; 64];
+        imp::random(&mut bytes)?;
+        // 248 = 4 × 62: dropping larger bytes keeps every letter equally likely.
+        out.extend(bytes.iter().filter(|&&b| b < 248).map(|&b| ALPHABET[(b % 62) as usize] as char).take(len - out.len()));
+    }
+    Ok(out)
+}
+
 #[cfg(windows)]
 mod imp {
     use windows::Win32::Foundation::{HLOCAL, LocalFree};
@@ -134,6 +148,12 @@ mod imp {
     pub fn unprotect(data: &[u8]) -> Result<Vec<u8>, String> {
         crypt(data, false)
     }
+
+    pub fn random(buf: &mut [u8]) -> Result<(), String> {
+        use windows::Win32::Security::Cryptography::{BCRYPT_USE_SYSTEM_PREFERRED_RNG, BCryptGenRandom};
+        // SAFETY: Windows fills `buf`, which outlives the call.
+        unsafe { BCryptGenRandom(None, buf, BCRYPT_USE_SYSTEM_PREFERRED_RNG) }.ok().map_err(|e| e.message())
+    }
 }
 
 #[cfg(not(windows))]
@@ -151,6 +171,9 @@ mod imp {
     pub fn unprotect(_: &[u8]) -> Result<Vec<u8>, String> {
         Err("sync needs Windows".into())
     }
+    pub fn random(_: &mut [u8]) -> Result<(), String> {
+        Err("sync needs Windows".into())
+    }
 }
 
 #[cfg(all(test, windows))]
@@ -164,6 +187,14 @@ mod tests {
         assert!(!sealed.windows(photo.len()).any(|w| w == photo));
         assert_eq!(unprotect(&sealed).unwrap(), photo);
         assert!(unprotect(b"garbage").is_err());
+    }
+
+    #[test]
+    fn random_tokens_are_letters_and_digits_and_differ() {
+        let a = random_token(40).unwrap();
+        assert_eq!(a.len(), 40);
+        assert!(a.chars().all(|c| c.is_ascii_alphanumeric()));
+        assert_ne!(a, random_token(40).unwrap());
     }
 
     #[test]
