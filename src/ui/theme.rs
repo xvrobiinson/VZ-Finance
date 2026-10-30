@@ -44,12 +44,14 @@ pub struct Palette {
     /// Hairline of light along the top edge of raised surfaces.
     pub highlight: Hsla,
     pub overlay: Hsla,
-    /// The sign-in screen: a backdrop behind a dark showcase panel.
-    pub backdrop: Hsla,
-    pub hero: Hsla,
-    pub hero_text: Hsla,
-    pub hero_muted: Hsla,
-    pub hero_line: Hsla,
+    /// The sign-in screen: a sky (night in dark mode) behind a glass card.
+    pub sky_top: Hsla,
+    pub sky_low: Hsla,
+    pub cloud: Hsla,
+    pub arc: Hsla,
+    pub glass_top: Hsla,
+    pub glass: Hsla,
+    pub glass_edge: Hsla,
     pub dark: bool,
 }
 
@@ -97,11 +99,13 @@ impl Palette {
             shadow_gain: 1.0,
             highlight: hexa(0xFFFFFF, 0.0),
             overlay: hexa(0x0B1020, 0.32),
-            backdrop: hex(0xE4E7EE),
-            hero: hex(0x1D1A19),
-            hero_text: hex(0xF5F2EF),
-            hero_muted: hexa(0xF5F2EF, 0.62),
-            hero_line: hexa(0xFFFFFF, 0.09),
+            sky_top: hex(0x9FC9F1),
+            sky_low: hex(0xF1F6FC),
+            cloud: hexa(0xFFFFFF, 0.9),
+            arc: hexa(0xFFFFFF, 0.55),
+            glass_top: hex(0xDCF2FB),
+            glass: hexa(0xFFFFFF, 0.9),
+            glass_edge: hexa(0xFFFFFF, 0.95),
             dark: false,
         }
     }
@@ -139,11 +143,13 @@ impl Palette {
             shadow_gain: 4.0,
             highlight: hexa(0xFFFFFF, 0.045),
             overlay: hexa(0x000000, 0.5),
-            backdrop: hex(0x08090B),
-            hero: hex(0x0B0A0A),
-            hero_text: hex(0xF2F3F5),
-            hero_muted: hexa(0xF2F3F5, 0.6),
-            hero_line: hexa(0xFFFFFF, 0.08),
+            sky_top: hex(0x091226),
+            sky_low: hex(0x0E0F11),
+            cloud: hexa(0x6E87C8, 0.1),
+            arc: hexa(0x8CA5E6, 0.13),
+            glass_top: hex(0x19223C),
+            glass: hexa(0x17181B, 0.94),
+            glass_edge: hexa(0xFFFFFF, 0.07),
             dark: true,
         }
     }
@@ -201,8 +207,6 @@ pub mod text {
 
     /// The one number a screen is about (portfolio value).
     pub const DISPLAY: TextRole = role(font::DISPLAY, 30.0, 36.0, FontWeight::SEMIBOLD);
-    /// The headline of the sign-in screen's showcase panel.
-    pub const HERO: TextRole = role(font::DISPLAY, 52.0, 54.0, FontWeight::SEMIBOLD);
     /// Page titles.
     pub const TITLE: TextRole = role(font::DISPLAY, 24.0, 30.0, FontWeight::SEMIBOLD);
     /// Secondary headline figures (KPI values).
