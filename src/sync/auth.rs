@@ -15,7 +15,7 @@ use std::time::{Duration, Instant};
 use serde::Deserialize;
 use serde_json::json;
 use ureq::Agent;
-use ureq::tls::{TlsConfig, TlsProvider};
+use ureq::tls::{RootCerts, TlsConfig, TlsProvider};
 
 use crate::i18n::t;
 use crate::sync::vault;
@@ -137,7 +137,9 @@ pub(crate) fn agent() -> Agent {
     Agent::config_builder()
         .http_status_as_error(false)
         .timeout_global(Some(Duration::from_secs(20)))
-        .tls_config(TlsConfig::builder().provider(TlsProvider::NativeTls).build())
+        // Windows' own trusted certificates: ureq's default (its bundled list) isn't
+        // compiled in, and without roots every https request fails.
+        .tls_config(TlsConfig::builder().provider(TlsProvider::NativeTls).root_certs(RootCerts::PlatformVerifier).build())
         .build()
         .into()
 }
@@ -463,6 +465,15 @@ mod tests {
         let (stray, back) = browser.join().unwrap();
         assert!(stray.starts_with("HTTP/1.1 404"));
         assert!(back.starts_with("HTTP/1.1 200") && back.contains("<h1"));
+    }
+
+    /// Every test above talks to plain-http local servers; this one reaches a
+    /// real https site, which failed for want of trusted roots.
+    #[test]
+    #[ignore = "needs the internet"]
+    fn https_sites_are_trusted() {
+        let reply = agent().get("https://www.google.com/generate_204").call().expect("https request");
+        assert_eq!(reply.status().as_u16(), 204);
     }
 
     #[test]
