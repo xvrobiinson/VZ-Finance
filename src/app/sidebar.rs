@@ -212,6 +212,18 @@ impl VzApp {
                 v_flex()
                     .gap(px(2.))
                     .pb(px(space::L))
+                    .when_some(collapsed.then(|| self.sync_look()).flatten(), |d, (icon_name, label, _)| {
+                        d.child(
+                            NavItem::new(
+                                "sync",
+                                icon_name,
+                                label.clone(),
+                                tr!("Cloud sync: {label}", "Sincronización: {label}"),
+                                cx.listener(|this, _, w, cx| this.navigate(Route::Settings, w, cx)),
+                            )
+                            .collapsed(true),
+                        )
+                    })
                     .child(
                         NavItem::new(
                             "backup",
@@ -233,12 +245,15 @@ impl VzApp {
                                 .gap(px(2.))
                                 .typeset(text::CAPTION)
                                 .text_color(p.faint)
-                                .child(
-                                    h_flex()
+                                // Signed in, the sync status takes the place of "stored on this PC".
+                                .child(match self.sync_chip("sidebar-sync", cx) {
+                                    Some(chip) => h_flex().pb(px(space::XS)).child(chip).into_any_element(),
+                                    None => h_flex()
                                         .gap(px(6.))
                                         .child(icon(IconName::ShieldCheck, p.faint, 13.))
-                                        .child(t("Private · stored on this PC", "Privado · guardado en esta PC")),
-                                )
+                                        .child(t("Private · stored on this PC", "Privado · guardado en esta PC"))
+                                        .into_any_element(),
+                                })
                                 .child(div().text_color(backup_tone).child(backup_label))
                                 .child(format!("{} {}", t("Version", "Versión"), env!("CARGO_PKG_VERSION"))),
                         )

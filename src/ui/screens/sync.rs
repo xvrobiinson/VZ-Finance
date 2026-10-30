@@ -59,15 +59,7 @@ impl VzApp {
     /// How the cloud sync stands, as a chip that opens Settings. None when
     /// not signed in.
     pub(crate) fn sync_chip(&self, id: &'static str, cx: &mut Context<Self>) -> Option<Chip> {
-        let (icon, label, accent) = match self.sync_status()? {
-            SyncStatus::NotLinked => (IconName::Cloud, t("Choose a business", "Elige un negocio").to_string(), true),
-            SyncStatus::Synced => (IconName::CloudCheck, t("Synced", "Sincronizado").to_string(), false),
-            SyncStatus::Sending(n) => (IconName::CloudUpload, tr!("Sending {n}", "Enviando {n}"), false),
-            SyncStatus::Offline(0) => (IconName::CloudOff, t("Offline", "Sin conexión").to_string(), false),
-            SyncStatus::Offline(n) => (IconName::CloudOff, tr!("Offline · {n} waiting", "Sin conexión · {n} en espera"), false),
-            SyncStatus::NeedsReview(n) => (IconName::CloudAlert, tr!("{n} to review", "{n} por revisar"), true),
-            SyncStatus::UpdateRequired => (IconName::CloudAlert, t("Update needed", "Actualización necesaria").to_string(), true),
-        };
+        let (icon, label, accent) = self.sync_look()?;
         Some(
             Chip::new(id, label)
                 .icon(icon)
@@ -75,6 +67,20 @@ impl VzApp {
                 .tooltip(t("Cloud sync: open in Settings", "Sincronización: abrir en Configuración"))
                 .on_click(cx.listener(|this, _, w, cx| this.navigate(Route::Settings, w, cx))),
         )
+    }
+
+    /// The sync status as icon, words and whether it needs the person.
+    /// None when not signed in.
+    pub(crate) fn sync_look(&self) -> Option<(IconName, String, bool)> {
+        Some(match self.sync_status()? {
+            SyncStatus::NotLinked => (IconName::Cloud, t("Choose a business", "Elige un negocio").to_string(), true),
+            SyncStatus::Synced => (IconName::CloudCheck, t("Synced", "Sincronizado").to_string(), false),
+            SyncStatus::Sending(n) => (IconName::CloudUpload, tr!("Sending {n}", "Enviando {n}"), false),
+            SyncStatus::Offline(0) => (IconName::CloudOff, t("Offline", "Sin conexión").to_string(), false),
+            SyncStatus::Offline(n) => (IconName::CloudOff, tr!("Offline · {n} waiting", "Sin conexión · {n} en espera"), false),
+            SyncStatus::NeedsReview(n) => (IconName::CloudAlert, tr!("{n} to review", "{n} por revisar"), true),
+            SyncStatus::UpdateRequired => (IconName::CloudAlert, t("Update needed", "Actualización necesaria").to_string(), true),
+        })
     }
 
     /// The body of the "Cloud sync" card in Settings.
