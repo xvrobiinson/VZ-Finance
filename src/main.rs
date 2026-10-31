@@ -64,7 +64,11 @@ gpui_kit::assets::icon_assets!(
         CloudUpload,
         Mail,
         LogIn,
-        KeyRound
+        KeyRound,
+        Percent,
+        Banknote,
+        Clock,
+        CalendarClock
     ]
 );
 

@@ -15,7 +15,7 @@ use crate::sync::wire::Need;
 use crate::tr;
 use crate::ui::components::{empty_state, kv, page_header, sel, table_header, th};
 use crate::ui::forms::reason::ReasonKind;
-use crate::ui::kit::{Button, Card, Dropdown, DropdownItem, Segmented, Stat, StatStrip};
+use crate::ui::kit::{Button, Card, Dropdown, DropdownItem, Segmented, Stat, StatCards};
 use crate::ui::theme::{Palette, Typeset as _, Width, palette, space, tabular, text};
 use crate::utils::dates::{month_year, short_month, short_month_year};
 
@@ -48,7 +48,17 @@ impl VzApp {
             self.analytics_actions(w, cx),
         );
 
-        let cell = |l: &str, v: String, sub: String, color: Hsla| Stat::new(l.to_string(), v).tone(color).caption(sel(sub));
+        // Each stat on its own card, its icon in a square: accent for value,
+        // green for money earned, blue for what is owed or expected.
+        let (acc, pos, info, neg) = (
+            (p.accent_text, p.accent_tint),
+            (p.positive, p.positive_tint),
+            (p.info, p.info_tint),
+            if s.defaulted_principal > 0 { (p.negative, p.negative_tint) } else { (p.muted, p.neutral_tint) },
+        );
+        let cell = |ic: IconName, (fg, bg): (Hsla, Hsla), l: &str, v: String, sub: String, color: Hsla| {
+            Stat::new(l.to_string(), v).icon(ic).chip(fg, bg).tone(color).caption(sel(sub))
+        };
         let gain_color = match gain.signum() {
             1 => p.positive,
             -1 => p.negative,
@@ -56,29 +66,37 @@ impl VzApp {
         };
         let return_cells = vec![
             cell(
+                IconName::Wallet,
+                acc,
                 t("Portfolio value", "Valor de la cartera"),
                 money.format(s.portfolio_value),
                 t("Cash + capital lent + interest due", "Efectivo + capital prestado + interés vencido").into(),
                 p.text,
             ),
             cell(
+                IconName::TrendingUp,
+                pos,
                 t("Portfolio gain", "Ganancia de la cartera"),
                 money.format_signed(gain),
                 t("Value minus capital invested", "Valor menos capital invertido").into(),
                 gain_color,
             ),
             cell(
+                IconName::Percent,
+                pos,
                 t("Return on invested capital", "Rendimiento sobre el capital"),
                 roic.clone().map(|r| if gain > 0 { format!("+{r}") } else { r }).unwrap_or_else(|| "—".into()),
                 t("Total, not annualized", "Total, no anualizado").into(),
                 gain_color,
             ),
             cell(
+                IconName::Coins,
+                pos,
                 t("Income received", "Ganancia cobrada"),
                 money.format(s.total_income()),
                 if s.other_income > 0 {
                     let other = money.format(s.other_income);
-                    tr!("Interest and fees, plus {other} other income", "Intereses y cargos, más {other} de otros ingresos")
+                    tr!("Includes {other} other income", "Incluye {other} de otros ingresos")
                 } else {
                     t("Interest and fees received", "Intereses y cargos cobrados").into()
                 },
@@ -87,9 +105,11 @@ impl VzApp {
         ];
         // Full money figures are never truncated to fit a row: four need a
         // wide column, six need an ultra one.
-        let returns = StatStrip::new(if w >= Width::Wide { 4 } else { 2 }).dense(compact).stats(return_cells);
+        let returns = StatCards::new(if w >= Width::Wide { 4 } else { 2 }).spacing(w.gap()).stats(return_cells);
         let capital_cells = vec![
             cell(
+                IconName::Landmark,
+                acc,
                 t("Capital invested", "Capital invertido"),
                 money.format(invested),
                 {
@@ -99,12 +119,16 @@ impl VzApp {
                 p.text,
             ),
             cell(
+                IconName::Banknote,
+                acc,
                 t("Available capital", "Capital disponible"),
                 money.format(s.available_capital),
                 t("Capital not lent out", "Capital sin prestar").into(),
                 p.text,
             ),
             cell(
+                IconName::Coins,
+                pos,
                 t("Available interest", "Interés disponible"),
                 money.format(s.available_interest),
                 if s.expenses() > 0 {
@@ -116,30 +140,36 @@ impl VzApp {
                 p.text,
             ),
             cell(
+                IconName::Clock,
+                info,
                 t("Interest due, not collected", "Interés vencido sin cobrar"),
                 money.format(s.interest_receivable),
                 t("Past its due date", "Ya pasó su fecha").into(),
                 p.text,
             ),
             cell(
+                IconName::CalendarClock,
+                info,
                 t("Expected interest per month", "Interés esperado por mes"),
                 money.format(s.expected_monthly_interest),
                 t("At today's capital", "Con el capital de hoy").into(),
                 p.text,
             ),
             cell(
+                IconName::CircleAlert,
+                neg,
                 t("Defaulted balance", "Saldo incobrable"),
                 money.format(s.defaulted_principal + s.defaulted_interest),
                 t("Excluded from value", "Fuera del valor").into(),
                 if s.defaulted_principal > 0 { p.negative } else { p.text },
             ),
         ];
-        let capital = StatStrip::new(match w {
+        let capital = StatCards::new(match w {
             Width::Compact => 2,
             Width::Medium | Width::Wide => 3,
             Width::Ultra => 6,
         })
-        .dense(compact)
+        .spacing(w.gap())
         .stats(capital_cells);
 
         // Value chart.

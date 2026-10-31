@@ -39,7 +39,8 @@ const PUFFS: [(f32, f32, f32); 9] = [
     (0.50, -120., 520.),
 ];
 
-/// The sky behind the card (also tried behind Overview), `w` × `h` px.
+/// The sky behind the card (and, in dark mode, behind every screen),
+/// `w` × `h` px.
 pub(crate) fn sky(p: &Palette, w: f32, h: f32) -> Div {
     let (cx_, cy) = (w / 2., h * 0.58);
     let arc =

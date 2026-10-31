@@ -17,7 +17,6 @@ mod segmented;
 mod sort_header;
 mod stat;
 mod stat_cards;
-mod stat_strip;
 
 pub use button::{Button, ButtonKind, ButtonSize};
 pub use card::{Card, face};
@@ -29,7 +28,6 @@ pub use segmented::Segmented;
 pub use sort_header::{Sort, SortHeader};
 pub use stat::Stat;
 pub use stat_cards::StatCards;
-pub use stat_strip::StatStrip;
 
 use std::rc::Rc;
 

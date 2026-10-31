@@ -2,33 +2,37 @@
 name: Acervus Finance
 description: A private, offline lending book for Windows. Calm, exact, discreet.
 colors:
-  ground: "#F7F8FA"
+  ground: "#F6F7FB"
   surface: "#FFFFFF"
-  raised: "#F9FAFB"
-  hover: "#F3F4F7"
-  active: "#EEF0F4"
-  border: "#E9EBEF"
-  rule: "#F0F1F4"
-  neutral-tint: "#F1F2F5"
-  control: "#DCDFE5"
-  ink: "#17191C"
-  muted: "#666C77"
-  faint: "#737985"
-  ledger-blue: "#365CF5"
-  ledger-blue-deep: "#2C4FE0"
-  ledger-blue-tint: "#EEF2FF"
-  ledger-blue-text: "#2B4BD6"
+  raised: "#FAFAFC"
+  hover: "#F3F3F8"
+  active: "#EEEDF6"
+  border: "#E6E7EE"
+  rule: "#EEEFF4"
+  neutral-tint: "#F1F2F6"
+  control: "#DCDDE6"
+  ink: "#17181C"
+  muted: "#5E6270"
+  faint: "#6B6F7C"
+  ledger-violet: "#5B47E8"
+  ledger-violet-deep: "#4B37D6"
+  ledger-violet-tint: "#EEEBFF"
+  ledger-violet-text: "#4B37D6"
   on-accent: "#FFFFFF"
-  positive: "#137A60"
-  positive-tint: "#E7F5F0"
-  warning: "#9A5F0E"
-  warning-tint: "#FDF3E3"
-  negative: "#C2353D"
+  positive: "#047857"
+  positive-tint: "#E3F7EE"
+  warning: "#8A5300"
+  warning-tint: "#FFF4DC"
+  negative: "#B42323"
   negative-tint: "#FDECEC"
-  dark-ground: "#0E0F11"
-  dark-surface: "#17181B"
-  dark-ink: "#F2F3F5"
-  dark-ledger-blue: "#5B7CFA"
+  info: "#2459C9"
+  info-tint: "#E6F0FF"
+  dark-ground: "#16171B"
+  dark-sidebar: "#121316"
+  dark-surface: "#1B1C21"
+  dark-surface-top: "#23242A"
+  dark-ink: "#F1F2F5"
+  dark-ledger-violet: "#6E5BF6"
 typography:
   display:
     fontFamily: "Inter Display, Inter, sans-serif"
@@ -81,7 +85,7 @@ rounded:
   chip: "6px"
   control: "8px"
   overlay: "10px"
-  card: "12px"
+  card: "14px"
 spacing:
   xs: "4px"
   s: "8px"
@@ -91,14 +95,14 @@ spacing:
   xxl: "32px"
 components:
   button-primary:
-    backgroundColor: "{colors.ledger-blue}"
+    backgroundColor: "{colors.ledger-violet}"
     textColor: "{colors.on-accent}"
     typography: "{typography.label}"
     rounded: "{rounded.control}"
     padding: "0 12px"
     height: "32px"
   button-primary-hover:
-    backgroundColor: "{colors.ledger-blue-deep}"
+    backgroundColor: "{colors.ledger-violet-deep}"
   button-secondary:
     backgroundColor: "{colors.surface}"
     textColor: "{colors.ink}"
@@ -151,8 +155,13 @@ and who owes me" before it offers anything to do, and every number on it can
 be traced back to a recorded transaction. The tone is calm, exact and
 discreet. Nothing shouts unless money is late.
 
+The look (redesigned 2026-10-30, the "Dashboard style") is a calm
+dashboard: a near-black ground in dark mode with the sign-in's night sky
+behind every screen, a soft grey-blue ground in light mode, cards that each
+hold one subject, and one violet accent.
+
 Density is that of a working tool: tables at 13.5px, rows at 60px, cards
-holding several facts each. Restraint carries the brand. One blue marks
+holding several facts each. Restraint carries the brand. One violet marks
 actions and selection, and reds, ambers and greens mark the state of money
 and nothing else. Depth is soft and real, so cards feel like sheets lying on a
 desk, not stickers. Motion is quick and physical: springs that settle in about
@@ -161,24 +170,25 @@ desk, not stickers. Motion is quick and physical: springs that settle in about
 **Key Characteristics:**
 - Numbers first: tabular figures everywhere, amounts right-aligned in any
   list or column, never truncated.
-- One accent (Ledger Blue) for action and selection only.
-- Raised white cards on a cool grey ground, with three-layer shadows.
+- One accent (Ledger Violet) for action and selection only.
+- Raised cards on a cool ground, with three-layer shadows; in dark mode a
+  card's face shades from a lighter top down to its surface color.
 - Spring motion on hover, press, selection and arrival; nothing loops.
 - The whole window is used. The layout reflows across four widths instead of
   centering a fixed column.
 
 ## Colors
 
-A cool, near-neutral ground with one confident blue and three status hues
+A cool, near-neutral ground with one confident violet and three status hues
 that only ever describe money.
 
 ### Primary
-- **Ledger Blue** (#365CF5): the primary button, the selected segment, links,
-  focus rings, the portfolio line in charts. At most one primary button per
-  view.
-- **Ledger Blue Deep** (#2C4FE0): the primary button under the pointer.
-- **Ledger Blue Tint** (#EEF2FF) and **Ledger Blue Text** (#2B4BD6): accent
-  pills and text links on white.
+- **Ledger Violet** (#5B47E8; #6E5BF6 in dark): the primary button, the
+  selected segment and sidebar item, links, focus rings, the portfolio line
+  in charts. At most one primary button per view.
+- **Ledger Violet Deep** (#4B37D6): the primary button under the pointer.
+- **Ledger Violet Tint** (#EEEBFF) and **Ledger Violet Text** (#4B37D6):
+  accent pills, icon chips and text links.
 
 ### Neutral
 - **Cool Ground** (#F7F8FA): the app background behind cards.
@@ -190,21 +200,34 @@ that only ever describe money.
   card edges, row dividers, the edge of framed buttons.
 - **Hover** (#F3F4F7) / **Active** (#EEF0F4): pointer and pressed fills.
 
+### Icon chips
+- **Info** (#2459C9 on #E6F0FF) joins the accent and the status tints to
+  tell stat cards apart by the icon's square: violet for value and capital,
+  blue for what is owed or expected, green for money earned, red only when
+  money is late. Info never describes a money state.
+
 ### Status
 - **Positive** (#137A60 on #E7F5F0): money received, gains, paid off.
 - **Warning** (#9A5F0E on #FDF3E3): due soon.
 - **Negative** (#C2353D on #FDECEC): overdue, defaulted, losses, destructive
   actions.
 
-Dark theme mirrors every role (ground #0E0F11, surface #17181B, ink #F2F3F5,
-blue #5B7CFA). The full set is in `src/ui/theme.rs`.
+Dark theme mirrors every role (ground #16171B, sidebar #121316, surface
+#1B1C21 shading up to #23242A, ink #F1F2F5, violet #6E5BF6). The full set
+is in `src/ui/theme.rs`. The chart's "capital invested" line is orange
+(`chart_reference`).
+
+### Sky
+In dark mode the sign-in screen's night sky (gradient, two faint arcs, soft
+clouds along the bottom) sits behind every screen's content. Light mode keeps
+its plain ground; the owner tried and declined the blue day sky there.
 
 ### Named Rules
 **The Money-Only Color Rule.** Green, amber and red describe the state of
 money. They are never decoration, category colors or brand accents.
 
-**The One Blue Rule.** Ledger Blue marks the thing you can act on or the
-thing that is selected. If two blue buttons compete on one screen, one of
+**The One Accent Rule.** Ledger Violet marks the thing you can act on or the
+thing that is selected. If two violet buttons compete on one screen, one of
 them is wrong.
 
 ## Typography
@@ -273,7 +296,7 @@ along the top edge, since dark grounds swallow shadows.
   an interactive surface under the pointer.
 - **Floating** (`0 1px 2px ink/8%, 0 8px 20px -4px ink/12%, 0 24px 56px -12px ink/20%`):
   menus, popovers, anything over content.
-- **Primary glow** (`0 6px 14px -6px blue/45%` plus a 1px inset highlight):
+- **Primary glow** (`0 6px 14px -6px violet/45%` plus a 1px inset highlight):
   only under the primary (and danger) button.
 
 ### Named Rules
@@ -283,7 +306,7 @@ nested. Floating is reserved for layers that cover content.
 ## Shapes
 
 Gently rounded and consistent: chips and pills 6px, controls 8px, floating
-layers 10px, cards 12px. One-pixel edges in Border; no colored side stripes.
+layers 10px, boxed rows 12px, cards 14px. One-pixel edges in Border; no colored side stripes.
 Avatars and progress bars are fully round.
 
 ## Components
@@ -293,7 +316,7 @@ on Overview first.
 
 ### Buttons
 - **Shape:** gently rounded (8px), 32px tall (28px small, 22px mini).
-- **Primary:** Ledger Blue fill, white label, a soft blue glow beneath and a
+- **Primary:** Ledger Violet fill, white label, a soft violet glow beneath and a
   light inset along the top edge.
 - **Secondary:** white, Control Edge border, a contact shadow.
 - **Ghost:** no frame until hovered; used inside rows and next to labels.
@@ -303,13 +326,13 @@ on Overview first.
   action that sits among others (Reset in Settings).
 - **States:** the hover fill springs in (`CONTROL` spring); pressing darkens
   the fill instantly and nudges the face down 1px; keyboard focus draws a
-  3px blue ring; Enter and Space activate; selected (a dropdown that is open)
+  3px violet ring; Enter and Space activate; selected (a dropdown that is open)
   holds the hover fill; loading swaps the icon for a spinner and keeps the
   width; disabled is 50% opacity, keeps its tooltip so it can say why.
 
 ### Cards / Containers
-- **Corner Style:** 12px.
-- **Background:** Sheet White with a Border edge.
+- **Corner Style:** 14px.
+- **Background:** Sheet White with a Border edge (dark: the shaded face).
 - **Shadow Strategy:** Raised (see Elevation).
 - **Header:** Heading title left, one element right (a link, a control, a
   count), inset 24px.
@@ -332,13 +355,18 @@ on Overview first.
 - Avatar, name over a caption line, right-aligned trailing figures and
   actions. The hover fill fades in. The row is 60px with a 24px inset. Rows
   that no longer count (a reversed payment) grey their title.
+- **Boxed** (`.boxed(true)`): each row is its own 12px-rounded raised card,
+  56px, for lists that stand on the page under a section heading (a heading,
+  an optional count pill, one action on the right) instead of inside a card:
+  Overview's Needs attention and Recent payments.
 
 ### Stats
-- An icon and caption label, then the figure (Display for the lead stat,
-  Figure for the rest), then a caption.
-- **Stat strip:** one card of stats, a set number to a row, divided by 1px
-  rules. The lead stat gets more room when everything fits on one row. Rows
-  are added before a figure is ever shrunk.
+- An icon and label, then the figure (Figure role), then a caption. With
+  `.chip(color, fill)` the icon sits in a 30px rounded square and the label
+  reads in ink.
+- **Stat cards:** each stat on its own card, a set number to a row, the last
+  row keeping the same cell width. Rows are added before a figure is ever
+  shrunk.
 
 ### Pills
 - 22px, 6px radius, Caption at 500, a status tint behind status text.

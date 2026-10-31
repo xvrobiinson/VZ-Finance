@@ -24,6 +24,39 @@ use crate::ui::kit::{Button, ButtonSize, Card, Dropdown, DropdownItem, ListRow, 
 use crate::ui::theme::{Palette, Typeset as _, Width, palette, space, tabular, text};
 use crate::utils::dates::short_month_year;
 
+/// A list that stands on the page: a heading (with an optional count pill
+/// and one action on the right) over its rows.
+fn section(p: &Palette, title: &str, pill: Option<String>, action: impl IntoElement, body: AnyElement) -> Div {
+    v_flex()
+        .flex_1()
+        .flex_basis(px(0.))
+        .min_w_0()
+        .gap(px(space::M))
+        .child(
+            h_flex()
+                .min_h(px(32.))
+                .gap(px(10.))
+                .child(div().typeset(text::HEADING).text_color(p.text).child(sel(title.to_string())))
+                .children(pill.map(|label| {
+                    div()
+                        .px(px(7.))
+                        .h(px(20.))
+                        .flex()
+                        .items_center()
+                        .rounded(px(5.))
+                        .bg(p.accent_tint)
+                        .typeset(text::CAPTION)
+                        .font_weight(FontWeight::MEDIUM)
+                        .font_features(tabular())
+                        .text_color(p.accent_text)
+                        .child(label)
+                }))
+                .child(div().flex_1())
+                .child(action),
+        )
+        .child(body)
+}
+
 /// "3 loans" for the count pill beside a section heading.
 fn count_label(n: usize) -> String {
     count(n, "loan", "loans", "préstamo", "préstamos")
@@ -76,10 +109,10 @@ impl VzApp {
                     .flex()
                     .gap(gap)
                     .when(side_by_side, |d| {
-                        d.flex_row().items_start().child(self.attention_list(&p, cx)).child(self.recent_payments_card(&p, cx))
+                        d.flex_row().items_start().child(self.attention_list(&p, cx)).child(self.recent_payments_list(&p, cx))
                     })
                     // Time-sensitive block first when stacked.
-                    .when(!side_by_side, |d| d.flex_col().child(self.attention_list(&p, cx)).child(self.recent_payments_card(&p, cx))),
+                    .when(!side_by_side, |d| d.flex_col().child(self.attention_list(&p, cx)).child(self.recent_payments_list(&p, cx))),
             )
             .into_any_element()
     }
@@ -696,7 +729,7 @@ impl VzApp {
             .into_any_element()
     }
 
-    fn recent_payments_card(&self, p: &Palette, cx: &mut Context<Self>) -> AnyElement {
+    fn recent_payments_list(&self, p: &Palette, cx: &mut Context<Self>) -> AnyElement {
         let money = self.settings().money();
         let ds = self.settings().date_style;
         let recent: Vec<_> = self.snap.payments.iter().rev().filter(|x| !x.is_reversed()).take(5).collect();
@@ -713,6 +746,7 @@ impl VzApp {
                 tr!("Interest {i} · Capital {c}", "Interés {i} · Capital {c}")
             };
             ListRow::new(("recent", pay.id as u64))
+                .boxed(true)
                 .leading(avatar(p, &name, client_id, 32.))
                 .title(name)
                 .subtitle({
@@ -735,28 +769,29 @@ impl VzApp {
                 .on_click(cx.listener(move |this, _, w, cx| this.open_row(Route::Loan(loan_id), w, cx)))
         });
         let body = if recent.is_empty() {
-            empty_state(
-                p,
-                IconName::Receipt,
-                t("No payments yet", "Aún no hay pagos"),
-                t(
-                    "Payments you record show here with their split between interest and capital.",
-                    "Los pagos que registres aparecen aquí con su división entre interés y capital.",
-                ),
-                None,
-            )
-            .into_any_element()
+            Card::new()
+                .child(empty_state(
+                    p,
+                    IconName::Receipt,
+                    t("No payments yet", "Aún no hay pagos"),
+                    t(
+                        "Payments you record show here with their split between interest and capital.",
+                        "Los pagos que registres aparecen aquí con su división entre interés y capital.",
+                    ),
+                    None,
+                ))
+                .into_any_element()
         } else {
-            v_flex().pb(px(space::S)).children(rows).into_any_element()
+            v_flex().gap(px(space::S)).children(rows).into_any_element()
         };
-        Card::new()
-            .flex_1()
-            .flex_basis(px(0.))
-            .min_w_0()
-            .title(t("Recent payments", "Pagos recientes"))
-            .action(header_link(p, "recent-all", t("View all", "Ver todos"), Route::Payments, cx))
-            .child(body)
-            .into_any_element()
+        section(
+            p,
+            t("Recent payments", "Pagos recientes"),
+            None,
+            header_link(p, "recent-all", t("View all", "Ver todos"), Route::Payments, cx),
+            body,
+        )
+        .into_any_element()
     }
 
     /// Loans that are late or due soon, each row its own small card under
@@ -843,44 +878,21 @@ impl VzApp {
         } else {
             v_flex().gap(px(space::S)).children(rows).into_any_element()
         };
-        v_flex()
-            .flex_1()
-            .flex_basis(px(0.))
-            .min_w_0()
-            .gap(px(space::M))
-            .child(
-                h_flex()
-                    .min_h(px(32.))
-                    .gap(px(10.))
-                    .child(div().typeset(text::HEADING).text_color(p.text).child(sel(t("Needs attention", "Requieren atención"))))
-                    .when(count > 0, |d| {
-                        d.child(
-                            div()
-                                .px(px(7.))
-                                .h(px(20.))
-                                .flex()
-                                .items_center()
-                                .rounded(px(5.))
-                                .bg(p.accent_tint)
-                                .typeset(text::CAPTION)
-                                .font_weight(FontWeight::MEDIUM)
-                                .font_features(tabular())
-                                .text_color(p.accent_text)
-                                .child(count_label(count)),
-                        )
-                    })
-                    .child(div().flex_1())
-                    .child(header_link(p, "attn-all", t("View loans", "Ver préstamos"), Route::Loans, cx)),
-            )
-            .child(body)
-            .child(
-                h_flex()
-                    .gap(px(6.))
-                    .typeset(text::CAPTION)
-                    .text_color(p.faint)
-                    .child(t("Record a payment from anywhere with", "Registra un pago desde cualquier lugar con"))
-                    .child(kbd(p, "Ctrl P")),
-            )
-            .into_any_element()
+        section(
+            p,
+            t("Needs attention", "Requieren atención"),
+            (count > 0).then(|| count_label(count)),
+            header_link(p, "attn-all", t("View loans", "Ver préstamos"), Route::Loans, cx),
+            body,
+        )
+        .child(
+            h_flex()
+                .gap(px(6.))
+                .typeset(text::CAPTION)
+                .text_color(p.faint)
+                .child(t("Record a payment from anywhere with", "Registra un pago desde cualquier lugar con"))
+                .child(kbd(p, "Ctrl P")),
+        )
+        .into_any_element()
     }
 }

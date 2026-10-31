@@ -868,9 +868,9 @@ impl Render for VzApp {
                 if self.sign_in.open {
                     return d.child(self.render_sign_in(window, cx));
                 }
-                // Trying the sign-in sky behind Overview first (kit-first rule).
-                // Dark mode only: the night sky. Light mode keeps its plain ground.
-                let has_sky = self.route == Route::Overview && p.dark;
+                // Dark mode puts the sign-in's night sky behind every screen;
+                // light mode keeps its plain ground.
+                let has_sky = p.dark;
                 let sky = has_sky.then(|| {
                     let side = if self.sidebar_collapsed(window) { theme::SIDEBAR_COLLAPSED } else { theme::SIDEBAR_WIDTH };
                     let size = window.viewport_size();

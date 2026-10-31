@@ -16,7 +16,7 @@ use crate::sync::wire::Need;
 use crate::tr;
 use crate::ui::components::{Tone, avatar, empty_state, icon, kv, page_header, pill, sel, table_header, table_row, th};
 use crate::ui::forms::reason::ReasonKind;
-use crate::ui::kit::{Button, Card, Dropdown, DropdownItem, ListRow, SortHeader, Stat, StatStrip};
+use crate::ui::kit::{Button, Card, Dropdown, DropdownItem, ListRow, SortHeader, Stat, StatCards};
 use crate::ui::lists::{self, Key};
 use crate::ui::theme::{Palette, RADIUS_CONTROL, Typeset as _, Width, palette, space, tabular, text};
 
@@ -346,23 +346,27 @@ impl VzApp {
         // Four figures: one row when wide, two by two below that.
         let per_row = if side_by_side { 4 } else { 2 };
         let cells = vec![
-            Stat::new(t("Owes", "Debe"), money.format(st.outstanding)).caption(sel(count(
-                st.active_loans,
-                "active loan",
-                "active loans",
-                "préstamo activo",
-                "préstamos activos",
-            ))),
+            Stat::new(t("Owes", "Debe"), money.format(st.outstanding))
+                .icon(IconName::HandCoins)
+                .chip(p.info, p.info_tint)
+                .caption(sel(count(st.active_loans, "active loan", "active loans", "préstamo activo", "préstamos activos"))),
             Stat::new(t("Total paid", "Total pagado"), money.format(st.paid))
+                .icon(IconName::Wallet)
+                .chip(p.accent_text, p.accent_tint)
                 .caption(sel(t("Capital, interest and fees", "Capital, interés y cargos"))),
             Stat::new(t("Interest paid", "Interés pagado"), money.format(st.interest_paid))
+                .icon(IconName::TrendingUp)
+                .chip(p.positive, p.positive_tint)
                 .caption(sel(t("Income from this client", "Ganancia con este cliente"))),
-            Stat::new(t("Total borrowed", "Total prestado"), money.format(st.borrowed)).caption(sel({
-                let n = count(st.total_loans, "loan", "loans", "préstamo", "préstamos");
-                tr!("{n} in total", "{n} en total")
-            })),
+            Stat::new(t("Total borrowed", "Total prestado"), money.format(st.borrowed))
+                .icon(IconName::Landmark)
+                .chip(p.accent_text, p.accent_tint)
+                .caption(sel({
+                    let n = count(st.total_loans, "loan", "loans", "préstamo", "préstamos");
+                    tr!("{n} in total", "{n} en total")
+                })),
         ];
-        let strip = StatStrip::new(per_row).dense(w == Width::Compact).stats(cells);
+        let strip = StatCards::new(per_row).spacing(w.gap()).stats(cells);
 
         // Loans, active first. Compact drops the amount lent and the next
         // due date; balance and status stay.

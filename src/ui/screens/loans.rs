@@ -15,7 +15,7 @@ use crate::sync::wire::Need;
 use crate::tr;
 use crate::ui::components::{Tone, avatar, empty_state, icon, kv, page_header, pill, progress_bar, sel, table_header, table_row, th};
 use crate::ui::forms::reason::ReasonKind;
-use crate::ui::kit::{Button, Card, Dropdown, DropdownItem, Segmented, SortHeader, Stat, StatStrip};
+use crate::ui::kit::{Button, Card, Dropdown, DropdownItem, Segmented, SortHeader, Stat, StatCards};
 use crate::ui::lists::{self, Key};
 use crate::ui::theme::{Palette, Typeset as _, Width, palette, space, tabular, text};
 
@@ -421,46 +421,58 @@ impl VzApp {
         let installment_loan = plan_state.is_some();
         let third = if installment_loan {
             let fees_due = owed_now.fees_outstanding;
-            Stat::new(t("Overdue now", "Atrasado ahora"), money.format(q.overdue_amount)).caption(sel(match (q.overdue_since, fees_due) {
-                (Some(_), f) if f > 0 => {
-                    let f = money.format(f);
-                    tr!("includes {f} late fees", "incluye {f} de mora")
-                }
-                (Some(d), _) => {
-                    let when = ds.format_short(d, today);
-                    tr!("since {when}", "desde el {when}")
-                }
-                _ => t("Up to date", "Al día").to_string(),
-            }))
+            Stat::new(t("Overdue now", "Atrasado ahora"), money.format(q.overdue_amount)).icon(IconName::CircleAlert).caption(sel(
+                match (q.overdue_since, fees_due) {
+                    (Some(_), f) if f > 0 => {
+                        let f = money.format(f);
+                        tr!("includes {f} late fees", "incluye {f} de mora")
+                    }
+                    (Some(d), _) => {
+                        let when = ds.format_short(d, today);
+                        tr!("since {when}", "desde el {when}")
+                    }
+                    _ => t("Up to date", "Al día").to_string(),
+                },
+            ))
         } else {
-            Stat::new(t("Interest due", "Interés por pagar"), money.format(owed_now.interest_outstanding)).caption(sel(
-                if q.overdue_amount > 0 {
+            Stat::new(t("Interest due", "Interés por pagar"), money.format(owed_now.interest_outstanding)).icon(IconName::Clock).caption(
+                sel(if q.overdue_amount > 0 {
                     let a = money.format(q.overdue_amount);
                     tr!("{a} overdue", "{a} atrasado")
                 } else {
                     t("Up to date", "Al día").to_string()
-                },
-            ))
+                }),
+            )
         }
-        .when(q.overdue_amount > 0, |st| st.tone(p.negative));
-        let strip = StatStrip::new(match w {
+        .map(|st| {
+            if q.overdue_amount > 0 { st.tone(p.negative).chip(p.negative, p.negative_tint) } else { st.chip(p.muted, p.neutral_tint) }
+        });
+        let strip = StatCards::new(match w {
             Width::Compact => 2,
             Width::Medium => 3,
             Width::Wide | Width::Ultra => 5,
         })
-        .dense(matches!(w, Width::Compact | Width::Wide))
+        .spacing(w.gap())
         .stats(vec![
-            Stat::new(owes_label, money.format(owed_now.payoff())).lead(true).caption(sel(if installment_loan {
-                t("Capital, interest and late fees due", "Capital, interés y mora por pagar")
-            } else {
-                t("Capital plus interest due", "Capital más interés por pagar")
-            })),
+            Stat::new(owes_label, money.format(owed_now.payoff())).icon(IconName::Wallet).chip(p.accent_text, p.accent_tint).caption(sel(
+                if installment_loan {
+                    t("Capital, interest and late fees due", "Capital, interés y mora por pagar")
+                } else {
+                    t("Capital plus interest due", "Capital más interés por pagar")
+                },
+            )),
             Stat::new(t("Capital owed", "Capital adeudado"), money.format(owed_now.principal_outstanding))
+                .icon(IconName::HandCoins)
+                .chip(p.info, p.info_tint)
                 .caption(sel(tr!("of {lent} lent", "de {lent} prestado"))),
             third,
             Stat::new(t("Interest paid", "Interés pagado"), money.format(pos.interest_paid))
+                .icon(IconName::TrendingUp)
+                .chip(p.positive, p.positive_tint)
                 .caption(sel(t("Income from this loan", "Ganancia de este préstamo"))),
             Stat::new(t("Capital repaid", "Capital pagado"), money.format(pos.principal_paid))
+                .icon(IconName::Landmark)
+                .chip(p.positive, p.positive_tint)
                 .caption(sel(t("Money returned to you", "Dinero que regresó"))),
         ]);
 

@@ -23,11 +23,16 @@ left. Still on gpui-component on purpose: the form dialogs' engine, `Input`,
 `Select`, `Switch`, `Checkbox` (the kit has no text field or switch), and the
 date picker's hand-built toggle.
 
+Redesign (2026-10-30, approved): violet "Dashboard style" palette, sidebar
+with a filled selected item, `StatCards` (replaced the old `StatStrip`),
+boxed `ListRow`s on Overview, and the sign-in night sky behind every screen
+in dark mode only.
+
 Kit contents: `Button` (Primary, Secondary, Ghost, Danger, DangerGhost;
 Mini/Small/Medium; `.loading`, `.selected`, `.suffix`, `.prefix` for a mark
 in its own colors, `.wide` for a full-width button; approved 2026-10-30),
-`Card`, `Stat`,
-`StatStrip`, `ListRow` (`.muted`), `Segmented` (`Segmented::pick`, cells
+`Card` (+ `face` for its shaded fill), `Stat` (`.chip`),
+`StatCards`, `ListRow` (`.muted`, `.boxed`), `Chip`, `Segmented` (`Segmented::pick`, cells
 fit their labels), `Dropdown` + `DropdownItem` (`.danger`, `.disabled`,
 `.hint`), `Overlay`, `SortHeader` + `Sort` (sortable column header, `.right`
 for number columns; used on Clients and Loans, approved 2026-10-27), and
