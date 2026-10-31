@@ -1,7 +1,7 @@
 # Authenticode-signs files with the certificate in WINDOWS_SIGNING_CERT
 # (base64 .pfx) and WINDOWS_SIGNING_PASSWORD, timestamped so signatures
 # outlive the certificate. CI calls it only when the certificate is set.
-# Usage: pwsh scripts/ci/sign.ps1 target\release\vz-finance.exe
+# Usage: pwsh scripts/ci/sign.ps1 target\release\acervus.exe
 param([Parameter(Mandatory, ValueFromRemainingArguments)][string[]]$Path)
 $ErrorActionPreference = "Stop"
 

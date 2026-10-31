@@ -7,10 +7,10 @@ use std::sync::Mutex;
 
 use gpui_kit::*;
 
-use vz_finance::app::{self, VzApp};
-use vz_finance::services::Store;
-use vz_finance::ui::theme::Typeset as _;
-use vz_finance::{database, ui};
+use acervus::app::{self, VzApp};
+use acervus::services::Store;
+use acervus::ui::theme::Typeset as _;
+use acervus::{database, ui};
 
 gpui_kit::assets::icon_assets!(
     AppIcons,
@@ -113,14 +113,14 @@ fn init_logging() {
         let _ = env_logger::try_init();
         return;
     }
-    let Some(dir) = dirs::data_local_dir().map(|d| d.join("VZFinance").join("logs")) else { return };
+    let Some(dir) = acervus::diagnostics::log_dir() else { return };
     if std::fs::create_dir_all(&dir).is_err() {
         return;
     }
-    let path = dir.join("vz-finance.log");
+    let path = dir.join("acervus.log");
     // Keep the log small: start fresh once it passes 1 MB.
     if std::fs::metadata(&path).map(|m| m.len() > 1_000_000).unwrap_or(false) {
-        let _ = std::fs::rename(&path, dir.join("vz-finance.old.log"));
+        let _ = std::fs::rename(&path, dir.join("acervus.old.log"));
     }
     if let Ok(file) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
         let logger: &'static FileLogger = Box::leak(Box::new(FileLogger(Mutex::new(file))));
@@ -146,10 +146,10 @@ fn log_panics() {
 /// Facts about this computer that explain most "works on mine, not on
 /// theirs" problems. No financial data.
 fn log_environment(db: &std::path::Path) {
-    log::info!("{}", vz_finance::diagnostics::windows_version().unwrap_or_else(|| "unknown Windows version".into()));
+    log::info!("{}", acervus::diagnostics::windows_version().unwrap_or_else(|| "unknown Windows version".into()));
     let data_dir = db.parent().map(|d| d.to_path_buf()).unwrap_or_default();
     let backups = data_dir.parent().map(|d| d.join("backups")).unwrap_or_default();
-    for check in vz_finance::diagnostics::check_folders(&[("data", data_dir), ("backups", backups)]) {
+    for check in acervus::diagnostics::check_folders(&[("data", data_dir), ("backups", backups)]) {
         match check.result {
             Ok(()) => log::info!("{} folder is writable", check.label),
             Err(e) => log::error!("{} folder can't be written: {e}", check.label),
@@ -198,17 +198,26 @@ fn window_options(cx: &mut App) -> WindowOptions {
     }
     WindowOptions {
         window_bounds: Some(WindowBounds::Windowed(Bounds::centered(None, size_wanted, cx))),
-        titlebar: Some(TitlebarOptions { title: Some(vz_finance::APP_NAME.into()), ..Default::default() }),
+        titlebar: Some(TitlebarOptions { title: Some(acervus::APP_NAME.into()), ..Default::default() }),
         window_min_size: Some(size(px(720.), px(560.))),
-        app_id: Some("VZFinance".into()),
+        app_id: Some("VZLabs.Acervus".into()),
         ..Default::default()
     }
 }
 
 fn main() {
+    // Before anything writes to it: bring the pre-0.9 folder to its new place.
+    // Never when pointed at another database (demos, tests): the person's
+    // real folder is not this run's business.
+    let moved = if database::uses_custom_db() { None } else { dirs::data_local_dir().map(|base| database::move_legacy_folder(&base)) };
     init_logging();
     log_panics();
-    log::info!("starting {} {}", vz_finance::APP_NAME, env!("CARGO_PKG_VERSION"));
+    log::info!("starting {} {}", acervus::APP_NAME, env!("CARGO_PKG_VERSION"));
+    match moved {
+        Some(Ok(true)) => log::info!("moved the data folder from VZFinance to VZ Labs\\Acervus"),
+        Some(Err(e)) => log::warn!("kept the old VZFinance folder for now: {e:#}"),
+        _ => {}
+    }
     let path = database::default_db_path();
     if let Ok(p) = &path {
         log_environment(p);

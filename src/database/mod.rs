@@ -24,7 +24,7 @@ const REBUILDS: &[i64] = &[2, 4, 6];
 
 pub const SCHEMA_VERSION: i64 = 7;
 
-/// The tables every VZ Finance database has had since version 1 (backups
+/// The tables every Acervus database has had since version 1 (backups
 /// from older versions are upgraded after they are restored).
 const REQUIRED_TABLES: &[&str] = &[
     "schema_migrations",
@@ -37,14 +37,61 @@ const REQUIRED_TABLES: &[&str] = &[
     "loan_status_events",
 ];
 
-/// `%LOCALAPPDATA%\VZFinance\data\portfolio.db`, or `VZ_FINANCE_DB` when set
-/// (used for development and demos so real data is never touched).
-pub fn default_db_path() -> Result<PathBuf> {
-    if let Some(p) = std::env::var_os("VZ_FINANCE_DB").filter(|p| !p.is_empty()) {
-        return Ok(PathBuf::from(p));
+/// The app's folder under `%LOCALAPPDATA%` (data, backups, receipts, cloud
+/// copies and logs).
+const APP_FOLDER: [&str; 2] = ["VZ Labs", "Acervus"];
+/// Where the folder was before 0.9.
+const LEGACY_FOLDER: &str = "VZFinance";
+
+/// The app's folder inside `base` (`%LOCALAPPDATA%`): `VZ Labs\Acervus`,
+/// or the old `VZFinance` while it could not be moved yet, so the data is
+/// always found.
+pub fn app_folder_in(base: &Path) -> PathBuf {
+    let new = APP_FOLDER.iter().fold(base.to_path_buf(), |p, part| p.join(part));
+    let old = base.join(LEGACY_FOLDER);
+    if !new.exists() && old.exists() { old } else { new }
+}
+
+/// `%LOCALAPPDATA%\VZ Labs\Acervus` (see [`app_folder_in`]).
+pub fn app_dir() -> Option<PathBuf> {
+    dirs::data_local_dir().map(|base| app_folder_in(&base))
+}
+
+/// Moves the pre-0.9 `VZFinance` folder to `VZ Labs\Acervus`, once. Returns
+/// whether it moved. When it can't (an older copy of the app still has the
+/// files open), the old folder stays in use and the move is tried again at
+/// the next start.
+pub fn move_legacy_folder(base: &Path) -> Result<bool> {
+    let new = APP_FOLDER.iter().fold(base.to_path_buf(), |p, part| p.join(part));
+    let old = base.join(LEGACY_FOLDER);
+    if new.exists() || !old.exists() {
+        return Ok(false);
     }
-    let base = dirs::data_local_dir().context("Could not locate the local application data folder")?;
-    Ok(base.join("VZFinance").join("data").join("portfolio.db"))
+    if let Some(parent) = new.parent() {
+        std::fs::create_dir_all(parent).with_context(|| format!("Could not create {}", parent.display()))?;
+    }
+    std::fs::rename(&old, &new).with_context(|| format!("Could not move {} to {}", old.display(), new.display()))?;
+    Ok(true)
+}
+
+/// Whether `ACERVUS_DB` points this run at another database (development,
+/// demos and tests), so the real app folder must not be touched.
+pub fn uses_custom_db() -> bool {
+    custom_db().is_some()
+}
+
+fn custom_db() -> Option<PathBuf> {
+    std::env::var_os("ACERVUS_DB").filter(|p| !p.is_empty()).map(PathBuf::from)
+}
+
+/// `%LOCALAPPDATA%\VZ Labs\Acervus\data\portfolio.db`, or `ACERVUS_DB` when
+/// set (used for development and demos so real data is never touched).
+pub fn default_db_path() -> Result<PathBuf> {
+    if let Some(p) = custom_db() {
+        return Ok(p);
+    }
+    let dir = app_dir().context("Could not locate the local application data folder")?;
+    Ok(dir.join("data").join("portfolio.db"))
 }
 
 pub fn open(path: &Path) -> Result<Connection> {
@@ -106,7 +153,7 @@ pub fn migrate(conn: &mut Connection) -> Result<()> {
     let current = schema_version(conn)?;
     if current > SCHEMA_VERSION {
         bail!(
-            "This database was created by a newer version of VZ Finance (schema {current}). \
+            "This database was created by a newer version of Acervus (schema {current}). \
              Update the app to open it; nothing was changed."
         );
     }
@@ -175,7 +222,7 @@ pub struct BackupInfo {
     pub payments: i64,
 }
 
-/// Opens `path` read-only and checks that it is an intact VZ Finance
+/// Opens `path` read-only and checks that it is an intact Acervus
 /// database this version can use.
 pub fn validate_backup(path: &Path) -> Result<BackupInfo> {
     let conn = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX)
@@ -188,12 +235,12 @@ pub fn validate_backup(path: &Path) -> Result<BackupInfo> {
         let exists: bool =
             conn.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1)", [table], |r| r.get(0))?;
         if !exists {
-            bail!("This is not a VZ Finance database (missing table {table})");
+            bail!("This is not an Acervus database (missing table {table})");
         }
     }
     let version = schema_version(&conn)?;
     if version > SCHEMA_VERSION {
-        bail!("This backup was made by a newer version of VZ Finance (schema {version})");
+        bail!("This backup was made by a newer version of Acervus (schema {version})");
     }
     let fk_problems: i64 = conn.query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |r| r.get(0))?;
     if fk_problems > 0 {
@@ -219,6 +266,44 @@ pub fn restore_from(conn: &mut Connection, source: &Path, safety_dir: &Path) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_old_folder_moves_once_with_everything_in_it() {
+        let base = tempfile::tempdir().unwrap();
+        let old = base.path().join("VZFinance");
+        std::fs::create_dir_all(old.join("data")).unwrap();
+        std::fs::write(old.join("data").join("portfolio.db"), b"book").unwrap();
+        // Before the move the old folder is the one in use.
+        assert_eq!(app_folder_in(base.path()), old);
+
+        assert!(move_legacy_folder(base.path()).unwrap());
+        let new = base.path().join("VZ Labs").join("Acervus");
+        assert_eq!(app_folder_in(base.path()), new);
+        assert_eq!(std::fs::read(new.join("data").join("portfolio.db")).unwrap(), b"book");
+        assert!(!old.exists());
+        // Nothing left to move.
+        assert!(!move_legacy_folder(base.path()).unwrap());
+    }
+
+    #[test]
+    fn an_existing_new_folder_is_never_overwritten() {
+        let base = tempfile::tempdir().unwrap();
+        let (old, new) = (base.path().join("VZFinance"), base.path().join("VZ Labs").join("Acervus"));
+        std::fs::create_dir_all(&old).unwrap();
+        std::fs::create_dir_all(&new).unwrap();
+        std::fs::write(new.join("keep"), b"new").unwrap();
+        assert!(!move_legacy_folder(base.path()).unwrap());
+        assert_eq!(std::fs::read(new.join("keep")).unwrap(), b"new");
+        assert!(old.exists());
+        assert_eq!(app_folder_in(base.path()), new);
+    }
+
+    #[test]
+    fn a_fresh_install_uses_the_new_folder() {
+        let base = tempfile::tempdir().unwrap();
+        assert!(!move_legacy_folder(base.path()).unwrap());
+        assert_eq!(app_folder_in(base.path()), base.path().join("VZ Labs").join("Acervus"));
+    }
 
     #[test]
     fn migrates_fresh_and_is_idempotent() {
@@ -431,6 +516,6 @@ mod tests {
         assert!(validate_backup(&junk).is_err());
         let other = dir.path().join("other.db");
         Connection::open(&other).unwrap().execute_batch("CREATE TABLE t (x)").unwrap();
-        assert!(validate_backup(&other).unwrap_err().to_string().contains("not a VZ Finance database"));
+        assert!(validate_backup(&other).unwrap_err().to_string().contains("not an Acervus database"));
     }
 }

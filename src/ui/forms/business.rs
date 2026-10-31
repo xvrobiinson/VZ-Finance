@@ -190,9 +190,9 @@ mod tests {
         let (app, cx) = test_app(cx, Store::in_memory());
         let form = cx.update(|window, cx| {
             let weak = app.downgrade();
-            cx.new(|cx| DeleteBusinessForm::new(weak, "b1".into(), "VZ Finance".into(), window, cx))
+            cx.new(|cx| DeleteBusinessForm::new(weak, "b1".into(), "VZ Capital".into(), window, cx))
         });
-        for (typed, ok) in [("", false), ("vz finance", false), ("VZ Financ", false), (" VZ Finance ", true)] {
+        for (typed, ok) in [("", false), ("vz capital", false), ("VZ Capita", false), (" VZ Capital ", true)] {
             cx.update(|window, cx| form.update(cx, |f, cx| f.confirm.update(cx, |s, cx| s.set_value(typed.to_string(), window, cx))));
             assert_eq!(cx.update(|_, cx| form.read(cx).confirmed(cx)), ok, "{typed:?}");
         }

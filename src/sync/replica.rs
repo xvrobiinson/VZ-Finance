@@ -61,7 +61,7 @@ pub struct Link {
     pub today: chrono::NaiveDate,
 }
 
-/// `%LOCALAPPDATA%\VZFinance\cloud\<business id>.db`, next to the local
+/// `%LOCALAPPDATA%\VZ Labs\Acervus\cloud\<business id>.db`, next to the local
 /// books' `data` folder.
 pub fn path_for(business_id: &str) -> Result<PathBuf> {
     if business_id.is_empty() || business_id.len() > 64 || !business_id.chars().all(|c| c.is_ascii_alphanumeric()) {

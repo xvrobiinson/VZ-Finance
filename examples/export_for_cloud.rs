@@ -13,11 +13,11 @@
 
 use std::path::PathBuf;
 
+use acervus::services::Store;
+use acervus::sync::figures::figures;
+use acervus::utils::dates::today;
 use anyhow::{Context, Result, bail};
 use rusqlite::{Connection, OpenFlags};
-use vz_finance::services::Store;
-use vz_finance::sync::figures::figures;
-use vz_finance::utils::dates::today;
 
 fn main() -> Result<()> {
     let mut args = std::env::args().skip(1);

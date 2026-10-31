@@ -2,7 +2,7 @@
 //! windows) and Windows version information. GPUI embeds the manifest.
 
 fn main() {
-    println!("cargo:rerun-if-changed=assets/icons/vz-finance.ico");
+    println!("cargo:rerun-if-changed=assets/icons/acervus.ico");
     println!("cargo:rerun-if-changed=build.rs");
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("windows") {
         return;
@@ -12,7 +12,7 @@ fn main() {
     parts.resize(3, "0");
     let commas = format!("{},{},{},0", parts[0], parts[1], parts[2]);
     let manifest_dir = std::path::PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
-    let icon = manifest_dir.join("assets").join("icons").join("vz-finance.ico");
+    let icon = manifest_dir.join("assets").join("icons").join("acervus.ico");
     let icon = icon.display().to_string().replace('\\', "\\\\");
     let rc = format!(
         r#"#include <winver.h>
@@ -30,11 +30,11 @@ BEGIN
   BEGIN
     BLOCK "040904B0"
     BEGIN
-      VALUE "CompanyName", "VZ Finance"
+      VALUE "CompanyName", "VZ Labs"
       VALUE "FileDescription", "Acervus Finance"
       VALUE "FileVersion", "{version}"
-      VALUE "InternalName", "vz-finance"
-      VALUE "OriginalFilename", "vz-finance.exe"
+      VALUE "InternalName", "acervus"
+      VALUE "OriginalFilename", "acervus.exe"
       VALUE "ProductName", "Acervus Finance"
       VALUE "ProductVersion", "{version}"
     END

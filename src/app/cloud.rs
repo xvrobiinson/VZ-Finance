@@ -32,10 +32,10 @@ use crate::tr;
 const LINKED: &str = "cloud_business";
 
 /// Where the cloud is. Debug builds can point at a local copy of the
-/// backend for testing (`VZ_SYNC_CLOUD`, `VZ_SYNC_ORIGIN`).
+/// backend for testing (`ACERVUS_SYNC_CLOUD`, `ACERVUS_SYNC_ORIGIN`).
 fn endpoints() -> Endpoints {
     if cfg!(debug_assertions)
-        && let (Ok(cloud), Ok(origin)) = (std::env::var("VZ_SYNC_CLOUD"), std::env::var("VZ_SYNC_ORIGIN"))
+        && let (Ok(cloud), Ok(origin)) = (std::env::var("ACERVUS_SYNC_CLOUD"), std::env::var("ACERVUS_SYNC_ORIGIN"))
     {
         return Endpoints::new(&cloud, &origin);
     }

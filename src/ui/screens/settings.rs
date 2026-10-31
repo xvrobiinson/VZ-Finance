@@ -13,6 +13,7 @@ use crate::domain::money::{NumberStyle, Rate};
 use crate::i18n::{Lang, t};
 use crate::services::settings::{ChartRange, ThemePref};
 use crate::sync::wire::Need;
+use crate::tr;
 use crate::ui::components::{icon, kbd, page_header, sel};
 use crate::ui::kit::{Button, Card, Dropdown, DropdownItem, Segmented};
 use crate::ui::theme::{Palette, RADIUS_CONTROL, Typeset as _, Width, palette, space, tabular, text};
@@ -660,16 +661,41 @@ impl VzApp {
                 )),
             ));
 
+        let link = |id: &'static str, label: &'static str, url: &'static str| {
+            Button::new(id).small().label(label).on_click(cx.listener(move |this, _, w, cx| this.browse(url, w, cx)))
+        };
         let about = v_flex()
             .gap(px(space::S))
-            .child(h_flex().flex_wrap().gap(px(space::M)).child(div().typeset(text::HEADING).child(crate::APP_NAME)).child(
-                div().text_color(p.muted).font_features(tabular()).child(format!(
-                    "{} {}",
-                    t("Version", "Versión"),
-                    env!("CARGO_PKG_VERSION")
-                )),
-            ))
-            .child(div().text_color(p.muted).child(format!("Developed by {}", crate::DEVELOPER)))
+            .child(
+                h_flex()
+                    .flex_wrap()
+                    .gap(px(space::M))
+                    .child(div().typeset(text::HEADING).child(sel({
+                        let (app, by) = (crate::APP_NAME, crate::DEVELOPER);
+                        tr!("{app}, by {by}", "{app}, por {by}")
+                    })))
+                    .child(div().text_color(p.muted).font_features(tabular()).child(format!(
+                        "{} {}",
+                        t("Version", "Versión"),
+                        env!("CARGO_PKG_VERSION")
+                    ))),
+            )
+            .child(
+                h_flex()
+                    .gap(px(6.))
+                    .text_color(p.muted)
+                    .child(t("Questions or help:", "Preguntas o ayuda:"))
+                    .child(div().text_color(p.text).child(sel(crate::SUPPORT_EMAIL))),
+            )
+            .child(
+                h_flex()
+                    .flex_wrap()
+                    .gap(px(space::S))
+                    .pt(px(space::XS))
+                    .child(link("about-mail", t("Write to us", "Escríbenos"), crate::SUPPORT_MAILTO))
+                    .child(link("about-terms", t("Terms of Service", "Términos de servicio"), crate::TERMS_URL))
+                    .child(link("about-privacy", t("Privacy Policy", "Política de privacidad"), crate::PRIVACY_URL)),
+            )
             .child(div().typeset(text::CAPTION).text_color(p.faint).child(t(
                 "Supported on Windows 10 (version 1809 or later) and Windows 11, 64-bit.",
                 "Compatible con Windows 10 (versión 1809 o posterior) y Windows 11, de 64 bits.",

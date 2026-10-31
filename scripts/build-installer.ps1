@@ -19,6 +19,6 @@ $iscc = @(
 ) | Where-Object { Test-Path $_ } | Select-Object -First 1
 if (-not $iscc) { throw "Inno Setup 6 not found. Install it with: winget install JRSoftware.InnoSetup" }
 
-& $iscc "/DAppVersion=$version" installer\vz-finance.iss
+& $iscc "/DAppVersion=$version" installer\acervus.iss
 if ($LASTEXITCODE -ne 0) { throw "installer build failed" }
 Get-Item "dist\AcervusFinance-Setup-$version.exe" | Select-Object FullName, Length

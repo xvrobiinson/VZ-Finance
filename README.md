@@ -1,8 +1,8 @@
 # Acervus Finance
 
-Developed by VZ Finance. (Called "VZ Finance" before version 0.4; the program
-file, data folder and installer ID kept their old names so upgrades keep your
-data.)
+Made by VZ Labs (officialvzlabs@gmail.com). Called "VZ Finance" before version
+0.4; from 0.9 the program is `acervus.exe` and the app moves its data folder to
+its new place by itself on first start, so upgrades keep your data.
 
 A private, offline Windows desktop app for running a personal lending
 portfolio: clients, loans, interest, repayments and the growth of your capital.
@@ -110,7 +110,7 @@ file over, and use Settings → Restore from a file… on the new one.
 
 If a button seems to do nothing, open Settings → Diagnostics. It shows whether
 the folders can be written and links to the log
-(`%LOCALAPPDATA%\VZFinance\logs\vz-finance.log`), which records errors such as
+(`%LOCALAPPDATA%\VZ Labs\Acervus\logs\acervus.log`), which records errors such as
 a file window that couldn't open, never names or amounts. Backups also work
 without the file window (Save in backups folder), and a logo can be dragged
 onto the logo box.
@@ -130,7 +130,7 @@ available from Windows 10 1803).
 ## Privacy
 
 No account, no network requests, no telemetry. Data lives in
-`%LOCALAPPDATA%\VZFinance\data\portfolio.db`. Installing, upgrading or
+`%LOCALAPPDATA%\VZ Labs\Acervus\data\portfolio.db`. Installing, upgrading or
 uninstalling never touches that folder. The database is not encrypted by the
 app; use BitLocker or device encryption for encryption at rest.
 
@@ -196,10 +196,10 @@ app and the installer are signed and timestamped.
 
 ```powershell
 cargo run --example seed_demo -- C:\temp\demo.db
-$env:VZ_FINANCE_DB = "C:\temp\demo.db"; cargo run
+$env:ACERVUS_DB = "C:\temp\demo.db"; cargo run
 ```
 
-`VZ_FINANCE_DB` points the app at another database file, so your real data is
+`ACERVUS_DB` points the app at another database file, so your real data is
 never touched while testing. The seeder refuses to overwrite an existing file.
 
 ## Project layout

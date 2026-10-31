@@ -283,10 +283,10 @@ impl VzApp {
         if !cfg!(test) {
             app.resume_cloud(window, cx);
         }
-        // Debug builds only: VZ_FINANCE_START opens a screen or dialog at
+        // Debug builds only: ACERVUS_START opens a screen or dialog at
         // launch, so screenshots can be taken without clicking anything.
         if cfg!(debug_assertions)
-            && let Ok(start) = std::env::var("VZ_FINANCE_START")
+            && let Ok(start) = std::env::var("ACERVUS_START")
         {
             cx.defer_in(window, move |app, window, cx| match start.as_str() {
                 "clients" => app.navigate(Route::Clients, window, cx),
@@ -602,6 +602,19 @@ impl VzApp {
                         window,
                         cx,
                     )
+                });
+            }
+        })
+        .detach();
+    }
+
+    /// Opens a web page (or a new email) in the person's browser or mail app.
+    pub(crate) fn browse(&mut self, url: &'static str, window: &mut Window, cx: &mut Context<Self>) {
+        let rx = crate::shell::browse(url);
+        cx.spawn_in(window, async move |this, cx| {
+            if let Err(why) = crate::shell::wait(rx, cx.background_executor().clone()).await {
+                let _ = this.update_in(cx, |app, window, cx| {
+                    app.notify_error(tr!("Windows couldn't open {url} ({why}).", "Windows no pudo abrir {url} ({why})."), window, cx)
                 });
             }
         })

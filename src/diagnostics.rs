@@ -39,7 +39,7 @@ pub fn windows_version() -> Option<String> {
 
 /// The folder holding the log file.
 pub fn log_dir() -> Option<PathBuf> {
-    dirs::data_local_dir().map(|d| d.join("VZFinance").join("logs"))
+    crate::database::app_dir().map(|d| d.join("logs"))
 }
 
 /// Creates `dir` if needed and checks a file can be written and removed in

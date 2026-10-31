@@ -5,17 +5,17 @@
 //! Refuses to touch an existing file. Every record goes through the same
 //! validated services the app uses, with dates relative to today.
 
+use acervus::database::repositories::clients::ClientInput;
+use acervus::domain::installments::Instruction;
+use acervus::domain::ledger::owed_at_payment;
+use acervus::domain::loans::{Frequency, LoanTerms, Method};
+use acervus::domain::money::{Cents, Rate};
+use acervus::domain::portfolio::{Account, CapitalKind};
+use acervus::i18n::Lang;
+use acervus::services::Store;
+use acervus::utils::dates::today;
 use anyhow::{Result, bail};
 use chrono::{Duration, NaiveDate};
-use vz_finance::database::repositories::clients::ClientInput;
-use vz_finance::domain::installments::Instruction;
-use vz_finance::domain::ledger::owed_at_payment;
-use vz_finance::domain::loans::{Frequency, LoanTerms, Method};
-use vz_finance::domain::money::{Cents, Rate};
-use vz_finance::domain::portfolio::{Account, CapitalKind};
-use vz_finance::i18n::Lang;
-use vz_finance::services::Store;
-use vz_finance::utils::dates::today;
 
 fn client(s: &mut Store, name: &str, phone: &str, notes: &str) -> Result<i64> {
     s.create_client(&ClientInput { full_name: name.into(), phone: phone.into(), notes: notes.into(), ..Default::default() })
@@ -33,7 +33,7 @@ fn pay_periods(s: &mut Store, loan_id: i64, extra: impl Fn(u32) -> Option<Cents>
         let snap = s.snapshot()?;
         let book = snap.book_loan(loan_id).unwrap();
         let due = book.facts.frequency.due_date(book.facts.start_date, k);
-        if due > today() || snap.loan(loan_id).unwrap().status != vz_finance::domain::ledger::ContractStatus::Active {
+        if due > today() || snap.loan(loan_id).unwrap().status != acervus::domain::ledger::ContractStatus::Active {
             break;
         }
         let Some(capital) = extra(k) else { continue };

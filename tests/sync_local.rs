@@ -4,30 +4,30 @@
 //! to http://localhost:5173 and no email provider (codes go to the log),
 //! then here:
 //!
-//!   VZ_SYNC_LOCAL_LOG=<log> cargo test --test sync_local -- --ignored
+//!   ACERVUS_SYNC_LOCAL_LOG=<log> cargo test --test sync_local -- --ignored
 
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
+use acervus::database::repositories::clients::ClientInput;
+use acervus::domain::installments::Instruction;
+use acervus::domain::loans::{Frequency, LoanTerms, Method};
+use acervus::domain::money::Rate;
+use acervus::domain::portfolio::{Account, CapitalKind, EntryKind};
+use acervus::services::Store;
+use acervus::services::picture::{Photo, PhotoChange};
+use acervus::sync::auth::{self, AuthError, Endpoints, Session};
+use acervus::sync::change::Change;
+use acervus::sync::figures::figures;
+use acervus::sync::outbox::Outcome;
+use acervus::sync::vault::{self, Stored};
+use acervus::sync::wire::Role;
+use acervus::sync::wire::Snapshot;
+use acervus::sync::worker::{Config, Event, Worker};
 use chrono::NaiveDate;
 use convex::{ConvexClient, FunctionResult, Value};
 use futures::StreamExt;
 use futures::channel::mpsc::UnboundedReceiver;
-use vz_finance::database::repositories::clients::ClientInput;
-use vz_finance::domain::installments::Instruction;
-use vz_finance::domain::loans::{Frequency, LoanTerms, Method};
-use vz_finance::domain::money::Rate;
-use vz_finance::domain::portfolio::{Account, CapitalKind, EntryKind};
-use vz_finance::services::Store;
-use vz_finance::services::picture::{Photo, PhotoChange};
-use vz_finance::sync::auth::{self, AuthError, Endpoints, Session};
-use vz_finance::sync::change::Change;
-use vz_finance::sync::figures::figures;
-use vz_finance::sync::outbox::Outcome;
-use vz_finance::sync::vault::{self, Stored};
-use vz_finance::sync::wire::Role;
-use vz_finance::sync::wire::Snapshot;
-use vz_finance::sync::worker::{Config, Event, Worker};
 
 const CLOUD: &str = "http://127.0.0.1:3210";
 
@@ -37,7 +37,7 @@ fn endpoints() -> Endpoints {
 
 /// Signs `email` in with the code the local backend wrote to its log.
 fn sign_in(email: &str) -> Session {
-    let log = std::env::var("VZ_SYNC_LOCAL_LOG").expect("set VZ_SYNC_LOCAL_LOG to the `convex dev` log");
+    let log = std::env::var("ACERVUS_SYNC_LOCAL_LOG").expect("set ACERVUS_SYNC_LOCAL_LOG to the `convex dev` log");
     auth::send_code(&endpoints(), email).unwrap();
     let deadline = Instant::now() + Duration::from_secs(10);
     let code = loop {
@@ -158,12 +158,12 @@ fn signs_in_follows_the_books_and_signs_out() {
 ///   node scripts/import-desktop.mjs <export-dir> --url http://127.0.0.1:3210
 ///       --origin http://localhost:5173 --email <email> --code-from-log <log>
 ///
-/// then run this with VZ_SYNC_EXPORT=<export-dir> and VZ_SYNC_EMAIL=<email>.
+/// then run this with ACERVUS_SYNC_EXPORT=<export-dir> and ACERVUS_SYNC_EMAIL=<email>.
 #[test]
 #[ignore = "needs a local PWA backend with an imported book; see above"]
 fn an_imported_book_arrives_with_the_same_figures() {
-    let dir = std::path::PathBuf::from(std::env::var("VZ_SYNC_EXPORT").expect("set VZ_SYNC_EXPORT"));
-    let email = std::env::var("VZ_SYNC_EMAIL").expect("set VZ_SYNC_EMAIL");
+    let dir = std::path::PathBuf::from(std::env::var("ACERVUS_SYNC_EXPORT").expect("set ACERVUS_SYNC_EXPORT"));
+    let email = std::env::var("ACERVUS_SYNC_EMAIL").expect("set ACERVUS_SYNC_EMAIL");
     let expected: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(dir.join("figures.json")).unwrap()).unwrap();
 
     let stored = Stored { email: email.clone(), session: sign_in(&email) };
@@ -382,7 +382,7 @@ fn changes_made_here_reach_the_cloud() {
 
 /// The figures without record numbers: a record made here gets its number
 /// from the cloud when the cloud accepts it.
-fn numbers(book: &vz_finance::domain::portfolio::Book, today: NaiveDate) -> serde_json::Value {
+fn numbers(book: &acervus::domain::portfolio::Book, today: NaiveDate) -> serde_json::Value {
     let mut f = figures(book, today);
     for loan in f["loans"].as_array_mut().unwrap() {
         loan.as_object_mut().unwrap().remove("no");
@@ -506,14 +506,14 @@ fn a_late_fee_is_waived_from_the_desktop() {
     worker.stop();
 }
 
-/// Not a check: signs `VZ_SYNC_EMAIL` in to the local backend and leaves the
+/// Not a check: signs `ACERVUS_SYNC_EMAIL` in to the local backend and leaves the
 /// session in Credential Manager, so a debug build started with
-/// VZ_SYNC_CLOUD=http://127.0.0.1:3210 VZ_SYNC_ORIGIN=http://localhost:5173
+/// ACERVUS_SYNC_CLOUD=http://127.0.0.1:3210 ACERVUS_SYNC_ORIGIN=http://localhost:5173
 /// opens signed in (for screenshots). `vault::forget` removes it again.
 #[test]
 #[ignore = "prepares a local session for screenshots; see above"]
 fn remember_a_local_session_for_the_app() {
-    let email = std::env::var("VZ_SYNC_EMAIL").expect("set VZ_SYNC_EMAIL");
+    let email = std::env::var("ACERVUS_SYNC_EMAIL").expect("set ACERVUS_SYNC_EMAIL");
     let session = sign_in(&email);
     vault::save(CLOUD, &Stored { email, session }).unwrap();
 }

@@ -1,17 +1,17 @@
 [package]
-name = "vz-finance"
-version = "0.8.0"
+name = "acervus"
+version = "0.9.0"
 edition = "2024"
-description = "VZ Finance: a private, offline lending portfolio manager for Windows"
+description = "Acervus Finance by VZ Labs: a private lending portfolio manager for Windows"
 license = "Proprietary"
 publish = false
 
 [lib]
-name = "vz_finance"
+name = "acervus"
 path = "src/lib.rs"
 
 [[bin]]
-name = "vz-finance"
+name = "acervus"
 path = "src/main.rs"
 
 [dependencies]

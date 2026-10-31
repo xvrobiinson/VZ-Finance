@@ -226,7 +226,7 @@ reprint of an old receipt shows the same figures.
   the next page and says so (measured in Edge for 10–20 lines of 130–500
   characters).
 - Both carry the logo. They are saved as HTML files in
-  `%LOCALAPPDATA%\VZFinance\receipts` and open in the default browser, which
+  `%LOCALAPPDATA%\VZ Labs\Acervus\receipts` and open in the default browser, which
   shows the print dialog.
 
 ## Overdue and due soon
@@ -317,13 +317,13 @@ beyond), drawn as straight segments between real values.
 
 ## Storage
 
-- SQLite at `%LOCALAPPDATA%\VZFinance\data\portfolio.db`, WAL mode, foreign
+- SQLite at `%LOCALAPPDATA%\VZ Labs\Acervus\data\portfolio.db`, WAL mode, foreign
   keys enforced, CHECK constraints on every amount, rate, date and enum.
 - Triggers reject any payment split, new or updated, that does not add up to
   the payment.
 - Every write runs inside a single transaction.
 - Migrations are versioned. Before an existing database is upgraded, a copy is
-  saved in `%LOCALAPPDATA%\VZFinance\backups`. A database from a newer app
+  saved in `%LOCALAPPDATA%\VZ Labs\Acervus\backups`. A database from a newer app
   version is refused without being changed.
 - Schema v2 replaced annual rates, methods, terms and stored schedules with the
   per-period model; an existing loan's annual rate became the equivalent

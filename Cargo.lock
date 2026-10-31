@@ -83,6 +83,34 @@ dependencies = [
 ]
 
 [[package]]
+name = "acervus"
+version = "0.9.0"
+dependencies = [
+ "anyhow",
+ "base64 0.22.1",
+ "chrono",
+ "convex",
+ "csv",
+ "dirs 7.0.0",
+ "embed-resource",
+ "env_logger",
+ "futures",
+ "gpui-kit",
+ "gpui-pre",
+ "image",
+ "log",
+ "raw-window-handle",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+ "ureq",
+ "windows 0.62.2",
+]
+
+[[package]]
 name = "addr2line"
 version = "0.25.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7634,34 +7662,6 @@ checksum = "fb067e4cbd1ff067d1df46c9194b5de0e98efd2810bbc95c5d5e5f25a3231150"
 dependencies = [
  "cc",
  "libc",
-]
-
-[[package]]
-name = "vz-finance"
-version = "0.8.0"
-dependencies = [
- "anyhow",
- "base64 0.22.1",
- "chrono",
- "convex",
- "csv",
- "dirs 7.0.0",
- "embed-resource",
- "env_logger",
- "futures",
- "gpui-kit",
- "gpui-pre",
- "image",
- "log",
- "raw-window-handle",
- "rusqlite",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror 2.0.21",
- "tokio",
- "ureq",
- "windows 0.62.2",
 ]
 
 [[package]]

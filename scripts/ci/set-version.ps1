@@ -18,6 +18,6 @@ function Set-First([string]$Path, [string]$Pattern, [string]$Replacement) {
 # The first `version =` line in Cargo.toml is the [package] one.
 Set-First (Join-Path $root "Cargo.toml") '^version = "[^"]*"' "version = `"$Version`""
 # Keep the lock file in step so `cargo build --locked` still passes.
-Set-First (Join-Path $root "Cargo.lock") '(?<=^name = "vz-finance"\r?\nversion = ")[^"]*(?=")' $Version
+Set-First (Join-Path $root "Cargo.lock") '(?<=^name = "acervus"\r?\nversion = ")[^"]*(?=")' $Version
 
 Write-Host "Version set to $Version"
