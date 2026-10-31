@@ -165,7 +165,12 @@ jobs:
         working-directory: dist
         run: |
           $name = "AcervusFinance-Setup-$env:VERSION.exe"
-          "$((Get-FileHash $name -Algorithm SHA256).Hash.ToLower())  $name" | Set-Content SHA256SUMS.txt -Encoding utf8NoBOM
+          # The same installer under a name that never changes, so the website's
+          # "Download for Windows" can link to releases/latest/download/... and
+          # start the download directly.
+          Copy-Item $name "AcervusFinance-Setup.exe"
+          $lines = foreach ($n in $name, "AcervusFinance-Setup.exe") { "$((Get-FileHash $n -Algorithm SHA256).Hash.ToLower())  $n" }
+          $lines | Set-Content SHA256SUMS.txt -Encoding utf8NoBOM
           Get-Content SHA256SUMS.txt
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -173,6 +178,7 @@ jobs:
           name: acervus-finance-${{ env.VERSION }}-windows-x64
           path: |
             dist/AcervusFinance-Setup-${{ env.VERSION }}.exe
+            dist/AcervusFinance-Setup.exe
             dist/SHA256SUMS.txt
           if-no-files-found: error
           retention-days: 30
