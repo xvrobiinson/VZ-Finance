@@ -17,7 +17,7 @@ use chrono::NaiveDate;
 
 use super::Snapshot;
 use super::receipt_text::{self, RuleSet, Tags};
-use super::settings::{CompanyLines, ReceiptClientFields};
+use super::settings::{CompanyLines, ReceiptClientFields, ReceiptShow};
 use crate::database::repositories::clients::Client;
 use crate::database::repositories::payments::Payment;
 use crate::domain::installments::{self, Applied, Installment, InstallmentStatus, Instruction, PlanPayment, PlanState};
@@ -569,15 +569,19 @@ fn client_block(c: &ClientLines) -> String {
     format!("<div class=\"block\"><p class=\"label\">{}</p><table class=\"kv left\">{rows}</table></div>", esc(t("Client", "Cliente")))
 }
 
-fn loan_block(loan_id: i64, method: Method, rate_line: &str, principal: String, start: String) -> String {
+/// The loan's details; `show` leaves out the parts switched off in
+/// Settings (the loan date is always printed).
+fn loan_block(loan_id: i64, method: Method, rate_line: &str, principal: String, start: String, show: ReceiptShow) -> String {
     let rows = [
-        row(t("Loan", "Préstamo"), format!("#{loan_id}"), ""),
-        row(t("Type", "Tipo"), esc(method.short_label()), ""),
-        row(t("Interest rate", "Tasa de interés"), esc(rate_line), ""),
-        row(t("Amount lent", "Monto prestado"), principal, ""),
-        row(t("Loan date", "Fecha del préstamo"), start, ""),
+        show.loan_number.then(|| row(t("Loan", "Préstamo"), format!("#{loan_id}"), "")),
+        show.cycle.then(|| row(t("Type", "Tipo"), esc(method.short_label()), "")),
+        show.rate.then(|| row(t("Interest rate", "Tasa de interés"), esc(rate_line), "")),
+        show.amount_lent.then(|| row(t("Amount lent", "Monto prestado"), principal, "")),
+        Some(row(t("Loan date", "Fecha del préstamo"), start, "")),
     ]
-    .join("");
+    .into_iter()
+    .flatten()
+    .collect::<String>();
     format!("<div class=\"block\"><p class=\"label\">{}</p><table class=\"kv\">{rows}</table></div>", esc(t("Loan", "Préstamo")))
 }
 
@@ -711,13 +715,17 @@ pub fn render(d: &ReceiptData, snap: &Snapshot) -> String {
     let m = |c: Cents| esc(&money.format(c));
     let number = format!("{:06}", d.payment_id);
     let installment_loan = d.method.has_installments();
+    // The optional parts the business chose to print (Settings › Receipts).
+    let show = snap.settings.receipt_show;
 
     let mut paid = vec![row(t("Amount paid", "Monto pagado"), m(d.amount), "total")];
-    if d.fee > 0 {
+    if d.fee > 0 && show.late_fees {
         paid.push(row(if installment_loan { t("Late fees", "Cargos por mora") } else { t("Fee", "Cargo") }, m(d.fee), "sub"));
     }
-    paid.push(row(t("Interest", "Interés"), m(d.interest), "sub"));
-    paid.push(row(t("Capital", "Abono a capital"), m(d.principal), "sub"));
+    if show.split {
+        paid.push(row(t("Interest", "Interés"), m(d.interest), "sub"));
+        paid.push(row(t("Capital", "Abono a capital"), m(d.principal), "sub"));
+    }
 
     let mut bal = vec![
         row(t("Capital before this payment", "Capital antes de este pago"), m(d.principal_before), ""),
@@ -726,7 +734,7 @@ pub fn render(d: &ReceiptData, snap: &Snapshot) -> String {
     if d.interest_after > 0 {
         bal.push(row(t("Interest pending", "Interés pendiente"), m(d.interest_after), ""));
     }
-    if d.fees_after > 0 {
+    if d.fees_after > 0 && show.late_fees {
         bal.push(row(t("Late fees pending", "Cargos por mora pendientes"), format!("<span class=\"neg\">{}</span>", m(d.fees_after)), ""));
     }
     if d.overdue_after > 0 && installment_loan {
@@ -745,12 +753,18 @@ pub fn render(d: &ReceiptData, snap: &Snapshot) -> String {
     } else {
         let next = d
             .next_due
+            .filter(|_| show.installments)
             .map(|(date, amount)| {
                 let (date, amount) = (ds.format(date), money.format(amount));
                 tr!(" Next installment: {date} · {amount}.", " Próxima cuota: {date} · {amount}.")
             })
             .unwrap_or_default();
-        format!("<p class=\"note\">{}</p>", esc(&tr!("{repaid} of the capital repaid.{next}", "{repaid} del capital pagado.{next}")))
+        let line = if show.balance {
+            tr!("{repaid} of the capital repaid.{next}", "{repaid} del capital pagado.{next}")
+        } else {
+            next.trim().to_string()
+        };
+        if line.is_empty() { String::new() } else { format!("<p class=\"note\">{}</p>", esc(&line)) }
     };
 
     let void = d
@@ -763,13 +777,14 @@ pub fn render(d: &ReceiptData, snap: &Snapshot) -> String {
     } else {
         format!("<p class=\"muted\">{} {}</p>", esc(t("Note:", "Nota:")), esc(&d.notes))
     };
-    let schedule = if installment_loan { schedule_table(d, &m, ds) } else { String::new() };
-    let schedule_rows = if d.schedule.is_empty() { 0 } else { d.schedule.len() + 2 };
+    let schedule = if installment_loan && show.installments { schedule_table(d, &m, ds) } else { String::new() };
+    let schedule_rows = if d.schedule.is_empty() || schedule.is_empty() { 0 } else { d.schedule.len() + 2 };
+    let history_rows = if show.history { d.history.iter().map(|h| h.installments.len().max(1)).sum::<usize>() } else { 0 };
     // A contact line and a closing line longer than the built-in one take
     // room on the page too.
     let footer = snap.settings.receipt_text.payment_footer();
     let extra = contact_rows(&d.company) + text_rows(&footer).saturating_sub(1);
-    let rows = schedule_rows + d.history.iter().map(|h| h.installments.len().max(1)).sum::<usize>() + extra;
+    let rows = schedule_rows + history_rows + extra;
     let title = tr!("Receipt {number}", "Recibo {number}");
     let css = r#"
   .void { border:2pt solid var(--neg); color:var(--neg); border-radius:6pt; text-align:center; font-weight:700; font-size:14pt; padding:4pt; margin-bottom:8pt; }
@@ -781,14 +796,14 @@ pub fn render(d: &ReceiptData, snap: &Snapshot) -> String {
 <div class="cols">{client}{loan}</div>
 <div class="cols">
   <div class="block"><p class="label">{paid_l}</p><table class="kv">{paid}</table></div>
-  <div class="block"><p class="label">{bal_l}</p><table class="kv">{bal}</table></div>
+  {balance}
 </div>
 {status_line}
 {overflow}
 {schedule}
 {history}
 {notes}
-<div class="end"><span>{thanks}</span><span>{loan_l} #{loan_id} · {receipt_l} {number}</span></div>"#,
+<div class="end"><span>{thanks}</span><span>{reference}</span></div>"#,
         header = header(
             snap,
             &d.company,
@@ -798,11 +813,18 @@ pub fn render(d: &ReceiptData, snap: &Snapshot) -> String {
             &ds.format(d.paid_on)
         ),
         client = client_block(&d.client),
-        loan = loan_block(d.loan_id, d.method, &d.rate_line, m(d.original_principal), esc(&ds.format(d.start_date))),
+        loan = loan_block(d.loan_id, d.method, &d.rate_line, m(d.original_principal), esc(&ds.format(d.start_date)), show),
         paid_l = esc(t("This payment", "Este pago")),
         paid = paid.join(""),
-        bal_l = esc(t("Balance after this payment", "Saldo después de este pago")),
-        bal = bal.join(""),
+        balance = if show.balance {
+            format!(
+                "<div class=\"block\"><p class=\"label\">{}</p><table class=\"kv\">{}</table></div>",
+                esc(t("Balance after this payment", "Saldo después de este pago")),
+                bal.join("")
+            )
+        } else {
+            String::new()
+        },
         overflow = overflow_note(
             rows,
             PAYMENT_PAGE_ROWS,
@@ -811,11 +833,12 @@ pub fn render(d: &ReceiptData, snap: &Snapshot) -> String {
                 "Este préstamo tiene un historial largo, así que el recibo continúa en la página siguiente. Aparecen todos los pagos.",
             ),
         ),
-        history = history_table(d, &m, ds),
+        history = if show.history { history_table(d, &m, ds) } else { String::new() },
         thanks = esc(&company_tags(d.business.clone(), &d.company).fill(&snap.settings.receipt_text.payment_footer())),
-        loan_l = esc(t("Loan", "Préstamo")),
-        loan_id = d.loan_id,
-        receipt_l = esc(t("Receipt", "Recibo")),
+        reference = {
+            let receipt = format!("{} {number}", esc(t("Receipt", "Recibo")));
+            if show.loan_number { format!("{} #{} · {receipt}", esc(t("Loan", "Préstamo")), d.loan_id) } else { receipt }
+        },
     );
     page(&title, css, &body)
 }

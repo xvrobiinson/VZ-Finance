@@ -11,12 +11,12 @@ use crate::app::{CompanyField, VzApp};
 use crate::domain::loans::{Frequency, RATE_PRESETS};
 use crate::domain::money::{NumberStyle, Rate};
 use crate::i18n::{Lang, t};
-use crate::services::settings::{ChartRange, ThemePref};
+use crate::services::settings::{ChartRange, ReceiptShow, ThemePref};
 use crate::sync::wire::Need;
 use crate::tr;
 use crate::ui::components::{icon, kbd, page_header, sel};
-use crate::ui::kit::{Button, Card, Dropdown, DropdownItem, Segmented};
-use crate::ui::theme::{Palette, RADIUS_CONTROL, Typeset as _, Width, palette, space, tabular, text};
+use crate::ui::kit::{Button, Card, Dropdown, DropdownItem, ListRow, Segmented};
+use crate::ui::theme::{Elevation, Palette, RADIUS_CARD, RADIUS_CONTROL, Typeset as _, Width, elevation, palette, space, tabular, text};
 use crate::utils::dates::DateStyle;
 
 /// A client detail that can be printed on receipts.
@@ -36,8 +36,83 @@ enum CompanyPart {
     Phone,
 }
 
-/// Settings read as a form; past this width lines get too long to scan.
-const FORM_MAX: f32 = 760.0;
+/// A popup reads as a form; past this width lines get too long to scan.
+const PANEL_MAX: f32 = 760.0;
+
+/// A group of settings that opens in a popup from its row on the Settings
+/// page. Business and Cloud sync stay on the page itself.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SettingsPanel {
+    Receipts,
+    Appearance,
+    Formats,
+    Lending,
+    Data,
+    Privacy,
+    Keyboard,
+    About,
+}
+
+impl SettingsPanel {
+    fn title(self) -> &'static str {
+        match self {
+            Self::Receipts => t("Receipts", "Recibos"),
+            Self::Appearance => t("Appearance", "Apariencia"),
+            Self::Formats => t("Regional formats", "Formatos regionales"),
+            Self::Lending => t("Lending defaults", "Valores de préstamos"),
+            Self::Data => t("Data and backups", "Datos y copias"),
+            Self::Privacy => t("Privacy", "Privacidad"),
+            Self::Keyboard => t("Keyboard shortcuts", "Atajos de teclado"),
+            Self::About => t("About", "Acerca de"),
+        }
+    }
+
+    fn summary(self) -> &'static str {
+        match self {
+            Self::Receipts => t("What prints, when to print, wording", "Qué se imprime, cuándo y con qué texto"),
+            Self::Appearance => t("Light or dark, dashboard chart", "Claro u oscuro, gráfico del panel"),
+            Self::Formats => t("Currency, numbers and dates", "Moneda, números y fechas"),
+            Self::Lending => t("Rate, payments and late fees for new loans", "Tasa, pagos y mora para préstamos nuevos"),
+            Self::Data => t("Backups, Google Drive, exports, diagnostics", "Copias, Google Drive, exportar, diagnóstico"),
+            Self::Privacy => t("How your data is handled", "Cómo se manejan tus datos"),
+            Self::Keyboard => t("Every shortcut in the app", "Todos los atajos de la app"),
+            Self::About => t("Version, help, terms and privacy", "Versión, ayuda, términos y privacidad"),
+        }
+    }
+
+    fn icon(self) -> IconName {
+        match self {
+            Self::Receipts => IconName::ReceiptText,
+            Self::Appearance => IconName::Palette,
+            Self::Formats => IconName::Globe,
+            Self::Lending => IconName::HandCoins,
+            Self::Data => IconName::DatabaseBackup,
+            Self::Privacy => IconName::ShieldCheck,
+            Self::Keyboard => IconName::Keyboard,
+            Self::About => IconName::Info,
+        }
+    }
+
+    /// (icon color, square fill) for its row.
+    fn hue(self, p: &Palette) -> (Hsla, Hsla) {
+        match self {
+            Self::Receipts | Self::Lending => (p.accent_text, p.accent_tint),
+            Self::Appearance | Self::Data => (p.info, p.info_tint),
+            Self::Formats | Self::Privacy => (p.positive, p.positive_tint),
+            Self::Keyboard | Self::About => (p.muted, p.neutral_tint),
+        }
+    }
+}
+
+/// The square an icon sits in on a category row and a popup's header.
+fn icon_square(name: IconName, (color, fill): (Hsla, Hsla), size: f32) -> Div {
+    h_flex().flex_none().size(px(size)).rounded(px(10.)).justify_center().bg(fill).child(icon(name, color, size * 0.47))
+}
+
+/// A heading inside a popup, over a group of rows.
+fn subhead(p: &Palette, title: &str) -> Div {
+    div().pt(px(space::S)).typeset(text::CAPTION).font_weight(FontWeight::SEMIBOLD).text_color(p.muted).child(title.to_uppercase())
+}
 /// Narrowest a setting's name column gets before its control moves to the
 /// next line.
 const LABEL_MIN: f32 = 240.0;
@@ -117,7 +192,165 @@ impl VzApp {
         self.settings_facts.as_ref().expect("just set")
     }
 
-    pub(crate) fn render_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+    /// The switches for the optional parts of payment receipts, in three
+    /// groups, two columns when there is room.
+    fn receipt_parts(&self, p: &Palette, show: ReceiptShow, w: Width, cx: &mut Context<Self>) -> Div {
+        let labels = [
+            t("Loan number", "Número de préstamo"),
+            t("Amount lent", "Monto prestado"),
+            t("Interest rate", "Tasa de interés"),
+            t("Payment cycle", "Frecuencia de pago"),
+            t("Installments covered", "Cuotas cubiertas"),
+            t("Interest and capital split", "División entre interés y capital"),
+            t("Late fees", "Mora"),
+            t("Remaining balance", "Saldo pendiente"),
+            t("Payment history", "Historial de pagos"),
+        ];
+        let groups: [(&str, std::ops::Range<usize>); 3] = [
+            (t("Loan details", "Datos del préstamo"), 0..4),
+            (t("Payment details", "Datos del pago"), 4..7),
+            (t("Balances", "Saldos"), 7..9),
+        ];
+        let values = show.values();
+        let group = |(title, range): (&str, std::ops::Range<usize>), cx: &mut Context<Self>| {
+            v_flex().flex_1().flex_basis(px(0.)).min_w_0().child(subhead(p, title)).children(range.map(|i| {
+                h_flex()
+                    .min_h(px(40.))
+                    .gap(px(space::M))
+                    .border_b_1()
+                    .border_color(p.rule)
+                    .child(div().flex_1().min_w_0().child(labels[i]))
+                    .child(Switch::new(SharedString::from(format!("rcpt-show-{i}"))).checked(values[i]).on_click(cx.listener(
+                        move |this, checked: &bool, w, cx| {
+                            let v = *checked;
+                            this.update_settings(|s| s.receipt_show = s.receipt_show.with(i, v), w, cx)
+                        },
+                    )))
+            }))
+        };
+        let [a, b, c] = groups;
+        let (a, b, c) = (group(a, cx), group(b, cx), group(c, cx));
+        let two = w >= Width::Medium;
+        v_flex()
+            .gap(px(space::S))
+            .child(div().typeset(text::BODY_STRONG).child(t("Shown on payment receipts", "En los recibos de pago")))
+            .child(div().typeset(text::CAPTION).text_color(p.muted).child(t(
+                "The business name, amount paid, payment date and receipt number are always printed. Loan receipts are the client's agreement and keep every term.",
+                "El nombre del negocio, el monto pagado, la fecha y el número de recibo siempre se imprimen. El recibo del préstamo es el acuerdo con el cliente y conserva todos los términos.",
+            )))
+            .child(
+                div()
+                    .flex()
+                    .gap_x(px(space::XL))
+                    .map(|d| {
+                        if two {
+                            d.flex_row()
+                                .items_start()
+                                .child(v_flex().flex_1().flex_basis(px(0.)).min_w_0().child(a))
+                                .child(v_flex().flex_1().flex_basis(px(0.)).min_w_0().child(b).child(c))
+                        } else {
+                            d.flex_col().child(a).child(b).child(c)
+                        }
+                    }),
+            )
+    }
+
+    /// A category's popup: its title, a close button and its settings,
+    /// scrolling inside when they are taller than the window. Escape or
+    /// the button closes it; a click outside doesn't, so picking from a
+    /// menu inside can never close it by accident.
+    fn settings_popup(&self, p: &Palette, which: SettingsPanel, body: AnyElement, window: &Window, cx: &mut Context<Self>) -> AnyElement {
+        let vp = window.viewport_size();
+        let (vw, vh) = (f32::from(vp.width), f32::from(vp.height));
+        div()
+            .id("settings-veil")
+            .absolute()
+            .inset_0()
+            .occlude()
+            .bg(p.overlay)
+            .flex()
+            .justify_center()
+            .items_start()
+            .pt(px(56.))
+            .child(
+                v_flex()
+                    .id("settings-popup")
+                    .w(px((vw - 48.).clamp(320., PANEL_MAX)))
+                    .max_h(px((vh - 104.).max(240.)))
+                    .bg(crate::ui::kit::face(p))
+                    .rounded(px(RADIUS_CARD + 2.))
+                    .border_1()
+                    .border_color(p.border)
+                    .shadow(elevation(p, Elevation::Floating))
+                    .overflow_hidden()
+                    .child(
+                        h_flex()
+                            .flex_none()
+                            .gap(px(space::M))
+                            .px(px(space::XL))
+                            .py(px(space::L))
+                            .border_b_1()
+                            .border_color(p.rule)
+                            .child(icon_square(which.icon(), which.hue(p), 34.))
+                            .child(div().flex_1().min_w_0().typeset(text::HEADING).text_size(px(17.)).child(which.title()))
+                            .child(
+                                Button::new("settings-close")
+                                    .ghost()
+                                    .small()
+                                    .icon(IconName::Close)
+                                    .tooltip(t("Close  Esc", "Cerrar  Esc"))
+                                    .on_click(cx.listener(|this, _, _, cx| this.close_settings_panel(cx))),
+                            ),
+                    )
+                    .child(div().id("settings-popup-body").flex_1().min_h_0().overflow_y_scroll().p(px(space::XL)).child(body)),
+            )
+            .into_any_element()
+    }
+
+    pub(crate) fn close_settings_panel(&mut self, cx: &mut Context<Self>) {
+        if self.settings_panel.take().is_some() {
+            cx.notify();
+        }
+    }
+
+    /// Category rows, two to a line when there is room, each opening its popup.
+    fn category_rows(&self, p: &Palette, panels: &[SettingsPanel], w: Width, cx: &mut Context<Self>) -> Div {
+        let per_line = if w >= Width::Medium { 2 } else { 1 };
+        let gap = px(space::M);
+        let rows: Vec<AnyElement> = panels
+            .iter()
+            .map(|&which| {
+                ListRow::new(SharedString::from(format!("settings-cat-{which:?}")))
+                    .boxed(true)
+                    .leading(icon_square(which.icon(), which.hue(p), 36.))
+                    .title(which.title())
+                    .subtitle(which.summary())
+                    .trailing(icon(IconName::ChevronRight, p.muted, 16.))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.settings_panel = Some(which);
+                        cx.notify();
+                    }))
+                    .into_any_element()
+            })
+            .collect();
+        let mut lines = Vec::new();
+        let mut rest = rows;
+        while !rest.is_empty() {
+            let tail = rest.split_off(per_line.min(rest.len()));
+            let short = per_line - rest.len();
+            lines.push(
+                h_flex()
+                    .items_stretch()
+                    .gap(gap)
+                    .children(rest.into_iter().map(|r| div().flex_1().flex_basis(px(0.)).min_w_0().child(r)))
+                    .children((0..short).map(|_| div().flex_1().flex_basis(px(0.)))),
+            );
+            rest = tail;
+        }
+        v_flex().gap(gap).children(lines)
+    }
+
+    pub(crate) fn render_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) -> (AnyElement, Option<AnyElement>) {
         let p = palette(cx);
         let w = Width::of(self.content_width(window));
         let s = self.settings().clone();
@@ -437,6 +670,7 @@ impl VzApp {
                     }),
                 ),
             ))
+            .child(self.receipt_parts(&p, s.receipt_show, w, cx))
                 })
                 .child(row(
                     &p,
@@ -749,9 +983,47 @@ impl VzApp {
                 .child(kbd(&p, k))
         }));
 
-        v_flex()
+        // Business and Cloud sync on the page, side by side when there is
+        // room; everything else behind a row that opens it in a popup.
+        let panels: Vec<SettingsPanel> = [
+            SettingsPanel::Receipts,
+            SettingsPanel::Appearance,
+            SettingsPanel::Formats,
+            SettingsPanel::Lending,
+            SettingsPanel::Data,
+            SettingsPanel::Privacy,
+            SettingsPanel::Keyboard,
+            SettingsPanel::About,
+        ]
+        .into_iter()
+        // Formats and lending defaults are the business's: admins only.
+        .filter(|x| manage || !matches!(x, SettingsPanel::Formats | SettingsPanel::Lending))
+        .collect();
+        let popup = self.settings_panel.filter(|x| panels.contains(x)).map(|which| {
+            let body = match which {
+                SettingsPanel::Receipts => receipts.into_any_element(),
+                SettingsPanel::Appearance => dashboard.into_any_element(),
+                SettingsPanel::Formats => general.into_any_element(),
+                SettingsPanel::Lending => lending.into_any_element(),
+                SettingsPanel::Data => v_flex()
+                    .gap(px(space::L))
+                    .child(data)
+                    .child(subhead(&p, t("Diagnostics", "Diagnóstico")))
+                    .child(div().typeset(text::CAPTION).text_color(p.muted).child(t(
+                        "What to check when something doesn't work on a computer",
+                        "Qué revisar si algo no funciona en una computadora",
+                    )))
+                    .child(diagnostics)
+                    .into_any_element(),
+                SettingsPanel::Privacy => privacy.into_any_element(),
+                SettingsPanel::Keyboard => shortcuts.into_any_element(),
+                SettingsPanel::About => about.into_any_element(),
+            };
+            self.settings_popup(&p, which, body, window, cx)
+        });
+        let wide = w >= Width::Wide;
+        let page = v_flex()
             .w_full()
-            .max_w(px(FORM_MAX))
             .gap(px(w.gap()))
             .child(
                 page_header(
@@ -762,50 +1034,38 @@ impl VzApp {
                 )
                 .pb_0(),
             )
-            .child(section(
-                &p,
-                t("Cloud sync", "Sincronización en la nube"),
-                t("Your business on this PC and the phone app", "Tu negocio en esta PC y en la app del teléfono"),
-                sync,
-            ))
-            .child(section(
-                &p,
-                t("Business", "Negocio"),
-                t("Company details, logo and language", "Datos de la empresa, logo e idioma"),
-                business,
-            ))
-            .when(manage, |d| {
-                d.child(section(&p, t("General", "General"), t("Currency, numbers and dates", "Moneda, números y fechas"), general)).child(
-                    section(
-                        &p,
-                        t("Lending", "Préstamos"),
-                        t("Defaults and how interest works", "Valores iniciales y cómo funciona el interés"),
-                        lending,
+            .child(
+                div()
+                    .flex()
+                    .gap(px(w.gap()))
+                    .when(wide, |d| d.flex_row().items_start())
+                    .when(!wide, |d| d.flex_col())
+                    .child(
+                        section(
+                            &p,
+                            t("Business", "Negocio"),
+                            t("Company details, logo and language", "Datos de la empresa, logo e idioma"),
+                            business,
+                        )
+                        .flex_1()
+                        .flex_basis(px(0.))
+                        .min_w_0(),
+                    )
+                    .child(
+                        section(
+                            &p,
+                            t("Cloud sync", "Sincronización en la nube"),
+                            t("Your business on this PC and the phone app", "Tu negocio en esta PC y en la app del teléfono"),
+                            sync,
+                        )
+                        .flex_1()
+                        .flex_basis(px(0.))
+                        .min_w_0(),
                     ),
-                )
-            })
-            .child(section(&p, t("Receipts", "Recibos"), t("Printing payment receipts", "Impresión de recibos de pago"), receipts))
-            .child(section(&p, t("Dashboard", "Panel"), t("Charts and appearance", "Gráficos y apariencia"), dashboard))
-            .child(section(
-                &p,
-                t("Data", "Datos"),
-                t("Your database, backups and exports", "Tu base de datos, copias y exportaciones"),
-                data,
-            ))
-            .child(section(&p, t("Privacy", "Privacidad"), t("How your data is handled", "Cómo se manejan tus datos"), privacy))
-            .child(section(
-                &p,
-                t("Keyboard", "Teclado"),
-                t("Shortcuts available everywhere", "Atajos disponibles en toda la app"),
-                shortcuts,
-            ))
-            .child(section(
-                &p,
-                t("Diagnostics", "Diagnóstico"),
-                t("What to check when something doesn't work on a computer", "Qué revisar si algo no funciona en una computadora"),
-                diagnostics,
-            ))
-            .child(section(&p, t("About", "Acerca de"), t("Version and developer", "Versión y desarrollador"), about))
-            .into_any_element()
+            )
+            .child(subhead(&p, t("Preferences and configuration", "Preferencias y configuración")))
+            .child(self.category_rows(&p, &panels, w, cx))
+            .into_any_element();
+        (page, popup)
     }
 }

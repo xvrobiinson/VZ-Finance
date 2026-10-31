@@ -435,6 +435,9 @@ pub fn apply(conn: &mut Connection, snap: &Snapshot) -> Result<()> {
         for (k, v) in pairs {
             crate::database::repositories::settings::set(&tx, k, v)?;
         }
+        for (key, cloud) in crate::services::settings::ReceiptShow::KEYS {
+            crate::database::repositories::settings::set(&tx, key, b(s.receipt_show.get(cloud).copied().unwrap_or(true)))?;
+        }
         tx.execute(&format!("DELETE FROM app_settings WHERE {WORDING}"), [])?;
         for (k, v) in &s.receipt_text {
             let wording: bool = tx.query_row(&format!("SELECT {WORDING} FROM (SELECT ?1 AS key)"), [k], |r| r.get(0))?;

@@ -22,7 +22,7 @@ use crate::domain::portfolio::{Account, CapitalKind, EntryKind};
 use crate::i18n::t;
 use crate::services::Store;
 use crate::services::picture::{self, PhotoChange};
-use crate::services::settings::Settings;
+use crate::services::settings::{ReceiptShow, Settings};
 
 #[derive(Clone, Debug)]
 pub enum Change {
@@ -487,6 +487,7 @@ pub fn business_differs(a: &Settings, b: &Settings) -> bool {
         || a.company_phone != b.company_phone
         || a.receipt_company != b.receipt_company
         || a.receipt_client != b.receipt_client
+        || a.receipt_show != b.receipt_show
         || a.receipt_text != b.receipt_text
         || a.currency_code != b.currency_code
         || a.number_style != b.number_style
@@ -502,6 +503,8 @@ pub fn business_differs(a: &Settings, b: &Settings) -> bool {
 /// the person's own choice.
 fn settings(conn: &Connection, s: &Settings) -> Result<Value> {
     let language = replica::cloud_language(conn)?;
+    let show: serde_json::Map<String, Value> =
+        ReceiptShow::KEYS.iter().zip(s.receipt_show.values()).map(|((_, cloud), on)| (cloud.to_string(), json!(on))).collect();
     let wording: serde_json::Map<String, Value> =
         s.receipt_text.to_pairs().into_iter().filter(|(_, v)| !v.trim().is_empty()).map(|(k, v)| (k.to_string(), json!(v))).collect();
     Ok(json!({
@@ -512,6 +515,7 @@ fn settings(conn: &Connection, s: &Settings) -> Result<Value> {
         "receiptCompany": { "name": s.receipt_company.name, "address": s.receipt_company.address, "phone": s.receipt_company.phone },
         "receiptClient": { "name": s.receipt_client.name, "idNumber": s.receipt_client.id_number, "phone": s.receipt_client.phone,
                            "address": s.receipt_client.address },
+        "receiptShow": show,
         "receiptText": wording,
         "currencyCode": s.currency_code,
         "numberStyle": s.number_style.key(),

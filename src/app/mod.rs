@@ -122,6 +122,8 @@ pub struct VzApp {
     pub(crate) file_dialog: Option<&'static str>,
     /// Disk facts shown in Settings (backups, folder checks).
     pub(crate) settings_facts: Option<crate::ui::screens::settings::SettingsFacts>,
+    /// The Settings category open in a popup, if any.
+    pub(crate) settings_panel: Option<crate::ui::screens::settings::SettingsPanel>,
     pub(crate) route: Route,
     history: Vec<Route>,
     pub(crate) focus: FocusHandle,
@@ -254,6 +256,7 @@ impl VzApp {
             refreshed_on: today,
             file_dialog: None,
             settings_facts: None,
+            settings_panel: None,
             route: Route::Overview,
             history: Vec::new(),
             focus,
@@ -293,6 +296,10 @@ impl VzApp {
                 "loans" => app.navigate(Route::Loans, window, cx),
                 "analytics" => app.navigate(Route::Analytics, window, cx),
                 "settings" => app.navigate(Route::Settings, window, cx),
+                "settings-receipts" => {
+                    app.navigate(Route::Settings, window, cx);
+                    app.settings_panel = Some(crate::ui::screens::settings::SettingsPanel::Receipts);
+                }
                 "new-record" => app.open_entry_form(EntryKind::Expense, None, window, cx),
                 "new-income" => app.open_entry_form(EntryKind::Income, None, window, cx),
                 "wording" => app.open_receipt_text_form(window, cx),
@@ -431,6 +438,8 @@ impl VzApp {
     pub fn navigate(&mut self, route: Route, window: &mut Window, cx: &mut Context<Self>) {
         // Analytics shows the business's totals: admins only.
         let route = if route == Route::Analytics && !self.can(Need::Manage) { Route::Overview } else { route };
+        // A settings popup belongs to the Settings page.
+        self.settings_panel = None;
         if route != self.route {
             self.history.push(self.route);
             if self.history.len() > 50 {
@@ -812,6 +821,7 @@ impl Render for VzApp {
         crate::ui::components::begin_selectable_frame();
         let p = palette(cx);
         let gutter = theme::Width::gutter(f32::from(window.viewport_size().width));
+        let mut settings_popup = None;
         let content = match self.route {
             Route::Overview => self.render_overview(window, cx),
             Route::Clients => self.render_clients(window, cx),
@@ -821,7 +831,11 @@ impl Render for VzApp {
             Route::Payments => self.render_payments(window, cx),
             Route::Analytics if self.can(Need::Manage) => self.render_analytics(window, cx),
             Route::Analytics => self.render_overview(window, cx),
-            Route::Settings => self.render_settings(window, cx),
+            Route::Settings => {
+                let (page, popup) = self.render_settings(window, cx);
+                settings_popup = popup;
+                page
+            }
         };
         let banner = self.load_error.clone().map(|e| {
             div()
@@ -855,6 +869,13 @@ impl Render for VzApp {
             })
             .on_action(cx.listener(Self::toggle_sidebar))
             .on_action(cx.listener(Self::go_back))
+            // Escape closes an open settings popup.
+            .on_key_down(cx.listener(|this, e: &KeyDownEvent, _, cx| {
+                if e.keystroke.key == "escape" && this.settings_panel.is_some() {
+                    this.close_settings_panel(cx);
+                    cx.stop_propagation();
+                }
+            }))
             .on_action(cx.listener(Self::backup_now))
             .on_action(cx.listener(|this, _: &GoOverview, w, cx| this.navigate(Route::Overview, w, cx)))
             .on_action(cx.listener(|this, _: &GoClients, w, cx| this.navigate(Route::Clients, w, cx)))
@@ -905,5 +926,7 @@ impl Render for VzApp {
                     ),
                 )
             })
+            // Over everything, the open settings popup.
+            .children(settings_popup)
     }
 }

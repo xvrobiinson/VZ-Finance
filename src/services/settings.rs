@@ -117,6 +117,95 @@ impl Default for ReceiptClientFields {
     }
 }
 
+/// Which optional parts of a payment receipt are printed. The business
+/// name, the amount paid, the date and the receipt number always are. The
+/// loan receipt is the client's agreement and keeps all of its terms.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ReceiptShow {
+    pub loan_number: bool,
+    pub amount_lent: bool,
+    pub rate: bool,
+    pub cycle: bool,
+    pub installments: bool,
+    pub split: bool,
+    pub late_fees: bool,
+    pub balance: bool,
+    pub history: bool,
+}
+
+impl Default for ReceiptShow {
+    fn default() -> Self {
+        Self::ALL_ON
+    }
+}
+
+impl ReceiptShow {
+    const ALL_ON: Self = Self {
+        loan_number: true,
+        amount_lent: true,
+        rate: true,
+        cycle: true,
+        installments: true,
+        split: true,
+        late_fees: true,
+        balance: true,
+        history: true,
+    };
+
+    /// (key on this PC, key in the cloud) for each part, in the order
+    /// Settings lists them.
+    pub const KEYS: [(&'static str, &'static str); 9] = [
+        ("receipt_show_loan_number", "loanNumber"),
+        ("receipt_show_amount_lent", "amountLent"),
+        ("receipt_show_rate", "rate"),
+        ("receipt_show_cycle", "cycle"),
+        ("receipt_show_installments", "installments"),
+        ("receipt_show_split", "split"),
+        ("receipt_show_late_fees", "lateFees"),
+        ("receipt_show_balance", "balance"),
+        ("receipt_show_history", "history"),
+    ];
+
+    /// The parts in `KEYS` order.
+    pub fn values(&self) -> [bool; 9] {
+        [
+            self.loan_number,
+            self.amount_lent,
+            self.rate,
+            self.cycle,
+            self.installments,
+            self.split,
+            self.late_fees,
+            self.balance,
+            self.history,
+        ]
+    }
+
+    /// Built from values in `KEYS` order.
+    pub fn from_values(v: [bool; 9]) -> Self {
+        Self {
+            loan_number: v[0],
+            amount_lent: v[1],
+            rate: v[2],
+            cycle: v[3],
+            installments: v[4],
+            split: v[5],
+            late_fees: v[6],
+            balance: v[7],
+            history: v[8],
+        }
+    }
+
+    /// A copy with part `i` (in `KEYS` order) set to `on`.
+    pub fn with(self, i: usize, on: bool) -> Self {
+        let mut v = self.values();
+        if let Some(x) = v.get_mut(i) {
+            *x = on;
+        }
+        Self::from_values(v)
+    }
+}
+
 /// Which company details are printed at the top of receipts. Each is
 /// printed only when it is ticked and has a value.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -167,6 +256,8 @@ pub struct Settings {
     pub receipt_after_loan: bool,
     /// Client details printed on every receipt.
     pub receipt_client: ReceiptClientFields,
+    /// Optional parts of payment receipts.
+    pub receipt_show: ReceiptShow,
     pub theme: ThemePref,
     pub chart_range: ChartRange,
     pub show_interest_line: bool,
@@ -193,6 +284,7 @@ impl Default for Settings {
             receipt_after_payment: true,
             receipt_after_loan: true,
             receipt_client: ReceiptClientFields::default(),
+            receipt_show: ReceiptShow::default(),
             theme: ThemePref::Light,
             chart_range: ChartRange::SixMonths,
             show_interest_line: true,
@@ -241,6 +333,7 @@ impl Settings {
                 phone: flag("receipt_client_phone", d.receipt_client.phone),
                 address: flag("receipt_client_address", d.receipt_client.address),
             },
+            receipt_show: ReceiptShow::from_values(ReceiptShow::KEYS.map(|(key, _)| flag(key, true))),
             theme: match get("theme") {
                 Some("dark") => ThemePref::Dark,
                 _ => ThemePref::Light,
@@ -279,6 +372,7 @@ impl Settings {
             ("show_interest_line", b(self.show_interest_line)),
             ("sidebar_collapsed", b(self.sidebar_collapsed)),
         ];
+        pairs.extend(ReceiptShow::KEYS.iter().zip(self.receipt_show.values()).map(|((key, _), on)| (*key, b(on))));
         pairs.extend(self.receipt_text.to_pairs());
         pairs
     }

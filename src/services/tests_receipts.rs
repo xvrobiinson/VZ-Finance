@@ -9,7 +9,7 @@ use crate::domain::installments::{InstallmentStatus, Instruction};
 use crate::domain::loans::{Frequency, LoanTerms, Method};
 use crate::domain::money::Rate;
 use crate::domain::portfolio::CapitalKind;
-use settings::ReceiptClientFields;
+use settings::{ReceiptClientFields, ReceiptShow};
 
 fn d(y: i32, m: u32, day: u32) -> NaiveDate {
     NaiveDate::from_ymd_opt(y, m, day).unwrap()
@@ -237,6 +237,81 @@ fn receipts_print_only_the_client_details_chosen() {
     assert!(!loan_html.contains("Marta") && loan_html.contains("The client received"));
     let (_, html) = receipt(&s, pid);
     assert!(!html.contains("Marta"));
+}
+
+#[test]
+fn receipts_print_only_the_parts_chosen() {
+    let (mut s, _, lid) = scheduled_loan();
+    s.refresh(d(2026, 3, 10)).unwrap();
+    pay_installments(&mut s, lid, 100_000, d(2026, 2, 1), Instruction::Installment(1));
+    let pid = pay_installments(&mut s, lid, 210_000, d(2026, 3, 10), Instruction::Installment(1));
+    // Every part by default.
+    let (r, html) = receipt(&s, pid);
+    assert!(r.fee > 0, "the test needs a late fee on this payment");
+    for part in [
+        "<td>Loan</td>",
+        "<td>Type</td>",
+        "Interest rate",
+        "Amount lent",
+        ">Late fees<",
+        ">Interest<",
+        "Balance after this payment",
+        "Payment history",
+        "Installments",
+        "Loan #",
+    ] {
+        assert!(html.contains(part), "{part} missing by default");
+    }
+
+    // Everything optional switched off: only what a receipt can't do without.
+    let mut st = s.snapshot().unwrap().settings.clone();
+    st.receipt_show = ReceiptShow::from_values([false; 9]);
+    s.save_settings(&st).unwrap();
+    let (_, html) = receipt(&s, pid);
+    for part in [
+        "<td>Loan</td>",
+        "<td>Type</td>",
+        "Interest rate",
+        "Amount lent",
+        ">Late fees<",
+        ">Interest<",
+        "Balance after this payment",
+        "Payment history",
+        "Installments",
+        "Loan #",
+        "Next installment",
+    ] {
+        assert!(!html.contains(part), "{part} still printed");
+    }
+    for kept in ["Amount paid", "Date paid", "Loan date", &format!("Receipt {pid:06}")] {
+        assert!(html.contains(kept), "{kept} missing");
+    }
+
+    // One part back on brings only that part back.
+    st.receipt_show = ReceiptShow::from_values([false; 9]).with(2, true);
+    s.save_settings(&st).unwrap();
+    let (_, html) = receipt(&s, pid);
+    assert!(html.contains("Interest rate") && !html.contains("Amount lent"));
+
+    // The loan receipt is the client's agreement: it keeps every term.
+    let snap = s.snapshot().unwrap();
+    let loan_html = receipt::render_loan(&receipt::loan_data(&snap, lid).unwrap(), &snap);
+    assert!(loan_html.contains("Interest rate"));
+}
+
+#[test]
+fn receipt_parts_survive_a_restart() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("data").join("portfolio.db");
+    let chosen = ReceiptShow::default().with(0, false).with(8, false);
+    {
+        let mut s = Store::open(path.clone()).unwrap();
+        assert_eq!(s.snapshot().unwrap().settings.receipt_show, ReceiptShow::default());
+        let mut st = s.snapshot().unwrap().settings.clone();
+        st.receipt_show = chosen;
+        s.save_settings(&st).unwrap();
+    }
+    assert_eq!(Store::open(path).unwrap().snapshot().unwrap().settings.receipt_show, chosen);
 }
 
 #[test]

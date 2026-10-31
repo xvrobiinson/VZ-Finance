@@ -68,7 +68,8 @@ gpui_kit::assets::icon_assets!(
         Percent,
         Banknote,
         Clock,
-        CalendarClock
+        CalendarClock,
+        Keyboard
     ]
 );
 

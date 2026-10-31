@@ -90,6 +90,6 @@ the same springs. Searching and sorting rules live in `ui::lists`.
   `cargo run --example seed_demo -- <new.db>` and launch with
   `ACERVUS_DB=<new.db>`; in debug builds `ACERVUS_START` opens a screen
   or dialog at launch (`clients`, `loans`, `analytics`, `settings`,
-  `new-record`, `new-income`, `wording`). Capture the window with `PrintWindow`, which works
+  `new-record`, `new-income`, `wording`, `settings-receipts`). Capture the window with `PrintWindow`, which works
   even when it is covered. Never send synthetic keystrokes or clicks: when the
   app isn't the foreground window they land in the user's other programs.

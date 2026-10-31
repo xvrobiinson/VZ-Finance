@@ -101,6 +101,9 @@ pub struct Settings {
     pub company_phone: String,
     pub receipt_company: ReceiptCompany,
     pub receipt_client: ReceiptClient,
+    /// Optional parts of payment receipts by cloud key; missing ones are shown.
+    #[serde(default)]
+    pub receipt_show: BTreeMap<String, bool>,
     pub receipt_text: BTreeMap<String, String>,
     pub currency_code: String,
     pub number_style: String,
