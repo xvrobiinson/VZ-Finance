@@ -608,7 +608,7 @@ impl VzApp {
         .detach();
     }
 
-    /// Opens a web page (or a new email) in the person's browser or mail app.
+    /// Opens a web page in the person's browser.
     pub(crate) fn browse(&mut self, url: &'static str, window: &mut Window, cx: &mut Context<Self>) {
         let rx = crate::shell::browse(url);
         cx.spawn_in(window, async move |this, cx| {

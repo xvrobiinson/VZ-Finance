@@ -28,7 +28,6 @@ pub const APP_NAME: &str = "Acervus Finance";
 pub const DEVELOPER: &str = "VZ Labs";
 /// Where people write for help.
 pub const SUPPORT_EMAIL: &str = "officialvzlabs@gmail.com";
-pub const SUPPORT_MAILTO: &str = "mailto:officialvzlabs@gmail.com";
 /// The Terms of Service and Privacy Policy, published with the web app.
 pub const TERMS_URL: &str = "https://acervus-finance-pwa.vz-labs.workers.dev/terms";
 pub const PRIVACY_URL: &str = "https://acervus-finance-pwa.vz-labs.workers.dev/privacy";

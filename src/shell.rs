@@ -22,12 +22,11 @@ pub fn reveal(path: &Path) -> mpsc::Receiver<Result<(), String>> {
     run(path.to_path_buf(), imp::reveal)
 }
 
-/// Opens a web address in the person's browser, or an email to write in
-/// their mail app. Only `https://` and `mailto:` addresses, so nothing else
-/// can be started through here.
+/// Opens a web address in the person's browser. Only `https://` addresses,
+/// so nothing else can be started through here.
 pub fn browse(url: &str) -> mpsc::Receiver<Result<(), String>> {
     let (tx, rx) = mpsc::channel();
-    if !(url.starts_with("https://") || url.starts_with("mailto:")) || url.chars().any(|c| c.is_whitespace() || c == '"') {
+    if !url.starts_with("https://") || url.chars().any(|c| c.is_whitespace() || c == '"') {
         let _ = tx.send(Err("not a web address".into()));
         return rx;
     }

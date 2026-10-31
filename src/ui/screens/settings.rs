@@ -692,7 +692,13 @@ impl VzApp {
                     .flex_wrap()
                     .gap(px(space::S))
                     .pt(px(space::XS))
-                    .child(link("about-mail", t("Write to us", "Escríbenos"), crate::SUPPORT_MAILTO))
+                    // Copies the address: a mail link could land on a webmail sign-in.
+                    .child(Button::new("about-mail").small().icon(IconName::Mail).label(t("Copy email", "Copiar correo")).on_click(
+                        cx.listener(|this, _, w, cx| {
+                            cx.write_to_clipboard(ClipboardItem::new_string(crate::SUPPORT_EMAIL.to_string()));
+                            this.notify_success(t("Email address copied", "Correo copiado"), w, cx);
+                        }),
+                    ))
                     .child(link("about-terms", t("Terms of Service", "Términos de servicio"), crate::TERMS_URL))
                     .child(link("about-privacy", t("Privacy Policy", "Política de privacidad"), crate::PRIVACY_URL)),
             )
