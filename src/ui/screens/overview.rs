@@ -20,9 +20,24 @@ use crate::services::settings::ChartRange;
 use crate::sync::wire::Need;
 use crate::tr;
 use crate::ui::components::{avatar, empty_state, icon, kbd, kv, page_header, sel};
-use crate::ui::kit::{Button, ButtonSize, Card, Dropdown, DropdownItem, ListRow, Segmented, Stat, StatStrip};
+use crate::ui::kit::{Button, ButtonSize, Card, Dropdown, DropdownItem, ListRow, Segmented, Stat, StatCards};
 use crate::ui::theme::{Palette, Typeset as _, Width, palette, space, tabular, text};
 use crate::utils::dates::short_month_year;
+
+/// "3 loans" for the count pill beside a section heading.
+fn count_label(n: usize) -> String {
+    count(n, "loan", "loans", "préstamo", "préstamos")
+}
+
+/// The Overview title: a greeting for the time of day.
+fn greeting() -> &'static str {
+    use chrono::Timelike as _;
+    match chrono::Local::now().hour() {
+        5..=11 => t("Good morning", "Buenos días"),
+        12..=17 => t("Good afternoon", "Buenas tardes"),
+        _ => t("Good evening", "Buenas noches"),
+    }
+}
 
 /// Which screen's portfolio chart is being drawn; each keeps its own hover.
 #[derive(Clone, Copy)]
@@ -41,9 +56,9 @@ impl VzApp {
 
         v_flex()
             .gap(gap)
-            .child(page_header(&p, t("Overview", "Resumen"), Some(self.finding(&p, &s)), self.header_actions(w, cx)).pb_0())
+            .child(page_header(&p, greeting(), Some(self.finding(&p, &s)), self.header_actions(w, cx)).pb_0())
             .children(self.render_setup(&p, w, cx))
-            .child(self.kpi_strip(&p, &s, w, cx))
+            .child(self.kpi_cards(&p, &s, w, cx))
             // The business's totals are for admins; collectors see their work.
             .when(self.can(Need::Manage), |d| {
                 d.child(
@@ -61,10 +76,10 @@ impl VzApp {
                     .flex()
                     .gap(gap)
                     .when(side_by_side, |d| {
-                        d.flex_row().items_stretch().child(self.recent_payments_card(&p, cx)).child(self.attention_card(&p, cx))
+                        d.flex_row().items_start().child(self.attention_list(&p, cx)).child(self.recent_payments_card(&p, cx))
                     })
                     // Time-sensitive block first when stacked.
-                    .when(!side_by_side, |d| d.flex_col().child(self.attention_card(&p, cx)).child(self.recent_payments_card(&p, cx))),
+                    .when(!side_by_side, |d| d.flex_col().child(self.attention_list(&p, cx)).child(self.recent_payments_card(&p, cx))),
             )
             .into_any_element()
     }
@@ -280,7 +295,7 @@ impl VzApp {
         )
     }
 
-    fn kpi_strip(&self, p: &Palette, s: &Summary, w: Width, cx: &mut Context<Self>) -> impl IntoElement {
+    fn kpi_cards(&self, p: &Palette, s: &Summary, w: Width, cx: &mut Context<Self>) -> impl IntoElement {
         let money = self.settings().money();
         // Six full money figures need about 1,680px; below that, 3 + 3.
         // Figures are never truncated to make a row fit.
@@ -295,20 +310,26 @@ impl VzApp {
             1 => t("1 loan behind", "1 préstamo atrasado").to_string(),
             n => tr!("{n} loans behind", "{n} préstamos atrasados"),
         };
+        let late = s.overdue_amount > 0;
         let overdue = Stat::new(t("Overdue amount", "Monto atrasado"), money.format(s.overdue_amount))
             .icon(IconName::CircleAlert)
-            .when(s.overdue_amount > 0, |st| st.tone(p.negative))
+            .chip(if late { p.negative } else { p.muted }, if late { p.negative_tint } else { p.neutral_tint })
+            .when(late, |st| st.tone(p.negative))
             .caption(sel(overdue_sub));
+        let cards = |per_row: usize, stats: Vec<Stat>| StatCards::new(per_row).spacing(w.gap()).stats(stats);
         // Collectors see what their work needs, not the business's totals.
         if !self.can(Need::Manage) {
             let cells = vec![
-                Stat::new(t("Active loans", "Préstamos activos"), s.active_loans.to_string()).icon(IconName::HandCoins).lead(true),
+                Stat::new(t("Active loans", "Préstamos activos"), s.active_loans.to_string())
+                    .icon(IconName::HandCoins)
+                    .chip(p.accent_text, p.accent_tint),
                 Stat::new(t("Due soon", "Por vencer"), s.due_soon_loans.to_string())
                     .icon(IconName::Calendar)
+                    .chip(p.warning, p.warning_tint)
                     .caption(sel(t("Payments in the next few days", "Pagos en los próximos días"))),
                 overdue,
             ];
-            return StatStrip::new(if w == Width::Compact { 2 } else { 3 }).dense(w == Width::Compact).stats(cells);
+            return cards(if w == Width::Compact { 2 } else { 3 }, cells);
         }
         let gain = s.gain();
         let invested = s.net_invested();
@@ -359,45 +380,34 @@ impl VzApp {
             .tooltip(t("Adjust balances", "Ajustar saldos"))
             .on_click(cx.listener(|this, _, w, cx| this.open_adjust_form(w, cx)));
 
-        let cell = |stat: Stat, lead: bool| stat.lead(lead);
         let cells = vec![
-            cell(
-                Stat::new(t("Total portfolio value", "Valor total de la cartera"), money.format(pv))
-                    .icon(IconName::Wallet)
-                    .when(self.can(Need::Manage), |s| s.accessory(adjust))
-                    .caption(gain_sub),
-                true,
-            ),
-            cell(
-                Stat::new(t("Capital lent out", "Capital prestado"), money.format(s.outstanding_principal))
-                    .icon(IconName::HandCoins)
-                    .caption(sel({
-                        let n = count(s.active_loans, "active loan", "active loans", "préstamo activo", "préstamos activos");
-                        tr!("across {n}", "en {n}")
-                    })),
-                false,
-            ),
-            cell(
-                Stat::new(t("Interest earned", "Interés cobrado"), money.format(s.interest_collected))
-                    .icon(IconName::TrendingUp)
-                    .caption(sel(fees_sub)),
-                false,
-            ),
-            cell(
-                Stat::new(t("Available capital", "Capital disponible"), money.format(s.available_capital))
-                    .icon(IconName::Landmark)
-                    .caption(sel(cash_sub)),
-                false,
-            ),
-            cell(
-                Stat::new(t("Available interest", "Interés disponible"), money.format(s.available_interest))
-                    .icon(IconName::Coins)
-                    .caption(sel(interest_sub)),
-                false,
-            ),
-            cell(overdue, false),
+            Stat::new(t("Total portfolio value", "Valor total de la cartera"), money.format(pv))
+                .icon(IconName::Wallet)
+                .chip(p.accent_text, p.accent_tint)
+                .when(self.can(Need::Manage), |s| s.accessory(adjust))
+                .caption(gain_sub),
+            Stat::new(t("Capital lent out", "Capital prestado"), money.format(s.outstanding_principal))
+                .icon(IconName::HandCoins)
+                .chip(p.info, p.info_tint)
+                .caption(sel({
+                    let n = count(s.active_loans, "active loan", "active loans", "préstamo activo", "préstamos activos");
+                    tr!("across {n}", "en {n}")
+                })),
+            Stat::new(t("Interest earned", "Interés cobrado"), money.format(s.interest_collected))
+                .icon(IconName::TrendingUp)
+                .chip(p.positive, p.positive_tint)
+                .caption(sel(fees_sub)),
+            Stat::new(t("Available capital", "Capital disponible"), money.format(s.available_capital))
+                .icon(IconName::Landmark)
+                .chip(p.accent_text, p.accent_tint)
+                .caption(sel(cash_sub)),
+            Stat::new(t("Available interest", "Interés disponible"), money.format(s.available_interest))
+                .icon(IconName::Coins)
+                .chip(p.positive, p.positive_tint)
+                .caption(sel(interest_sub)),
+            overdue,
         ];
-        StatStrip::new(per_row).dense(w == Width::Compact).stats(cells)
+        cards(per_row, cells)
     }
 
     pub(crate) fn chart_points(&self, range: ChartRange) -> Vec<HistoryPoint> {
@@ -749,7 +759,9 @@ impl VzApp {
             .into_any_element()
     }
 
-    fn attention_card(&self, p: &Palette, cx: &mut Context<Self>) -> AnyElement {
+    /// Loans that are late or due soon, each row its own small card under
+    /// a section heading (trying out boxed rows here first).
+    fn attention_list(&self, p: &Palette, cx: &mut Context<Self>) -> AnyElement {
         let money = self.settings().money();
         let ds = self.settings().date_style;
         let record = self.can(Need::Record);
@@ -768,44 +780,38 @@ impl VzApp {
         let rows = items.iter().take(5).map(|(l, st, q)| {
             let name = self.snap.client_name(l.client_id).to_string();
             let loan_id = l.id;
-            let pos = l.position(self.today);
             let id = l.id;
-            let due_text = tr!("Loan #{id}", "Préstamo #{id}");
-            let amount_line = match (st, if *st == DisplayStatus::Overdue { q.overdue_since } else { q.next_due }) {
-                (DisplayStatus::Overdue, Some(d)) => {
-                    let (a, when) = (money.format(q.overdue_amount), ds.format_short(d, self.today));
-                    tr!("{a} past due since {when}", "{a} vencido desde el {when}")
+            let overdue = *st == DisplayStatus::Overdue;
+            // The amount to collect now sits on the right, never truncated;
+            // the subtitle only says which loan and since or until when.
+            let due_now = if overdue { q.overdue_amount } else { q.next_due_amount };
+            let when = match (overdue, if overdue { q.overdue_since } else { q.next_due }) {
+                (true, Some(d)) => {
+                    let when = ds.format_short(d, self.today);
+                    tr!("Loan #{id} · past due since {when}", "Préstamo #{id} · vencido desde el {when}")
                 }
-                (DisplayStatus::Overdue, None) => {
-                    let a = money.format(q.overdue_amount);
-                    tr!("{a} past due", "{a} vencido")
+                (false, Some(d)) => {
+                    let when = ds.format_short(d, self.today);
+                    tr!("Loan #{id} · due {when}", "Préstamo #{id} · vence el {when}")
                 }
-                (_, Some(d)) => {
-                    let (a, when) = (money.format(q.next_due_amount), ds.format_short(d, self.today));
-                    tr!("{a} due {when}", "{a} vence el {when}")
-                }
-                _ => {
-                    let a = money.format(q.next_due_amount);
-                    tr!("{a} due", "{a} por pagar")
-                }
+                _ => tr!("Loan #{id}", "Préstamo #{id}"),
             };
             ListRow::new(("attn", loan_id as u64))
+                .boxed(true)
                 .leading(avatar(p, &name, l.client_id, 32.))
                 .title(name)
-                .subtitle(format!("{due_text} · {amount_line}"))
+                .subtitle(when)
+                .trailing(div().flex_none().child(status_detail_pill(p, *st, q, self.today).h(px(22.))))
                 .trailing(
-                    v_flex()
-                        .items_end()
-                        .gap(px(3.))
+                    div()
                         .flex_none()
-                        .child(
-                            div()
-                                .typeset(text::BODY_STRONG)
-                                .font_features(tabular())
-                                .text_color(p.text)
-                                .child(sel(money.format(pos.payoff()))),
-                        )
-                        .child(status_detail_pill(p, *st, q, self.today).h(px(20.))),
+                        .min_w(px(88.))
+                        .text_right()
+                        .whitespace_nowrap()
+                        .typeset(text::BODY_STRONG)
+                        .font_features(tabular())
+                        .text_color(if overdue { p.negative } else { p.text })
+                        .child(sel(money.format(due_now))),
                 )
                 .when(record, |r| {
                     r.trailing(Button::new(("attn-pay", loan_id as u64)).ghost().small().label(t("Record", "Cobrar")).on_click(
@@ -818,44 +824,58 @@ impl VzApp {
                 .on_click(cx.listener(move |this, _, w, cx| this.open_row(Route::Loan(loan_id), w, cx)))
         });
         let body = if count == 0 {
-            empty_state(
-                p,
-                IconName::CircleCheck,
-                t("Everything is current", "Todo al día"),
-                if self.snap.book.loans.is_empty() {
-                    t("Loans that are overdue or due soon will appear here.", "Aquí aparecerán los préstamos atrasados o por vencer.")
-                } else {
-                    t(
-                        "No loan is overdue or due in the next few days.",
-                        "Ningún préstamo está atrasado ni por vencer en los próximos días.",
-                    )
-                },
-                None,
-            )
-            .into_any_element()
+            Card::new()
+                .child(empty_state(
+                    p,
+                    IconName::CircleCheck,
+                    t("Everything is current", "Todo al día"),
+                    if self.snap.book.loans.is_empty() {
+                        t("Loans that are overdue or due soon will appear here.", "Aquí aparecerán los préstamos atrasados o por vencer.")
+                    } else {
+                        t(
+                            "No loan is overdue or due in the next few days.",
+                            "Ningún préstamo está atrasado ni por vencer en los próximos días.",
+                        )
+                    },
+                    None,
+                ))
+                .into_any_element()
         } else {
-            v_flex().pb(px(space::S)).children(rows).into_any_element()
+            v_flex().gap(px(space::S)).children(rows).into_any_element()
         };
-        let title = if count > 0 {
-            tr!("Needs attention · {count}", "Requieren atención · {count}")
-        } else {
-            t("Needs attention", "Requieren atención").to_string()
-        };
-        Card::new()
+        v_flex()
             .flex_1()
             .flex_basis(px(0.))
             .min_w_0()
-            .title(title)
-            .action(header_link(p, "attn-all", t("View loans", "Ver préstamos"), Route::Loans, cx))
-            .child(body)
-            .child(div().flex_1())
+            .gap(px(space::M))
             .child(
                 h_flex()
-                    .px(px(space::XL))
-                    .py(px(space::M))
+                    .min_h(px(32.))
+                    .gap(px(10.))
+                    .child(div().typeset(text::HEADING).text_color(p.text).child(sel(t("Needs attention", "Requieren atención"))))
+                    .when(count > 0, |d| {
+                        d.child(
+                            div()
+                                .px(px(7.))
+                                .h(px(20.))
+                                .flex()
+                                .items_center()
+                                .rounded(px(5.))
+                                .bg(p.accent_tint)
+                                .typeset(text::CAPTION)
+                                .font_weight(FontWeight::MEDIUM)
+                                .font_features(tabular())
+                                .text_color(p.accent_text)
+                                .child(count_label(count)),
+                        )
+                    })
+                    .child(div().flex_1())
+                    .child(header_link(p, "attn-all", t("View loans", "Ver préstamos"), Route::Loans, cx)),
+            )
+            .child(body)
+            .child(
+                h_flex()
                     .gap(px(6.))
-                    .border_t_1()
-                    .border_color(p.rule)
                     .typeset(text::CAPTION)
                     .text_color(p.faint)
                     .child(t("Record a payment from anywhere with", "Registra un pago desde cualquier lugar con"))

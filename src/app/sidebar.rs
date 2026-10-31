@@ -101,6 +101,10 @@ impl RenderOnce for NavItem {
         let (hovered, on_hover) = hover_state(&self.id, window, cx);
         let (active, tip, f) = (self.active, self.tip, self.on_click);
         let ink = if active { p.text } else { p.muted };
+        // Selected: a filled chip with the icon in the accent (a neutral
+        // chip in dark mode, a tint of the accent in light).
+        let (chip, mark) = if p.dark { (p.neutral_tint, p.accent_text) } else { (p.accent_tint, p.accent_text) };
+        let has_badge = self.badge.is_some();
         h_flex()
             .id(self.id.clone())
             .h(px(36.))
@@ -109,8 +113,10 @@ impl RenderOnce for NavItem {
             .gap(px(10.))
             .rounded(px(RADIUS_CONTROL))
             .cursor_pointer()
+            .border_1()
+            .border_color(if active && p.dark { p.border } else { gpui_kit::transparent_black() })
             .when(self.collapsed, |d| d.justify_center().px_0())
-            .child(icon(self.icon, ink, 16.))
+            .child(icon(self.icon, if active { mark } else { ink }, 16.))
             .when(!self.collapsed, |d| {
                 d.child(
                     div()
@@ -122,12 +128,13 @@ impl RenderOnce for NavItem {
                         .child(self.label),
                 )
                 .children(self.badge)
+                .when(active && !has_badge, |d| d.child(div().flex_none().size(px(7.)).rounded_full().bg(p.accent)))
             })
             .on_hover(on_hover)
             .tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx))
             .on_click(move |e, w, cx| f(e, w, cx))
             .with_spring(scoped(&self.id, "fill"), SpringAnimation::new(motion::CONTROL).to(hovered && !active), move |d, t| {
-                d.bg(if active { p.active } else { faded(p.hover, t.0) })
+                d.bg(if active { chip } else { faded(p.hover, t.0) })
             })
     }
 }
@@ -177,7 +184,7 @@ impl VzApp {
             .flex_none()
             .w(px(if collapsed { SIDEBAR_COLLAPSED } else { SIDEBAR_WIDTH }))
             .h_full()
-            .bg(p.surface)
+            .bg(p.sidebar)
             .border_r_1()
             .border_color(p.border)
             .child(
@@ -238,12 +245,16 @@ impl VzApp {
                     )
                     .when(!collapsed, |d| {
                         d.child(
+                            // A small card at the foot, like the cloud card in the redesign.
                             v_flex()
-                                .mx(px(20.))
+                                .mx(px(12.))
                                 .mt(px(10.))
-                                .pt(px(space::M))
-                                .border_t_1()
+                                .p(px(space::M))
+                                .rounded(px(12.))
+                                .bg(crate::ui::kit::face(&p))
+                                .border_1()
                                 .border_color(p.border)
+                                .shadow(crate::ui::theme::elevation(&p, crate::ui::theme::Elevation::Raised))
                                 .gap(px(2.))
                                 .typeset(text::CAPTION)
                                 .text_color(p.faint)

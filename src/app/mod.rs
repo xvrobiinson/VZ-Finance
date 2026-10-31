@@ -868,13 +868,26 @@ impl Render for VzApp {
                 if self.sign_in.open {
                     return d.child(self.render_sign_in(window, cx));
                 }
+                // Trying the sign-in sky behind Overview first (kit-first rule).
+                // Dark mode only: the night sky. Light mode keeps its plain ground.
+                let has_sky = self.route == Route::Overview && p.dark;
+                let sky = has_sky.then(|| {
+                    let side = if self.sidebar_collapsed(window) { theme::SIDEBAR_COLLAPSED } else { theme::SIDEBAR_WIDTH };
+                    let size = window.viewport_size();
+                    crate::ui::screens::sky(&p, f32::from(size.width) - side, f32::from(size.height))
+                });
                 d.child(self.render_sidebar(window, cx)).child(
-                    v_flex().flex_1().min_w_0().h_full().children(banner).child(
+                    v_flex().relative().flex_1().min_w_0().h_full().children(sky).children(banner).child(
                         div()
                             .id(SharedString::from(format!("scroll-{:?}", self.route.section())))
                             .flex_1()
                             .min_h_0()
                             .overflow_y_scroll()
+                            // Over the sky, a near-invisible fill makes the
+                            // page one surface that draws after the clouds'
+                            // blurred glow, which would otherwise fade text
+                            // lying just outside a cloud.
+                            .when(has_sky, |d| d.bg(hsla(0., 0., 0., 0.004)))
                             .child(div().w_full().px(px(gutter)).pt(px(gutter.min(space::XXL - 4.))).pb(px(48.)).child(content)),
                     ),
                 )

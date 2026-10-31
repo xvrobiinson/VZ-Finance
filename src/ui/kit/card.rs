@@ -5,7 +5,7 @@ use gpui_kit::component::{h_flex, v_flex};
 use gpui_kit::*;
 
 use crate::ui::components::sel;
-use crate::ui::theme::{Elevation, RADIUS_CARD, Typeset as _, elevation, palette, space, text};
+use crate::ui::theme::{Elevation, Palette, RADIUS_CARD, Typeset as _, elevation, palette, space, text};
 
 #[derive(IntoElement)]
 pub struct Card {
@@ -38,6 +38,12 @@ impl Card {
         self.elevation = level;
         self
     }
+}
+
+/// A card's face: `surface_top` shading down to `surface` (flat in light
+/// mode, where the two match).
+pub fn face(p: &Palette) -> Background {
+    linear_gradient(180., linear_color_stop(p.surface_top, 0.), linear_color_stop(p.surface, 1.))
 }
 
 impl Default for Card {
@@ -73,7 +79,7 @@ impl RenderOnce for Card {
                 .children(self.action)
         });
         self.base
-            .bg(p.surface)
+            .bg(face(&p))
             .rounded(px(RADIUS_CARD))
             .border_1()
             .border_color(p.border)

@@ -12,6 +12,8 @@ use crate::ui::theme::{Typeset as _, palette, space, tabular, text};
 pub struct Stat {
     base: Div,
     icon: Option<IconName>,
+    /// (icon color, chip fill): the icon sits in a filled square.
+    chip: Option<(Hsla, Hsla)>,
     label: AnyElement,
     value: AnyElement,
     tone: Option<Hsla>,
@@ -26,6 +28,7 @@ impl Stat {
         Self {
             base: v_flex(),
             icon: None,
+            chip: None,
             label: sel(label).into_any_element(),
             value: sel(value).into_any_element(),
             tone: None,
@@ -37,6 +40,13 @@ impl Stat {
 
     pub fn icon(mut self, icon: IconName) -> Self {
         self.icon = Some(icon);
+        self
+    }
+
+    /// Sets the icon in a filled square: `color` for the icon, `fill`
+    /// behind it. Used by [`super::StatCards`], where each stat is a card.
+    pub fn chip(mut self, color: Hsla, fill: Hsla) -> Self {
+        self.chip = Some((color, fill));
         self
     }
 
@@ -73,17 +83,25 @@ impl Styled for Stat {
 impl RenderOnce for Stat {
     fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
         let p = palette(cx);
+        let header = match self.chip {
+            Some((color, fill)) => h_flex()
+                .h(px(30.))
+                .gap(px(10.))
+                .children(
+                    self.icon
+                        .map(|i| h_flex().flex_none().size(px(30.)).rounded(px(9.)).justify_center().bg(fill).child(icon(i, color, 15.))),
+                )
+                .child(div().flex_1().min_w_0().truncate().typeset(text::LABEL).text_color(p.text).child(self.label)),
+            None => h_flex()
+                .h(px(22.))
+                .gap(px(6.))
+                .children(self.icon.map(|i| icon(i, p.faint, 14.)))
+                .child(div().min_w_0().truncate().typeset(text::CAPTION).text_size(px(12.5)).text_color(p.muted).child(self.label)),
+        };
         self.base
             .min_w_0()
-            .gap(px(space::S))
-            .child(
-                h_flex()
-                    .h(px(22.))
-                    .gap(px(6.))
-                    .children(self.icon.map(|i| icon(i, p.faint, 14.)))
-                    .child(div().min_w_0().truncate().typeset(text::CAPTION).text_size(px(12.5)).text_color(p.muted).child(self.label))
-                    .children(self.accessory),
-            )
+            .gap(px(if self.chip.is_some() { space::M } else { space::S }))
+            .child(header.children(self.accessory))
             .child(
                 div()
                     .typeset(if self.lead { text::DISPLAY } else { text::FIGURE })

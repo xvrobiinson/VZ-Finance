@@ -8,6 +8,7 @@ pub mod overview;
 pub mod payments;
 pub mod settings;
 mod sign_in;
+pub(crate) use sign_in::sky;
 mod sync;
 
 use gpui_kit::assets::IconName;
